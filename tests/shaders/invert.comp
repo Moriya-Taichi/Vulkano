@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform image2D target;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, imageSize(target)))) return;
+    vec4 value = imageLoad(target, p);
+    imageStore(target, p, vec4(1.0 - value.rgb, value.a));
+}

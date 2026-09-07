@@ -1,0 +1,43 @@
+name: Android and Vulkan
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    env:
+      VULKANO_VALIDATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android toolchain
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.1.13356709" "cmake;3.22.1"
+      - name: Install host Vulkan dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers glslc spirv-tools
+      - name: Compile and validate shader fixtures
+        run: |
+          python3 tools/compile-test-shaders.py
+          for shader in tests/shaders/*.spv; do spirv-val --target-env vulkan1.1 "$shader"; done
+      - name: Build host backend
+        run: cmake -S vulkano/src/main/cpp -B build/host -G Ninja && cmake --build build/host
+      - name: Select software Vulkan driver
+        run: echo "VK_ICD_FILENAMES=$(find /usr/share/vulkan/icd.d -name '*lvp*' -print -quit)" >> "$GITHUB_ENV"
+      - name: Test native GPU results and synchronization
+        run: python3 tools/run-native-tests.py build/host/vulkano_tests
+      - name: Build AAR, minified sample and instrumentation APK; test Kotlin through JNI
+        run: ./gradlew :vulkano:assembleRelease :sample:assembleDebug :sample:assembleRelease :vulkano:assembleDebugAndroidTest :vulkano:testDebugUnitTest -Pvulkano.hostLibraryPath="$GITHUB_WORKSPACE/build/host"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkano-android
+          path: |
+            vulkano/build/outputs/aar/*.aar
+            sample/build/outputs/apk/**/*.apk
+            vulkano/build/outputs/apk/androidTest/**/*.apk
+            vulkano/build/reports/tests/
