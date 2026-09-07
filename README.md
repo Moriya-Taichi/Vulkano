@@ -156,3 +156,9 @@ Resourceは`use`または`close()`で解放します。`Device.close()`は残っ
 - [ライブラリの公開](docs/publishing.md)：Mavenリポジトリの生成とMaven Centralへの公開
 
 GPUごとの実機性能は未計測です。実施済みの確認は[検証結果](docs/validation-results.md)、端末での確認手順は[Android実機検証](docs/android-validation.md)に記載しています。
+
+## ライセンス
+
+Vulkano本体は[Apache License 2.0](LICENSE)で提供します。Copyright 2026 Moriya-Taichi。
+
+同梱するVMA・SPIRV-Reflect・SPIR-V Headersには、それぞれのライセンスが適用されます。著作権・ライセンス表示は[third_party](vulkano/src/main/cpp/third_party/)に保持し、配布するAARとSources JARにも同梱します。

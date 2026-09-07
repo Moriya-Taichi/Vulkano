@@ -57,7 +57,7 @@ if (centralRelease) {
         !version.toString().endsWith("-SNAPSHOT")) { "Central releases require an explicit non-SNAPSHOT VERSION_NAME" }
     require(rootProject.file("LICENSE").isFile && licenseName.orNull?.isNotBlank() == true &&
         licenseUrl.orNull?.startsWith("https://") == true) {
-        "Choose the project license: add LICENSE and set POM_LICENSE_NAME / POM_LICENSE_URL before publishing"
+        "Project LICENSE and POM_LICENSE_NAME / POM_LICENSE_URL are required for publishing"
     }
     for (name in listOf("mavenCentralUsername", "mavenCentralPassword", "signingInMemoryKey", "signingInMemoryKeyPassword")) {
         require(providers.gradleProperty(name).orNull?.isNotBlank() == true) { "Missing publishing property: $name" }

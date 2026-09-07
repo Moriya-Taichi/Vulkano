@@ -2,7 +2,7 @@
 
 [Android公式の公開手順](https://developer.android.com/build/publish-library/upload-library?hl=ja)に沿って、Release variantからMavenパブリケーションを作ります。AARに加え、依存関係を記述したPOM、Gradle Module Metadata、Sources JAR、DokkaによるAPIドキュメントJARを生成します。
 
-公開先はMaven Centralを想定しています。**この設定の追加だけでは公開されません。** Central Portalでのアカウント・namespace登録、署名鍵、本体ライセンスの決定が必要です。
+公開先はMaven Centralを想定しています。**この設定の追加だけでは公開されません。** Central Portalでのアカウント・namespace登録、署名鍵の設定が必要です。本体には[Apache License 2.0](../LICENSE)を適用しています。
 
 ## 公開座標
 
@@ -36,15 +36,14 @@ maven { url = uri("vulkano-repository") }
 
 ZIPはフォルダ型Mavenリポジトリの配布・確認用です。Central Portalへアップロードするバンドルは、後述のGradleプラグインが別途生成します。
 
-CIもこのタスクを実行し、POMの座標と依存関係、両ABIのNativeライブラリ、ライセンス通知、Sources、APIドキュメント、チェックサム、ZIPを検査します。ローカルプレビューは未署名でも作成でき、本体ライセンスが未決定の間はPOMに架空のライセンスを記載しません。
+CIもこのタスクを実行し、POMの座標と依存関係、両ABIのNativeライブラリ、ライセンス通知、Sources、APIドキュメント、チェックサム、ZIPを検査します。ローカルプレビューは未署名でも作成できます。POMには`gradle.properties`で設定したApache License 2.0の名称とURLを記載します。
 
 ## 初回公開の準備
 
-1. 本体に適用するライセンスを決定してルートの`LICENSE`へ追加します。POMに記載する正式名称とHTTPSのライセンスURLも用意します。現在は第三者ライブラリのライセンスのみが存在します。
-2. [Central Portal](https://central.sonatype.com/)へ登録し、`io.github.moriya-taichi`のnamespaceを確認します。
-3. PortalのUser Tokenを生成します。通常のログインパスワードではなく、トークンに含まれるusername/passwordを使用します。
-4. OpenPGP署名鍵を用意し、公開鍵を公開します。手順は[Centralの署名ガイド](https://central.sonatype.org/publish/requirements/gpg/)を参照してください。
-5. GitHubのEnvironment `maven-central`を作成し、次のSecretsとVariablesを設定します。秘密鍵とトークンはGitやチャットへ貼り付けないでください。
+1. [Central Portal](https://central.sonatype.com/)へ登録し、`io.github.moriya-taichi`のnamespaceを確認します。
+2. PortalのUser Tokenを生成します。通常のログインパスワードではなく、トークンに含まれるusername/passwordを使用します。
+3. OpenPGP署名鍵を用意し、公開鍵を公開します。手順は[Centralの署名ガイド](https://central.sonatype.org/publish/requirements/gpg/)を参照してください。
+4. GitHubのEnvironment `maven-central`を作成し、次のSecretsを設定します。秘密鍵とトークンはGitやチャットへ貼り付けないでください。
 
 | 種類 | 名前 | 内容 |
 | --- | --- | --- |
@@ -52,10 +51,8 @@ CIもこのタスクを実行し、POMの座標と依存関係、両ABIのNative
 | Secret | `MAVEN_CENTRAL_PASSWORD` | Portal User Tokenのpassword |
 | Secret | `SIGNING_KEY` | ASCII armor形式でエクスポートしたOpenPGP秘密鍵全体 |
 | Secret | `SIGNING_KEY_PASSWORD` | 秘密鍵のパスフレーズ |
-| Variable | `POM_LICENSE_NAME` | 本体に採用したライセンスの正式名称 |
-| Variable | `POM_LICENSE_URL` | 本体に採用したライセンスのHTTPS URL |
 
-署名鍵はパスフレーズ付きで用意します。VMA・SPIRV-Reflect・SPIR-V Headersの既存の著作権・ライセンス通知は、AAR内の`classes.jar`とSources JARに同梱します。本体の`LICENSE`を追加した場合は、それも同梱します。
+署名鍵はパスフレーズ付きで用意します。VMA・SPIRV-Reflect・SPIR-V Headersの既存の著作権・ライセンス通知は、AAR内の`classes.jar`とSources JARに同梱します。本体の`LICENSE`も同梱します。ライセンス名とURLはリポジトリで管理するため、GitHub Variablesの設定は不要です。
 
 ## リリースする
 
