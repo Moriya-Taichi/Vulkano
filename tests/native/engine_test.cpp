@@ -75,6 +75,41 @@ int main() try {
     c->wait(); output->read(0, values.data(), 1028);
     for (size_t i = 0; i < values.size(); ++i) expect(values[i] == (float(i) + 0.5f) * 4, "Compute/barrier/readback mismatch");
     std::cout << "Compute, buffer transfer and lifetime checks passed\n";
+    expect(c->descriptorPools.size() == 1 && c->descriptorSets.size() == 1 && c->descriptorCacheHits == 1,
+           "Repeated dispatch must reuse immutable descriptors");
+    expect(d->pipelineCache != VK_NULL_HANDLE, "Device pipeline cache");
+    VmaAllocationInfo mapped{}; vmaGetAllocationInfo(d->allocator, output->allocation, &mapped);
+    expect(mapped.pMappedData != nullptr, "Shared allocation stays mapped");
+    auto batch = std::make_shared<Command>(d);
+    std::vector<std::shared_ptr<Buffer>> batchBuffers;
+    for (uint32_t i = 0; i < 65; ++i) {
+        auto item = buffer(d, 16); float input[] = {1, 2, 3, 4}; item->write(0, input, sizeof(input));
+        Binding binding{}; binding.buffer = item; binding.length = 16;
+        batch->dispatch({compute, {binding}, integer(1), {1, 1, 1}});
+        batch->dispatch({compute, {binding}, integer(4), {1, 1, 1}});
+        batchBuffers.push_back(item);
+    }
+    batch->commit(); batch->wait();
+    expect(batch->descriptorPools.size() == 2 && batch->descriptorSets.size() == 65 && batch->descriptorCacheHits == 65,
+           "130 dispatches / 65 bindings must use two pools and 65 cached sets");
+    for (auto& item : batchBuffers) {
+        float actual[4]; item->read(0, actual, sizeof(actual));
+        expect(actual[0] == 4 && actual[1] == 4 && actual[2] == 6 && actual[3] == 8,
+               "Cached descriptors must not cache push constants or overwrite earlier sets");
+    }
+    const auto stride = std::max<VkDeviceSize>(16, d->properties.limits.minStorageBufferOffsetAlignment);
+    auto sliced = buffer(d, stride + 16); std::vector<float> sliceValues((stride + 16) / 4, 1);
+    sliced->write(0, sliceValues.data(), stride + 16);
+    auto slices = std::make_shared<Command>(d);
+    Binding slice{}; slice.buffer = sliced; slice.length = 16;
+    slices->dispatch({compute, {slice}, integer(4), {1, 1, 1}});
+    slice.offset = stride; slices->dispatch({compute, {slice}, integer(4), {1, 1, 1}});
+    slice.length = 4; slices->dispatch({compute, {slice}, integer(1), {1, 1, 1}});
+    slices->commit(); slices->wait(); sliced->read(0, sliceValues.data(), stride + 16);
+    expect(slices->descriptorSets.size() == 3 && sliceValues[0] == 2 && sliceValues[stride / 4] == 4 && sliceValues[stride / 4 + 1] == 2,
+           "Descriptor keys must distinguish buffer offsets and ranges");
+    std::cout << "Mobile allocation/cache regressions passed: 130 dispatches, 2 pools, 65 descriptor updates\n";
+
 
     // Record the consumer before the producer, then submit in dependency order.
     // Layouts must be resolved at commit, not during recording.
@@ -91,10 +126,14 @@ int main() try {
     auto sampler = std::make_shared<Sampler>(d, false, false, 1);
     auto renderPipeline = std::make_shared<Pipeline>(d, std::vector<BindingLayout>{{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER}}, 0,
         shader("fullscreen.vert.spv"), shader("sample.frag.spv"), VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, false);
+    auto matchingPipeline = std::make_shared<Pipeline>(d, std::vector<BindingLayout>{}, 0,
+        shader("fullscreen.vert.spv"), shader("sample.frag.spv"), VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, false);
+    expect(matchingPipeline->compatiblePass == renderPipeline->compatiblePass, "Compatible render pass must be cached");
     auto depth = std::make_shared<Texture>(d, 16, 16, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, Storage::Memoryless);
     Render pass{}; pass.color = target; pass.depth = depth; imageBinding.sampler = sampler;
     pass.draws.push_back({renderPipeline, {imageBinding}, {}, 3, 1, 0, 0});
     auto graphics = std::make_shared<Command>(d); graphics->render(pass); graphics->copy(readback, target, 0, false); graphics->commit(); graphics->wait();
+    expect(image->layout == VK_IMAGE_LAYOUT_GENERAL, "Storage-capable sampled image must keep GENERAL");
     readback->read(0, pixels.data(), pixels.size());
     for (size_t i = 0; i < pixels.size(); i += 4) {
         expect(pixels[i] == 238 && pixels[i + 1] == 204 && pixels[i + 2] == 170 && pixels[i + 3] == 255, "Texture compute/sample/render/readback mismatch");
@@ -123,6 +162,22 @@ int main() try {
     auto readDiscarded = std::make_shared<Command>(d); readDiscarded->copy(readback, fresh, 0, false);
     rejects([&] { readDiscarded->commit(); }, "Discarded attachment must not be read");
     d->waitIdle();
+    auto sampledOnly = texture(d, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    auto sampledUpload = std::make_shared<Command>(d); sampledUpload->copy(upload, sampledOnly, 0, true);
+    sampledUpload->commit(); sampledUpload->wait();
+    auto sampledPass = pass; sampledPass.draws[0].bindings[0].texture = sampledOnly;
+    // One transition per distinct image, even when many draws sample it.
+    for (int i = 0; i < 99; ++i) sampledPass.draws.push_back(sampledPass.draws.front());
+    auto sampledDraw = std::make_shared<Command>(d); sampledDraw->render(sampledPass);
+    sampledDraw->copy(readback, target, 0, false); sampledDraw->commit(); sampledDraw->wait();
+    expect(sampledOnly->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, "Sampled-only optimal layout");
+    expect(sampledDraw->descriptorSets.size() == 1 && sampledDraw->descriptorCacheHits == 99,
+           "100 draws must update one descriptor set");
+    expect(sampledDraw->imageBarrierCount <= 4, "Repeated sampled reads must not issue per-draw image barriers");
+    readback->read(0, pixels.data(), pixels.size());
+    expect(pixels[0] == 17 && pixels[1] == 51 && pixels[2] == 85 && pixels[3] == 255,
+           "Optimal-layout sampled render readback");
+    std::cout << "Mobile draw regression passed: 100 draws, 1 descriptor update\n";
     std::cout << "PASS: " << checks << " checks\n";
     return 0;
 } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

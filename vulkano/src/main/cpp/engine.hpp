@@ -40,6 +40,8 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     VkPhysicalDeviceProperties properties{};
     VkPhysicalDeviceMemoryProperties memory{};
     VkPhysicalDeviceSubgroupProperties subgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, nullptr, 0, 0, 0, VK_FALSE};
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+    std::map<std::array<int, 6>, VkRenderPass> renderPassCache;
     VmaAllocator allocator = VK_NULL_HANDLE;
     bool memoryBudget = false;
     std::vector<std::weak_ptr<Command>> pending;
@@ -154,7 +156,12 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     VkFence fence = VK_NULL_HANDLE;
     std::vector<VkDescriptorPool> descriptorPools;
     std::vector<VkFramebuffer> framebuffers;
-    std::vector<VkRenderPass> passes;
+    // Command-scoped immutable descriptors retain resources through operations.
+    struct DescriptorArena { VkDescriptorPool pool = VK_NULL_HANDLE; uint32_t used = 0; };
+    std::map<const Pipeline*, DescriptorArena> descriptorArenas;
+    std::map<std::vector<uint64_t>, VkDescriptorSet> descriptorSets;
+    uint32_t descriptorCacheHits = 0, imageBarrierCount = 0;
+    std::array<VkPipeline, 2> boundPipelines{};
     std::vector<std::function<void(Command&)>> operations;
     std::vector<std::shared_ptr<Buffer>> buffers;
     std::unordered_map<Texture*, ImageState> images;

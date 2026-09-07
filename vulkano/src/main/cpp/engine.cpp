@@ -32,6 +32,8 @@ VkImageView makeView(Device& d, VkImage image, VkFormat format) {
 VkRenderPass makePass(Device& d, VkFormat color, VkFormat depth,
                       VkAttachmentLoadOp load, VkAttachmentStoreOp store,
                       VkAttachmentLoadOp depthLoad, VkAttachmentStoreOp depthStore) {
+    const std::array<int, 6> key{color, depth, load, store, depthLoad, depthStore};
+    if (auto it = d.renderPassCache.find(key); it != d.renderPassCache.end()) return it->second;
     VkAttachmentDescription attachments[2]{};
     attachments[0].format = color;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -53,6 +55,8 @@ VkRenderPass makePass(Device& d, VkFormat color, VkFormat depth,
     info.pAttachments = attachments; info.subpassCount = 1; info.pSubpasses = &subpass;
     VkRenderPass pass;
     check(vkCreateRenderPass(d.device, &info, nullptr, &pass), "vkCreateRenderPass");
+    try { d.renderPassCache.emplace(key, pass); }
+    catch (...) { vkDestroyRenderPass(d.device, pass, nullptr); throw; }
     return pass;
 }
 struct Module {
@@ -310,12 +314,16 @@ std::shared_ptr<Device> Device::create(uint32_t required, bool validation, bool 
         allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_1;
         allocatorInfo.flags = result->memoryBudget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0;
         check(vmaCreateAllocator(&allocatorInfo, &result->allocator), "vmaCreateAllocator");
+        VkPipelineCacheCreateInfo cacheInfo{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        check(vkCreatePipelineCache(result->device, &cacheInfo, nullptr, &result->pipelineCache), "vkCreatePipelineCache");
         return result;
     }
     throw std::runtime_error("No Vulkan 1.1 graphics/compute device supports the requested features");
 }
 Device::~Device() {
     if (device) vkDeviceWaitIdle(device);
+    for (auto [key, pass] : renderPassCache) { (void)key; vkDestroyRenderPass(device, pass, nullptr); }
+    if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
     if (allocator) vmaDestroyAllocator(allocator);
     if (device) vkDestroyDevice(device, nullptr);
     if (instance) vkDestroyInstance(instance, nullptr);
@@ -337,7 +345,7 @@ Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsag
     VmaAllocationCreateInfo alloc{};
     alloc.usage = storage == Storage::Shared ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (storage == Storage::Shared) {
-        alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         alloc.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
         alloc.preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     }
@@ -452,7 +460,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         makeLayout();
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO}; info.layout = layout;
         info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module.module, shader.entry.c_str(), nullptr};
-        check(vkCreateComputePipelines(d->device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline), "vkCreateComputePipelines");
+        check(vkCreateComputePipelines(d->device, d->pipelineCache, 1, &info, nullptr, &pipeline), "vkCreateComputePipelines");
     } catch (...) {
         if (pipeline) vkDestroyPipeline(d->device, pipeline, nullptr);
         if (layout) vkDestroyPipelineLayout(d->device, layout, nullptr);
@@ -495,10 +503,9 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         info.stageCount = 2; info.pStages = stages; info.pVertexInputState = &vertexInput; info.pInputAssemblyState = &assembly;
         info.pViewportState = &viewport; info.pRasterizationState = &raster; info.pMultisampleState = &samples;
         info.pDepthStencilState = &ds; info.pColorBlendState = &blending; info.pDynamicState = &dynamic; info.layout = layout; info.renderPass = compatiblePass;
-        check(vkCreateGraphicsPipelines(d->device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline), "vkCreateGraphicsPipelines");
+        check(vkCreateGraphicsPipelines(d->device, d->pipelineCache, 1, &info, nullptr, &pipeline), "vkCreateGraphicsPipelines");
     } catch (...) {
         if (pipeline) vkDestroyPipeline(d->device, pipeline, nullptr);
-        if (compatiblePass) vkDestroyRenderPass(d->device, compatiblePass, nullptr);
         if (layout) vkDestroyPipelineLayout(d->device, layout, nullptr);
         if (setLayout) vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
         throw;
@@ -506,7 +513,6 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
 }
 Pipeline::~Pipeline() {
     if (pipeline) vkDestroyPipeline(d->device, pipeline, nullptr);
-    if (compatiblePass) vkDestroyRenderPass(d->device, compatiblePass, nullptr);
     if (layout) vkDestroyPipelineLayout(d->device, layout, nullptr);
     if (setLayout) vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
 }
@@ -526,6 +532,10 @@ void Command::transition(Texture& texture, VkImageLayout layout, bool read) {
     auto [it, inserted] = images.emplace(&texture, ImageState{texture.layout, texture.initialized});
     (void)inserted;
     require(!read || it->second.initialized, "Cannot load or read an uninitialized/discarded texture");
+    // Every operation already has a memory dependency. Within prepare() there
+    // are no intervening accesses, so an unchanged layout needs no second barrier.
+    if (it->second.layout == layout) return;
+    ++imageBarrierCount;
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.oldLayout = it->second.layout; b.newLayout = layout;
     b.srcAccessMask = b.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
@@ -571,37 +581,63 @@ void Command::validateBindings(const Pipeline& p, const std::vector<Binding>& bs
 void Command::prepare(const std::vector<Binding>& bindings, bool compute) {
     for (const auto& b : bindings) {
         if (b.texture) {
-            transition(*b.texture, VK_IMAGE_LAYOUT_GENERAL, !compute || bool(b.sampler));
+            // Keep GENERAL for textures that can alias sampled/storage descriptors.
+            const auto layout = (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT)
+                ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            transition(*b.texture, layout, !compute || bool(b.sampler));
             if (compute && !b.sampler) markInitialized(*b.texture, true);
         }
     }
 }
 void Command::bind(const Pipeline& p, const std::vector<Binding>& bs, const std::vector<uint8_t>& constants) {
     const auto point = p.compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-    vkCmdBindPipeline(command, point, p.pipeline);
+    auto& bound = boundPipelines[p.compute ? 0 : 1];
+    if (bound != p.pipeline) { vkCmdBindPipeline(command, point, p.pipeline); bound = p.pipeline; }
     if (!bs.empty()) {
-        std::map<VkDescriptorType, uint32_t> counts;
-        for (const auto& b : p.bindings) ++counts[b.type];
-        std::vector<VkDescriptorPoolSize> sizes;
-        for (auto [type, count] : counts) sizes.push_back({type, count});
-        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pi.maxSets = 1; pi.poolSizeCount = static_cast<uint32_t>(sizes.size()); pi.pPoolSizes = sizes.data();
-        VkDescriptorPool dp; check(vkCreateDescriptorPool(d->device, &pi, nullptr, &dp), "vkCreateDescriptorPool");
-        descriptorPools.push_back(dp);
-        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        ai.descriptorPool = dp; ai.descriptorSetCount = 1; ai.pSetLayouts = &p.setLayout;
-        VkDescriptorSet set; check(vkAllocateDescriptorSets(d->device, &ai, &set), "vkAllocateDescriptorSets");
-        std::vector<VkDescriptorBufferInfo> buffersInfo(bs.size());
-        std::vector<VkDescriptorImageInfo> imageInfo(bs.size());
-        std::vector<VkWriteDescriptorSet> writes(bs.size());
-        for (size_t i = 0; i < bs.size(); ++i) {
-            const auto& b = bs[i];
-            auto& w = writes[i]; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = set; w.dstBinding = b.index; w.descriptorCount = 1;
-            w.descriptorType = std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto& s) { return s.binding == b.index; })->type;
-            if (b.buffer) { buffersInfo[i] = {b.buffer->buffer, b.offset, b.length}; w.pBufferInfo = &buffersInfo[i]; }
-            else { imageInfo[i] = {b.sampler ? b.sampler->sampler : VK_NULL_HANDLE, b.texture->view, VK_IMAGE_LAYOUT_GENERAL}; w.pImageInfo = &imageInfo[i]; }
+        // Canonical binding order; offsets, ranges, sampler and layout identity
+        // are part of the key. Push constants deliberately are not.
+        std::vector<const Binding*> ordered;
+        for (const auto& binding : bs) ordered.push_back(&binding);
+        std::sort(ordered.begin(), ordered.end(), [](auto a, auto b) { return a->index < b->index; });
+        std::vector<uint64_t> key{reinterpret_cast<uintptr_t>(&p)};
+        for (auto b : ordered) {
+            key.insert(key.end(), {b->index, reinterpret_cast<uintptr_t>(b->buffer.get()), b->offset, b->length,
+                reinterpret_cast<uintptr_t>(b->texture.get()), reinterpret_cast<uintptr_t>(b->sampler.get())});
         }
-        vkUpdateDescriptorSets(d->device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        VkDescriptorSet set;
+        auto cached = descriptorSets.find(key);
+        if (cached != descriptorSets.end()) { set = cached->second; ++descriptorCacheHits; }
+        else {
+            constexpr uint32_t setsPerPool = 64;
+            auto& arena = descriptorArenas[&p];
+            if (!arena.pool || arena.used == setsPerPool) {
+                std::map<VkDescriptorType, uint32_t> counts;
+                for (const auto& b : p.bindings) counts[b.type] += setsPerPool;
+                std::vector<VkDescriptorPoolSize> sizes;
+                for (auto [type, count] : counts) sizes.push_back({type, count});
+                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                pi.maxSets = setsPerPool; pi.poolSizeCount = static_cast<uint32_t>(sizes.size()); pi.pPoolSizes = sizes.data();
+                descriptorPools.reserve(descriptorPools.size() + 1);
+                VkDescriptorPool dp; check(vkCreateDescriptorPool(d->device, &pi, nullptr, &dp), "vkCreateDescriptorPool");
+                descriptorPools.push_back(dp); arena = {dp, 0};
+            }
+            VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            ai.descriptorPool = arena.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &p.setLayout;
+            check(vkAllocateDescriptorSets(d->device, &ai, &set), "vkAllocateDescriptorSets");
+            ++arena.used;
+            std::vector<VkDescriptorBufferInfo> buffersInfo(bs.size());
+            std::vector<VkDescriptorImageInfo> imageInfo(bs.size());
+            std::vector<VkWriteDescriptorSet> writes(bs.size());
+            for (size_t i = 0; i < bs.size(); ++i) {
+                const auto& b = bs[i];
+                auto& w = writes[i]; w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.dstSet = set; w.dstBinding = b.index; w.descriptorCount = 1;
+                w.descriptorType = std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto& s) { return s.binding == b.index; })->type;
+                if (b.buffer) { buffersInfo[i] = {b.buffer->buffer, b.offset, b.length}; w.pBufferInfo = &buffersInfo[i]; }
+                else { imageInfo[i] = {b.sampler ? b.sampler->sampler : VK_NULL_HANDLE, b.texture->view, (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; w.pImageInfo = &imageInfo[i]; }
+            }
+            vkUpdateDescriptorSets(d->device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            descriptorSets.emplace(std::move(key), set);
+        }
         vkCmdBindDescriptorSets(command, point, p.layout, 0, 1, &set, 0, nullptr);
     }
     if (!constants.empty()) vkCmdPushConstants(command, p.layout,
@@ -653,7 +689,6 @@ void Command::render(Render op) {
         c.transition(*op.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, op.colorLoad == VK_ATTACHMENT_LOAD_OP_LOAD);
         if (op.depth) c.transition(*op.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD);
         auto pass = makePass(*c.d, op.color->format, op.depth ? op.depth->format : VK_FORMAT_UNDEFINED, op.colorLoad, op.colorStore, op.depthLoad, op.depthStore);
-        c.passes.push_back(pass);
         VkImageView views[] = {op.color->view, op.depth ? op.depth->view : VK_NULL_HANDLE};
         VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fi.renderPass = pass;
         fi.attachmentCount = op.depth ? 2 : 1; fi.pAttachments = views; fi.width = op.color->width; fi.height = op.color->height; fi.layers = 1;
@@ -765,7 +800,6 @@ Command::~Command() {
     }
     if (pool) vkDestroyCommandPool(d->device, pool, nullptr);
     for (auto fb : framebuffers) vkDestroyFramebuffer(d->device, fb, nullptr);
-    for (auto pass : passes) vkDestroyRenderPass(d->device, pass, nullptr);
     for (auto dp : descriptorPools) vkDestroyDescriptorPool(d->device, dp, nullptr);
     if (fence) vkDestroyFence(d->device, fence, nullptr);
 }

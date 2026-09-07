@@ -38,4 +38,6 @@ SurfaceLayerごとにDrawableを1枚だけ取得できます。TextureをRender 
 
 サイズ変更前に取得中のDrawableを提示または破棄してください。Androidの`surfaceDestroyed`が返る前に、そのSurfaceを使う作業を終えます。DeviceをUIの各フレームで作り直す必要はありません。
 
-現在はCompositorに画面回転を任せます。ShaderでのPre-rotation、複数フレームの同時進行、Descriptor Poolの再利用、より狭いBarrierへの最適化は、実機での性能確認後に進める対象です。
+現在はCompositorに画面回転を任せます。ShaderでのPre-rotation、複数フレームの同時進行、フレーム間のDescriptor Pool再利用、より狭いBarrierへの最適化は、実機での性能確認後に進める対象です。
+
+DescriptorのCommand内再利用、Shared Bufferの常時マッピング、画像Layoutの選択は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。
