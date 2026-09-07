@@ -33,6 +33,44 @@ int main() try {
     std::cout << "Device: " << d->properties.deviceName << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
     rejects([&] { Device::create(1u << 30, false, true); }, "Unknown feature must fail");
+    {
+        auto rdna = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
+        auto upload = std::make_shared<Buffer>(rdna, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Storage::Shared, true);
+        auto result = buffer(rdna, 16);
+        auto pipeline = std::make_shared<Pipeline>(rdna, std::vector<BindingLayout>{}, 0, shader("double.comp.spv"));
+        float numbers[] = {1, 2, 3, 4};
+        rejects([&] { upload->read(0, numbers, sizeof(numbers)); }, "Upload CPU read must fail");
+        rejects([&] { std::make_shared<Buffer>(rdna, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, Storage::Private, true); }, "Upload private storage must fail");
+        VkCommandPool previousPool = VK_NULL_HANDLE;
+        VkCommandBuffer previousBuffer = VK_NULL_HANDLE;
+        for (int frame = 0; frame < 32; ++frame) {
+            upload->write(0, numbers, sizeof(numbers));
+            auto cmd = std::make_shared<Command>(rdna);
+            Binding binding{}; binding.buffer = upload; binding.length = 16;
+            cmd->dispatch({pipeline, {binding}, integer(4), {1, 1, 1}});
+            cmd->copy(upload, result, 0, 0, 16); cmd->commit(); cmd->wait();
+            if (frame) expect(cmd->pool == previousPool && cmd->command == previousBuffer, "Completed pool and primary buffer must be reused");
+            previousPool = cmd->pool; previousBuffer = cmd->command;
+            float out[4]; result->read(0, out, sizeof(out));
+            expect(out[0] == 2 && out[3] == 8, "Direct upload / reused command readback");
+        }
+        std::vector<std::shared_ptr<Command>> retained;
+        for (int i = 0; i < 10; ++i) {
+            auto cmd = std::make_shared<Command>(rdna); cmd->commit();
+            for (const auto& live : retained) expect(live->pool != cmd->pool, "Live commands cannot share a pool");
+            retained.push_back(cmd);
+        }
+        // Destruction itself waits for outstanding submissions before recycling.
+        retained.clear();
+        expect(rdna->idleCommandCount == 8, "Idle command cache must be bounded");
+        auto failed = std::make_shared<Command>(rdna);
+        auto fresh = texture(rdna, VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        auto imageOut = buffer(rdna, 1024); failed->copy(imageOut, fresh, 0, false);
+        rejects([&] { failed->commit(); }, "Failed recording must not enter idle cache");
+        const auto idle = rdna->idleCommandCount; failed.reset();
+        expect(rdna->idleCommandCount == idle, "Failed command pool must be destroyed");
+        std::cout << "Xclipse/RDNA upload and command recycling regressions passed\n";
+    }
     auto other = Device::create(0, false, true);
     auto foreign = buffer(other, 16);
     auto source = buffer(d, 1028), gpu = buffer(d, 1028, Storage::Private), output = buffer(d, 1028);

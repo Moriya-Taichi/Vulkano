@@ -324,6 +324,7 @@ Device::~Device() {
     if (device) vkDeviceWaitIdle(device);
     for (auto [key, pass] : renderPassCache) { (void)key; vkDestroyRenderPass(device, pass, nullptr); }
     if (pipelineCache) vkDestroyPipelineCache(device, pipelineCache, nullptr);
+    for (size_t i = 0; i < idleCommandCount; ++i) vkDestroyCommandPool(device, idleCommands[i].pool, nullptr);
     if (allocator) vmaDestroyAllocator(allocator);
     if (device) vkDestroyDevice(device, nullptr);
     if (instance) vkDestroyInstance(instance, nullptr);
@@ -335,8 +336,9 @@ void Device::collect() {
 }
 void Device::waitIdle() { check(vkQueueWaitIdle(queue), "vkQueueWaitIdle"); collect(); }
 
-Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsageFlags flags, Storage mode)
-    : Resource(std::move(device)), size(length), usage(flags), storage(mode) {
+Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsageFlags flags, Storage mode, bool writeOnly)
+    : Resource(std::move(device)), size(length), usage(flags), storage(mode), cpuWriteOnly(writeOnly) {
+    require(!cpuWriteOnly || storage == Storage::Shared, "CPU write-only access requires shared storage");
     require(size > 0 && storage != Storage::Memoryless, "Buffers require positive length and shared/private storage");
     constexpr VkBufferUsageFlags allowed = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -345,9 +347,18 @@ Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsag
     VmaAllocationCreateInfo alloc{};
     alloc.usage = storage == Storage::Shared ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (storage == Storage::Shared) {
-        alloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        alloc.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | (cpuWriteOnly
+            ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
         alloc.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-        alloc.preferredFlags = VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        alloc.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if (!cpuWriteOnly) alloc.preferredFlags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        else {
+            // UMA-friendly direct upload: let VMA score actual memory types.
+            // No PCIe, dedicated VRAM or uncached memory requirement.
+            alloc.usage = VMA_MEMORY_USAGE_AUTO;
+            if (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+                alloc.preferredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        }
     }
     check(vmaCreateBuffer(d->allocator, &info, &alloc, &buffer, &allocation, nullptr), "vmaCreateBuffer");
 }
@@ -358,6 +369,7 @@ void Buffer::write(VkDeviceSize offset, const void* bytes, size_t count) {
     check(vmaCopyMemoryToAllocation(d->allocator, bytes, allocation, offset, count), "write/flush shared buffer");
 }
 void Buffer::read(VkDeviceSize offset, void* bytes, size_t count) {
+    require(!cpuWriteOnly, "Upload buffers prohibit CPU reads; blit to a shared readback buffer");
     range(size, offset, count); require(storage == Storage::Shared, "Private buffers require a blit to shared storage");
     d->collect(); require(inFlight == 0, "Buffer is in use by the GPU; wait for command completion");
     check(vmaCopyAllocationToMemory(d->allocator, allocation, offset, bytes, count), "invalidate/read shared buffer");
@@ -742,10 +754,15 @@ void Command::present(std::shared_ptr<Drawable> drawable) {
 void Command::commit() {
     recording(); d->collect();
     try {
-        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; poolInfo.queueFamilyIndex = d->family; poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        check(vkCreateCommandPool(d->device, &poolInfo, nullptr, &pool), "vkCreateCommandPool");
-        VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; alloc.commandPool = pool; alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 1;
-        check(vkAllocateCommandBuffers(d->device, &alloc, &command), "vkAllocateCommandBuffers");
+        if (d->idleCommandCount) {
+            const auto cached = d->idleCommands[--d->idleCommandCount];
+            pool = cached.pool; command = cached.command;
+        } else {
+            VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; poolInfo.queueFamilyIndex = d->family; poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            check(vkCreateCommandPool(d->device, &poolInfo, nullptr, &pool), "vkCreateCommandPool");
+            VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; alloc.commandPool = pool; alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 1;
+            check(vkAllocateCommandBuffers(d->device, &alloc, &command), "vkAllocateCommandBuffers");
+        }
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(command, &begin), "vkBeginCommandBuffer");
         for (const auto& op : operations) op(*this);
@@ -793,12 +810,18 @@ bool Command::wait(uint64_t timeout) {
     return true;
 }
 Command::~Command() {
+    bool completed = state == State::Completed;
     if (state == State::Submitted) {
         // Device loss is terminal, but destructors must not throw through JNI.
-        vkWaitForFences(d->device, 1, &fence, VK_TRUE, UINT64_MAX);
+        completed = vkWaitForFences(d->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
         for (auto& b : buffers) --b->inFlight;
     }
-    if (pool) vkDestroyCommandPool(d->device, pool, nullptr);
+    // Reset only after GPU completion, before releasing recorded resources.
+    // Retain one primary buffer per pool rather than allocating one each reuse.
+    if (pool && completed && d->idleCommandCount < d->idleCommands.size() &&
+        vkResetCommandPool(d->device, pool, 0) == VK_SUCCESS) {
+        d->idleCommands[d->idleCommandCount++] = {pool, command};
+    } else if (pool) vkDestroyCommandPool(d->device, pool, nullptr);
     for (auto fb : framebuffers) vkDestroyFramebuffer(d->device, fb, nullptr);
     for (auto dp : descriptorPools) vkDestroyDescriptorPool(d->device, dp, nullptr);
     if (fence) vkDestroyFence(d->device, fence, nullptr);

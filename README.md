@@ -174,7 +174,7 @@ Subgroupの幅・Stage・演算を取得し、使用するシェーダーとの�
 
 GraphicsのStorage Bufferは`readonly`宣言が必要です。MSAA、Mip生成、Texture Array/Cube、圧縮Textureの作成、Descriptor Array/Bindless、頂点属性レイアウト、Indexed/Indirect Draw、複数Render Target、複数Queueでの並列実行、Specialization Constants、AHardwareBuffer/Cameraとの共有、Ray Tracingは未対応です。ASTC/ETC2のFeature情報は取得できますが、圧縮Texture形式はまだ公開していません。16-bit演算とSubgroupを混在させるシェーダーも、Extended Typesを有効化していないため拒否します。
 
-自動同期は保守的なBarrierを使用します。Descriptor SetをCommand内で再利用し、Surfaceは同時に1枚だけ取得してPresentationの完了を待ちます。Mali・PowerVR・Adrenoを対象としたDescriptor、Pipeline、メモリ、画像Layoutの最適化は[モバイルGPU最適化](docs/mobile-gpu-optimization.md)を参照してください。GPU固有の性能や熱・電力特性は計測していません。
+自動同期は保守的なBarrierを使用します。Descriptor SetをCommand内で再利用し、Surfaceは同時に1枚だけ取得してPresentationの完了を待ちます。Mali・PowerVR・Adreno・Xclipseを対象としたDescriptor、Pipeline、メモリ、画像Layoutの最適化は[モバイルGPU最適化](docs/mobile-gpu-optimization.md)を参照してください。GPU固有の性能や熱・電力特性は計測していません。
 
 ## 検証
 

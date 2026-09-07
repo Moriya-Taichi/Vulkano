@@ -35,6 +35,15 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
         require(length > 0 && usage.isNotEmpty() && storageMode != StorageMode.MEMORYLESS)
         Buffer(this, Native.createBuffer(nativeHandle, length, usage.fold(0) { a, b -> a or b.bit }, storageMode.ordinal), length, storageMode)
     }
+    /** CPU-write-only shared storage; GPU usage can include UNIFORM/STORAGE for direct upload. */
+    fun makeUploadBuffer(
+        length: Long,
+        usage: Set<BufferUsage> = setOf(BufferUsage.TRANSFER_SOURCE),
+    ): Buffer = access {
+        require(length > 0 && usage.isNotEmpty())
+        Buffer(this, Native.createUploadBuffer(nativeHandle, length, usage.fold(0) { a, b -> a or b.bit }),
+            length, StorageMode.SHARED, isCpuWriteOnly = true)
+    }
     fun makeTexture(descriptor: TextureDescriptor): Texture = access {
         val id = Native.createTexture(nativeHandle, descriptor.width, descriptor.height, descriptor.pixelFormat.vk,
             descriptor.usage.fold(0) { a, b -> a or b.bit }, descriptor.storageMode.ordinal)
@@ -105,7 +114,7 @@ abstract class Resource internal constructor(val device: Device, private var id:
     }
 }
 
-class Buffer internal constructor(device: Device, id: Long, val length: Long, val storageMode: StorageMode) : Resource(device, id) {
+class Buffer internal constructor(device: Device, id: Long, val length: Long, val storageMode: StorageMode, val isCpuWriteOnly: Boolean = false) : Resource(device, id) {
     /** Copies remaining bytes without changing the source position; flushes non-coherent memory. */
     fun write(source: ByteBuffer, offset: Long = 0): Unit = access {
         require(source.isDirect) { "Use a direct ByteBuffer" }
@@ -113,6 +122,7 @@ class Buffer internal constructor(device: Device, id: Long, val length: Long, va
     }
     /** Copies into remaining bytes without changing position; invalidates non-coherent memory. */
     fun read(destination: ByteBuffer, offset: Long = 0): Unit = access {
+        require(!isCpuWriteOnly) { "Upload buffers prohibit CPU reads; blit to a shared readback buffer" }
         require(destination.isDirect && !destination.isReadOnly) { "Use a writable direct ByteBuffer" }
         Native.readBuffer(it, offset, destination.slice())
     }
