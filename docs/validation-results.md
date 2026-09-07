@@ -19,3 +19,12 @@ NativeではShared/Private間の転送、複数Compute Dispatchの依存関係�
 接続されたAndroid端末はありません。AndroidのPresentation経路、Surfaceの再作成、Adreno/Mali固有の挙動、Non-coherentな実メモリ、Lazy Allocationを備えた実機、16 KBカーネルでの実行は未検証です。性能・熱・電力についても測定結果はありません。
 
 再実行方法は[README](../README.md)と[実機検証手順](android-validation.md)を参照してください。
+
+## モバイルGPU最適化の回帰検証（2026-09-07）
+
+- llvmpipe（LLVM 20.1.2）でNative検査611件成功。Validation Error / Synchronization Hazardなし。
+- 130 Dispatch・65 BindingでDescriptor Pool 2個、Descriptor Set更新65回。100 Drawでは更新1回。GPU結果のReadbackも一致。
+- Offset/RangeとPush Constantsの変更、Shared常時マッピング、Render Passキャッシュ、Sampled-onlyのOptimal Layout、Storage対応TextureのGENERAL経路を検証。
+- Kotlin GPU統合テスト5件、APIテスト2件成功。スキップなし。
+- arm64-v8a / x86_64のRelease AAR、サンプルDebug / Release APKのビルド成功。
+- Mali・PowerVR・Adreno実機の速度、帯域、温度、電力は未計測。API呼び出し回数を実機の速度改善率として扱わない。
