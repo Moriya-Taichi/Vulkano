@@ -1,0 +1,2 @@
+vulkano/src/main/cpp/third_party/** linguist-vendored=true
+tests/shaders/*.spv binary linguist-generated=true
