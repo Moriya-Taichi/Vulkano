@@ -41,7 +41,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("dev.vulkano:vulkano:0.1.0-SNAPSHOT")
+    implementation("io.github.moriya-taichi:vulkano:0.1.0-SNAPSHOT")
 }
 ```
 
@@ -153,5 +153,6 @@ Resourceは`use`または`close()`で解放します。`Device.close()`は残っ
 - [メモリと同期](docs/memory-and-synchronization.md)：CPU/GPUアクセス、送信順、リソースとSurfaceの寿命
 - [モバイルGPU最適化](docs/mobile-gpu-optimization.md)：Mali・PowerVR・Adreno・Xclipse向けの実装
 - [ビルドと検証](docs/development.md)：サンプルの実行、ライブラリのビルドとテスト
+- [ライブラリの公開](docs/publishing.md)：Mavenリポジトリの生成とMaven Centralへの公開
 
 GPUごとの実機性能は未計測です。実施済みの確認は[検証結果](docs/validation-results.md)、端末での確認手順は[Android実機検証](docs/android-validation.md)に記載しています。

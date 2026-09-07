@@ -33,11 +33,16 @@ jobs:
         run: python3 tools/run-native-tests.py build/host/vulkano_tests
       - name: Build AAR, minified sample and instrumentation APK; test Kotlin through JNI
         run: ./gradlew :vulkano:assembleRelease :sample:assembleDebug :sample:assembleRelease :vulkano:assembleDebugAndroidTest :vulkano:testDebugUnitTest -Pvulkano.hostLibraryPath="$GITHUB_WORKSPACE/build/host"
+      - name: Build and verify Maven publication
+        run: |
+          ./gradlew :vulkano:generateRepo
+          python3 tools/verify-publication.py
       - uses: actions/upload-artifact@v4
         with:
           name: vulkano-android
           path: |
             vulkano/build/outputs/aar/*.aar
+            vulkano/build/distributions/*-maven.zip
             sample/build/outputs/apk/**/*.apk
             vulkano/build/outputs/apk/androidTest/**/*.apk
             vulkano/build/reports/tests/
