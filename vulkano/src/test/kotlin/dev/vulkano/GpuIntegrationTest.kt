@@ -47,6 +47,34 @@ class GpuIntegrationTest {
             }
         }
     }
+    @Test fun uploadBufferSupportsDirectGpuAccessAndRejectsCpuReads() {
+        device().use { device ->
+            device.makeUploadBuffer(16, setOf(BufferUsage.STORAGE, BufferUsage.TRANSFER_SOURCE)).use { upload ->
+                assertTrue(upload.isCpuWriteOnly)
+                val bytes = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
+                repeat(4) { bytes.putFloat(it * 4, (it + 1).toFloat()) }
+                upload.write(bytes)
+                assertThrows(IllegalArgumentException::class.java) { upload.readBytes(16) }
+                device.makeBuffer(16).use { result ->
+                    device.makeComputePipelineState(device.makeLibrary(shader("double.comp.spv")).makeFunction()).use { pipeline ->
+                        device.makeCommandQueue().use { queue ->
+                            queue.makeCommandBuffer().use { command ->
+                                command.compute {
+                                    setComputePipelineState(pipeline); setBuffer(upload, index = 0)
+                                    setBytes(ByteBuffer.allocate(4).order(ByteOrder.nativeOrder()).putInt(4).array())
+                                    dispatchThreads(Size(4))
+                                }
+                                command.blit { copy(upload, result, length = 16) }
+                                command.commit(); command.waitUntilCompleted()
+                            }
+                        }
+                    }
+                    val out = ByteBuffer.wrap(result.readBytes(16)).order(ByteOrder.nativeOrder())
+                    repeat(4) { assertEquals((it + 1) * 2f, out.float, 0f) }
+                }
+            }
+        }
+    }
     @Test fun transferUsesByteBufferPositionAndRetainsClosedSource() {
         device().use { device ->
             val source = device.makeBuffer(16)

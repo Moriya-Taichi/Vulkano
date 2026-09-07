@@ -44,6 +44,9 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     std::map<std::array<int, 6>, VkRenderPass> renderPassCache;
     VmaAllocator allocator = VK_NULL_HANDLE;
     bool memoryBudget = false;
+    struct CommandAllocation { VkCommandPool pool; VkCommandBuffer command; };
+    std::array<CommandAllocation, 8> idleCommands{};
+    size_t idleCommandCount = 0;
     std::vector<std::weak_ptr<Command>> pending;
     static std::shared_ptr<Device> create(uint32_t required, bool validation, bool allowSoftware);
     Device* owner() const override { return const_cast<Device*>(this); }
@@ -62,8 +65,9 @@ struct Buffer : Resource {
     VkDeviceSize size;
     VkBufferUsageFlags usage;
     Storage storage;
+    bool cpuWriteOnly;
     uint32_t inFlight = 0;
-    Buffer(std::shared_ptr<Device>, VkDeviceSize, VkBufferUsageFlags, Storage);
+    Buffer(std::shared_ptr<Device>, VkDeviceSize, VkBufferUsageFlags, Storage, bool cpuWriteOnly = false);
     void write(VkDeviceSize offset, const void* bytes, size_t count);
     void read(VkDeviceSize offset, void* bytes, size_t count);
     ~Buffer() override;

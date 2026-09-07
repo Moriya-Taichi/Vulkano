@@ -11,6 +11,7 @@ internal object Native {
     external fun closeDevice(device: Long)
     external fun close(handle: Long)
     external fun waitIdle(device: Long)
+    external fun createUploadBuffer(device: Long, length: Long, usage: Int): Long
     external fun createBuffer(device: Long, length: Long, usage: Int, storage: Int): Long
     external fun writeBuffer(buffer: Long, offset: Long, bytes: ByteBuffer)
     external fun readBuffer(buffer: Long, offset: Long, bytes: ByteBuffer)

@@ -28,3 +28,11 @@ NativeではShared/Private間の転送、複数Compute Dispatchの依存関係�
 - Kotlin GPU統合テスト5件、APIテスト2件成功。スキップなし。
 - arm64-v8a / x86_64のRelease AAR、サンプルDebug / Release APKのビルド成功。
 - Mali・PowerVR・Adreno実機の速度、帯域、温度、電力は未計測。API呼び出し回数を実機の速度改善率として扱わない。
+
+## Xclipse / RDNA対応の回帰検証（2026-09-07）
+
+- llvmpipeとValidation / 同期検証でNative検査724件成功。Validation Error / Synchronization Hazardなし。
+- 32回のUpload直接参照・Compute・Readbackが一致し、同一Poolと一次Command Bufferを31回再利用。使用中Poolの分離、保持上限8組、失敗Commandの破棄を検証。
+- Kotlin/JNI GPU統合テスト6件、APIテスト2件成功。スキップなし。Upload CPU read拒否とGPU結果の一致を含む。
+- 両ABIのRelease AAR、サンプルDebug / Release APKのビルド成功。
+- Xclipse実機の性能とNon-coherentメモリは未検証。Wave幅や専用VRAMを仮定していない。

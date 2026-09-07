@@ -154,6 +154,9 @@ JNI_METHOD(void, waitIdle)(JNIEnv* e, jobject, jlong id) { return guard(e, [&] {
 JNI_METHOD(jlong, createBuffer)(JNIEnv* e, jobject, jlong device, jlong length, jint usage, jint storage) {
     return guard(e, [&] { require(length > 0 && storage >= 0 && storage <= 1, "Invalid buffer descriptor"); return put(std::make_shared<Buffer>(get<Device>(device), length, usage, static_cast<Storage>(storage))); });
 }
+JNI_METHOD(jlong, createUploadBuffer)(JNIEnv* e, jobject, jlong device, jlong length, jint usage) {
+    return guard(e, [&] { require(length > 0, "Invalid upload buffer length"); return put(std::make_shared<Buffer>(get<Device>(device), length, usage, Storage::Shared, true)); });
+}
 JNI_METHOD(void, writeBuffer)(JNIEnv* e, jobject, jlong id, jlong offset, jobject source) {
     return guard(e, [&] {
         require(source && offset >= 0, "Invalid buffer write"); const auto count = e->GetDirectBufferCapacity(source); const auto data = e->GetDirectBufferAddress(source);
