@@ -1,0 +1,65 @@
+name: Stage Maven Central release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (for example 0.1.0; must match the checked-out v tag)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: maven-central-release
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag and license
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          version = os.environ['RELEASE_VERSION']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', version)
+          assert not version.endswith('-SNAPSHOT')
+          assert os.environ['GITHUB_REF'] == 'refs/tags/v' + version, 'Run this workflow on the matching v tag'
+          assert pathlib.Path('LICENSE').is_file(), 'Choose and commit the project LICENSE first'
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install Android toolchain
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.1.13356709" "cmake;3.22.1"
+      - name: Build and inspect signed release locally
+        env:
+          ORG_GRADLE_PROJECT_VERSION_NAME: ${{ inputs.version }}
+          ORG_GRADLE_PROJECT_POM_LICENSE_NAME: ${{ vars.POM_LICENSE_NAME }}
+          ORG_GRADLE_PROJECT_POM_LICENSE_URL: ${{ vars.POM_LICENSE_URL }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          ./gradlew :vulkano:generateRepo -PcentralRelease=true
+          python3 tools/verify-publication.py --release --version "$ORG_GRADLE_PROJECT_VERSION_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-maven-repository
+          path: vulkano/build/distributions/*-maven.zip
+      - name: Upload to Central Portal for validation
+        env:
+          ORG_GRADLE_PROJECT_VERSION_NAME: ${{ inputs.version }}
+          ORG_GRADLE_PROJECT_POM_LICENSE_NAME: ${{ vars.POM_LICENSE_NAME }}
+          ORG_GRADLE_PROJECT_POM_LICENSE_URL: ${{ vars.POM_LICENSE_URL }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: ./gradlew :vulkano:publishToMavenCentral -PcentralRelease=true

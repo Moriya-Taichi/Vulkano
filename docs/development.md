@@ -57,3 +57,5 @@ NDK r28とAGP 8.9を使用し、共有ライブラリは16 KBで配置します�
 端末で確認する項目は[Android実機検証](android-validation.md)に記載しています。
 
 過去に実施した検証と実機未検証の項目は[検証結果](validation-results.md)に記載しています。
+
+配布用のAAR・POM・Sources・APIドキュメントをまとめる手順は[ライブラリの公開](publishing.md)を参照してください。
