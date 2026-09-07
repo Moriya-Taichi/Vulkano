@@ -27,7 +27,7 @@ jobs:
           assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', version)
           assert not version.endswith('-SNAPSHOT')
           assert os.environ['GITHUB_REF'] == 'refs/tags/v' + version, 'Run this workflow on the matching v tag'
-          assert pathlib.Path('LICENSE').is_file(), 'Choose and commit the project LICENSE first'
+          assert pathlib.Path('LICENSE').is_file(), 'Project LICENSE is missing'
           PY
       - uses: actions/setup-java@v4
         with:
@@ -40,14 +40,12 @@ jobs:
       - name: Build and inspect signed release locally
         env:
           ORG_GRADLE_PROJECT_VERSION_NAME: ${{ inputs.version }}
-          ORG_GRADLE_PROJECT_POM_LICENSE_NAME: ${{ vars.POM_LICENSE_NAME }}
-          ORG_GRADLE_PROJECT_POM_LICENSE_URL: ${{ vars.POM_LICENSE_URL }}
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          ./gradlew :vulkano:generateRepo -PcentralRelease=true
+          ./gradlew :vulkano:generateRepo -PcentralRelease=true -PVERSION_NAME="$ORG_GRADLE_PROJECT_VERSION_NAME"
           python3 tools/verify-publication.py --release --version "$ORG_GRADLE_PROJECT_VERSION_NAME"
       - uses: actions/upload-artifact@v4
         with:
@@ -56,10 +54,8 @@ jobs:
       - name: Upload to Central Portal for validation
         env:
           ORG_GRADLE_PROJECT_VERSION_NAME: ${{ inputs.version }}
-          ORG_GRADLE_PROJECT_POM_LICENSE_NAME: ${{ vars.POM_LICENSE_NAME }}
-          ORG_GRADLE_PROJECT_POM_LICENSE_URL: ${{ vars.POM_LICENSE_URL }}
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew :vulkano:publishToMavenCentral -PcentralRelease=true
+        run: ./gradlew :vulkano:publishToMavenCentral -PcentralRelease=true -PVERSION_NAME="$ORG_GRADLE_PROJECT_VERSION_NAME"

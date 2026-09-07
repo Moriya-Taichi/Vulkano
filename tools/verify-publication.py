@@ -45,11 +45,12 @@ with zipfile.ZipFile(artifacts[1]) as aar:
         assert 'dev/vulkano/Device.class' in classes.namelist()
         assert 'META-INF/licenses/vulkano/VMA-LICENSE.txt' in classes.namelist()
         assert 'META-INF/licenses/vulkano/spirv-reflect/LICENSE' in classes.namelist()
-        if args.release:
-            assert 'META-INF/licenses/vulkano/Vulkano-LICENSE' in classes.namelist()
+        assert classes.read('META-INF/licenses/vulkano/Vulkano-LICENSE') == (root / 'LICENSE').read_bytes()
+        assert 'META-INF/licenses/vulkano/SPIRV-Headers-LICENSE.txt' in classes.namelist()
 with zipfile.ZipFile(artifacts[2]) as sources:
     assert any(n.endswith('/Device.kt') for n in sources.namelist())
     assert 'engine.cpp' in sources.namelist(), 'Native sources missing'
+    assert sources.read('META-INF/licenses/vulkano/LICENSE') == (root / 'LICENSE').read_bytes()
 with zipfile.ZipFile(artifacts[3]) as docs:
     assert 'index.html' in docs.namelist(), 'Dokka documentation missing'
     assert any('/-device/' in n for n in docs.namelist()), 'Device API documentation missing'
@@ -58,8 +59,8 @@ assert metadata['component']['group'] == args.group
 assert metadata['component']['version'] == args.version
 if args.release:
     assert not args.version.endswith('-SNAPSHOT')
-    assert xml.findtext('m:licenses/m:license/m:name', namespaces=ns)
-    assert xml.findtext('m:licenses/m:license/m:url', namespaces=ns)
+assert xml.findtext('m:licenses/m:license/m:name', namespaces=ns) == 'Apache License, Version 2.0'
+assert xml.findtext('m:licenses/m:license/m:url', namespaces=ns) == 'https://www.apache.org/licenses/LICENSE-2.0.txt'
 bundle = root / f'vulkano/build/distributions/vulkano-{args.version}-maven.zip'
 with zipfile.ZipFile(bundle) as archive:
     for file in artifacts:
