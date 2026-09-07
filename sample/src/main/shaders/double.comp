@@ -1,0 +1,8 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer Values { float values[]; };
+layout(push_constant) uniform Parameters { uint count; } parameters;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i < parameters.count) values[i] *= 2.0;
+}

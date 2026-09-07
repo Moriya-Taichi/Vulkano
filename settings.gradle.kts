@@ -4,4 +4,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "Vulkano"
-include(":vulkano")
+include(":vulkano", ":sample")
