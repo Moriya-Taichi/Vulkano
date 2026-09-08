@@ -62,6 +62,9 @@ void validateTileBinding(const Pipeline &pipeline, const BindingLayout &schema, 
             const auto &a = render.colors[render.passLayout->resolveColors[n]];
             match(a.resolve, a.resolveMip, a.resolveLayer, uint32_t(render.colors.size()) + bool(render.depth) + n);
         }
+    if (render.passLayout && render.passLayout->hasDepthResolve())
+        match(render.depthResolve, render.depthResolveMip, render.depthResolveLayer,
+              render.passLayout->depthResolveIndex());
     require(index != UINT32_MAX, "Tile descriptor does not match a framebuffer attachment");
     bool input = false, color = index < render.colors.size(), depth = index == render.colors.size() && render.depth;
     if (render.passLayout) {

@@ -21,7 +21,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Rasterization | RenderPipelineDescriptor | Primitive、Cull、Winding、Wireframe、Clip/Clamp、Sample Mask、Sample Shading |
 | Viewport / Scissor | setViewports / setScissorRects | 複数Viewportは端末依存 |
 | 可変Shading Rate | fragmentSize / fragmentShadingRates | Pipeline、Primitive、Rate Map Attachment。サイズとSample Countを照合 |
-| Subpass / Input Attachment | RenderPassLayout / nextSubpass | Color/Depth/MSAA入力、Color Resolve、Attachment保持、BY_REGION依存関係 |
+| Subpass / Input Attachment | RenderPassLayout / nextSubpass | Color/Depth/Stencil/MSAA入力、Color/Depth/Stencil Resolve、Rate Map、Attachment保持、BY_REGION依存関係 |
 | Tile Compute / Tile Attachment | perTile / dispatchTileThreadgroups / dispatchTile | VK_QCOM_tile_shading。色・深度・Stencil・Input・SampledのFeature、Apron、Tile内Barrier |
 | Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
 | Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer、ASTC LDR/HDR、ETC/EAC、BC、PVRTC |
@@ -49,15 +49,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | ML Graph | MachineLearningPipelineState / MachineLearningCommandEncoder | VK_ARM_data_graph。GPU演算セット照会、SPIR-V Graph、Weights、Function Constants、Session Memory、Queue同期、Cacheからの復元 |
 | メモリモデル | StorageMode / Vulkan Memory Model | AndroidのShared Memory、Flush/Invalidate、任意のVulkan Memory Model Feature |
 
-## Vulkanに手段があるものの残っている機能
-
-次の項目はVulkan非対応という理由で除外していません。
-現在のWrapperでの未実装項目として扱います。
-
-| 機能 | 残る実装 |
-| --- | --- |
-| Subpassの追加構成 | 明示的なSubpass LayoutとDepth/Stencil Resolve・Rate Mapの組み合わせ |
-
 ## 組み合わせの制約
 
 Device Generated Commandsは、対応するShader StageとPipeline Binding Stageを個別に問い合わせます。
@@ -74,8 +65,10 @@ Storage Imageとして参照するTile Attachmentには`STORAGE` Usageが必要�
 Apronは周辺画素の読み取り用で、書き込み先にはできません。
 Tile内ではTessellation、Mesh、Ray Tracing、Visibility Queryを使用できません。
 
-SubpassはColor ResolveとMultiviewに対応します。
-Depth/Stencil ResolveとRate Mapは単一Subpassで利用でき、明示的なSubpass Layoutとの組み合わせは未実装です。
+SubpassはColor/Depth/Stencil Resolve、Rate Map、Multiviewに対応します。
+Depth/Stencil Resolveを実行するSubpassを指定し、その結果を後続SubpassのInput Attachmentとして使用できます。
+ResolveのModeはLayoutとDepth Attachmentで一致させます。
+同じSubpassでResolve先をInput Attachmentとして読む構成は受け付けません。
 Input Attachmentには描画先と同じImage、Mip、Layer、FormatのViewを指定します。
 同じSubpassで同じAttachmentへ書き込みながらInput Attachmentとして読む構成は受け付けません。
 一般のStorage Resourceについては、Draw間の任意の依存関係を自動で推定しません。

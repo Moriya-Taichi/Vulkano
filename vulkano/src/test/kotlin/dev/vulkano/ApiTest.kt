@@ -4,6 +4,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
+    @Test fun subpassResolveInputsMustFollowTheirProducer() {
+        val layout = RenderPassLayout(listOf(PixelFormat.RGBA8_UNORM), listOf(
+            RenderSubpass(listOf(0), usesDepthAttachment = true, resolveDepthStencil = true),
+            RenderSubpass(emptyList(), inputAttachments = listOf(2, 3))),
+            depthFormat = PixelFormat.DEPTH32_FLOAT, sampleCount = 4, resolveColorAttachments = setOf(0))
+        assertEquals(2, layout.resolveAttachmentIndex(0))
+        assertEquals(3, layout.depthResolveAttachmentIndex())
+        assertThrows(IllegalArgumentException::class.java) {
+            layout.copy(subpasses = listOf(RenderSubpass(listOf(0), listOf(2))))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            layout.copy(subpasses = listOf(RenderSubpass(listOf(0), listOf(3), true, true)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            layout.copy(subpasses = listOf(RenderSubpass(listOf(0), resolveDepthStencil = true)))
+        }
+        assertThrows(IllegalArgumentException::class.java) { layout.copy(sampleCount = 1) }
+    }
     @Test fun motionTransformsOwnTheirEndpointsAndValidateSrt() {
         val translation = floatArrayOf(4f, 5f, 6f)
         val srt = SrtTransform(translation = translation)

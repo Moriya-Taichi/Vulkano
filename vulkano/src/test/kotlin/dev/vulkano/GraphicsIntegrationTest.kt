@@ -2749,7 +2749,12 @@ class GraphicsIntegrationTest {
         }
 
     @Test
-    fun rasterizationRateMapAttachmentDraw(): Unit {
+    fun rasterizationRateMapAttachmentDraw(): Unit = checkRateMapDraw(false)
+
+    @Test
+    fun subpassRateMapAttachmentsDraw(): Unit = checkRateMapDraw(true)
+
+    private fun checkRateMapDraw(subpasses: Boolean) {
         val available = device().use { it.capabilities.availableFeatures }
         assumeTrue(Feature.ATTACHMENT_SHADING_RATE in available)
         device(setOf(Feature.ATTACHMENT_SHADING_RATE)).use { d ->
@@ -2786,24 +2791,34 @@ class GraphicsIntegrationTest {
                     )
                 )
             val output = d.makeBuffer(1024)
+            val layout = if (subpasses) RenderPassLayout(listOf(PixelFormat.RGBA8_UNORM),
+                listOf(RenderSubpass(listOf(0)), RenderSubpass(listOf(0)))) else null
             val p =
                 d.makeRenderPipelineState(
                     RenderPipelineDescriptor(
                         d.function("fullscreen.vert.spv"),
                         d.function("solid.frag.spv"),
                         rateMapTexelSize = texel,
+                        subpassLayout = layout,
                     )
                 )
+            val second = if (layout != null) d.makeRenderPipelineState(RenderPipelineDescriptor(
+                d.function("fullscreen.vert.spv"), d.function("solid.frag.spv"),
+                rateMapTexelSize = texel, subpassLayout = layout, subpassIndex = 1)) else null
             d.submit {
                 blit { copy(upload, map) }
                 render(
                     RenderPassDescriptor(
                         listOf(ColorAttachment(target)),
                         rasterizationRateMap = RasterizationRateMap(map, texel),
+                        subpassLayout = layout,
                     )
                 ) {
                     setRenderPipelineState(p)
                     drawPrimitives(3)
+                    if (second != null) {
+                        nextSubpass(); setRenderPipelineState(second); drawPrimitives(3)
+                    }
                 }
                 blit { copy(target, output) }
             }
@@ -2921,6 +2936,82 @@ class GraphicsIntegrationTest {
                 )
             }
         }
+
+    @Test fun subpassDepthResolveRetainsResultsAcrossPasses(): Unit = checkSubpassResolve(false, false, false)
+    @Test fun subpassStencilResolveRetainsResultsAcrossPasses(): Unit = checkSubpassResolve(true, false, false)
+    @Test fun subpassDepthResolveSupportsMultiview(): Unit = checkSubpassResolve(false, false, true)
+    @Test fun subpassDepthResolveCombinesWithRateMap(): Unit = checkSubpassResolve(false, true, false)
+
+    private fun checkSubpassResolve(stencil: Boolean, withRateMap: Boolean, multiview: Boolean) {
+        val features = mutableSetOf(Feature.DEPTH_STENCIL_RESOLVE)
+        if (withRateMap) features += Feature.ATTACHMENT_SHADING_RATE
+        if (multiview) features += Feature.MULTIVIEW
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val format = if (stencil) PixelFormat.STENCIL8 else PixelFormat.DEPTH32_FLOAT
+            val layers = if (multiview) 2 else 1
+            val viewMask = if (multiview) 3 else 0
+            val type = if (multiview) TextureType.TYPE_2D_ARRAY else TextureType.TYPE_2D
+            val depth = d.makeTexture(TextureDescriptor(4, 4, format, setOf(TextureUsage.DEPTH_ATTACHMENT),
+                StorageMode.MEMORYLESS, sampleCount = 4, arrayLength = layers, textureType = type))
+            val resolvedDepth = d.makeTexture(TextureDescriptor(4, 4, format,
+                setOf(TextureUsage.DEPTH_ATTACHMENT, TextureUsage.INPUT_ATTACHMENT),
+                arrayLength = layers, textureType = type))
+            val colors = List(3) { d.makeTexture(TextureDescriptor(4, 4,
+                usage = setOf(TextureUsage.COLOR_ATTACHMENT), storageMode = StorageMode.MEMORYLESS,
+                sampleCount = 4, arrayLength = layers, textureType = type)) }
+            val resolvedColor = d.makeTexture(TextureDescriptor(4, 4,
+                usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                arrayLength = layers, textureType = type))
+            val layout = RenderPassLayout(List(3) { PixelFormat.RGBA8_UNORM }, listOf(
+                RenderSubpass(listOf(0), usesDepthAttachment = true, resolveDepthStencil = true),
+                RenderSubpass(listOf(1)),
+                RenderSubpass(listOf(2), listOf(5))), depthFormat = format, sampleCount = 4,
+                resolveColorAttachments = setOf(2))
+            assertEquals(5, layout.depthResolveAttachmentIndex())
+            val texel = if (withRateMap) d.rasterizationRateMapLimits().minimumTexelSize else null
+            val map = texel?.let {
+                d.makeTexture(TextureDescriptor((4 + it.width - 1) / it.width, (4 + it.height - 1) / it.height,
+                    PixelFormat.R8_UINT, setOf(TextureUsage.SHADING_RATE_ATTACHMENT, TextureUsage.TRANSFER_DESTINATION)))
+            }
+            val upload = map?.let {
+                val rate = d.fragmentShadingRates().first { 4 in it.sampleCounts }.fragmentSize
+                d.makeBuffer(maxOf(4, it.width * it.height).toLong()).apply {
+                    write(ByteArray(maxOf(4, it.width * it.height)) { RasterizationRateMap.encode(rate) })
+                }
+            }
+            fun pipeline(index: Int) = d.makeRenderPipelineState(RenderPipelineDescriptor(
+                d.function("fullscreen.vert.spv"),
+                d.function(if (index == 2) (if (stencil) "input_stencil.frag.spv" else "input_depth.frag.spv") else "solid.frag.spv"),
+                depthFormat = if (index == 0) format else null,
+                depthStencil = if (stencil) DepthStencilDescriptor(depthTestEnabled = false, depthWriteEnabled = false,
+                    frontFaceStencil = if (index == 0) StencilDescriptor(depthStencilPassOperation = StencilOperation.REPLACE) else null)
+                    else DepthStencilDescriptor(),
+                sampleCount = 4, viewMask = viewMask, subpassLayout = layout, subpassIndex = index, rateMapTexelSize = texel))
+            val pipelines = List(3) { pipeline(it) }
+            val output = d.makeBuffer(64L * layers)
+            fun renderPass(resolve: Texture?) = RenderPassDescriptor(colors.mapIndexed { index, color ->
+                ColorAttachment(color, storeAction = StoreAction.DONT_CARE, resolveTexture = if (index == 2) resolvedColor else null)
+            }, DepthAttachment(depth, clearStencil = 91, resolveTexture = resolve), viewMask = viewMask,
+                subpassLayout = layout, rasterizationRateMap = if (map != null) RasterizationRateMap(map, checkNotNull(texel)) else null)
+            assertThrows(IllegalArgumentException::class.java) { d.submit { render(renderPass(null)) {} } }
+            d.submit {
+                if (map != null) blit { copy(checkNotNull(upload), map) }
+                render(renderPass(resolvedDepth)) {
+                    for (index in 0..2) {
+                        if (index > 0) nextSubpass()
+                        setRenderPipelineState(pipelines[index])
+                        if (index == 0 && stencil) setStencilReferenceValue(37)
+                        if (index == 2) setTexture(resolvedDepth, 0)
+                        drawPrimitives(3)
+                    }
+                }
+                blit { copy(resolvedColor, output, TextureRegion(size = Size(4, 4), sliceCount = layers)) }
+            }
+            val expected = byteArrayOf((if (stencil) 37 else 128).toByte(), 0, 0, 255.toByte())
+            assertArrayEquals(ByteArray(64 * layers) { expected[it % 4] }, output.readBytes(64 * layers))
+        }
+    }
 
     @Test
     fun depthInputAttachmentReadsPreviousSubpass(): Unit =

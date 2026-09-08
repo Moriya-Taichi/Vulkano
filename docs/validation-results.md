@@ -24,6 +24,20 @@ Motionの頂点・Matrix・SRTのGPUテスト3件と、コピー・圧縮・復�
 Refitのテストには、入力差し替え、同一Command内の再更新、閉じた入力Bufferの保持、送信失敗時の状態保全を含みます。
 Validation ErrorとSynchronization Hazardは検出されていません。
 
+Motion BlurとRefitを含むCommit `3eb240d217786d5e7cd7b3d71c3afb2ff90304ca`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34259072369)も成功しました。
+Native 763件、Kotlin/JNI 79件中57件成功・22件スキップ・失敗0件です。
+コピー・圧縮・復元した加速構造へのRefit、入力差し替え、送信失敗時の状態保全はCIのGPUで実行して成功しました。
+MotionのGPUテスト3件はCIでも非対応によるスキップです。
+AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物を検証し、Validation ErrorとSynchronization Hazardは検出されていません。
+
+続いて、明示的なSubpassとDepth/Stencil Resolve・Rate Mapの組み合わせを追加しました。
+ローカルではNative 763件、Kotlin/JNI 85件中53件成功・32件スキップ・失敗0件です。
+Depth・StencilのResolveを後続Subpassから読み取り、未使用のSubpassを挟むAttachment保持とMultiviewを検証しました。
+Color ResolveとDepth/Stencil Resolveを同じRender Pass内で使い、画素単位で結果が一致しました。
+同じSubpassでResolve先を入力にする構成と、Layoutに必要なResolve先が不足する構成を拒否しました。
+Rate MapのみのSubpassと、Depth Resolve・Rate Mapを同時に使うGPUテストは、ローカルGPUが非対応のためスキップしています。
+Validation ErrorとSynchronization Hazardは検出されていません。
+
 この変更では次を確認しました。
 
 | 検証 | 結果 |

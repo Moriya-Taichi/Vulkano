@@ -69,10 +69,10 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
                       VkAttachmentStoreOp depthStore = VK_ATTACHMENT_STORE_OP_DONT_CARE, uint32_t viewMask = 0,
                       const Render *render = nullptr) {
     if (render && render->passLayout) {
-        require(!render->depthResolve && !render->rateMapTexelSize.width,
-                "Subpass layout cannot combine depth resolve or rate map");
+        if (render->rateMapTexelSize.width)
+            validateRateTexel(d, render->rateMapTexelSize);
         return makeSubpassPass(d, *render->passLayout, targets, depthLoad, depthStore, viewMask, render->tileShading,
-                               render->tileApron);
+                               render->tileApron, render->rateMapTexelSize);
     }
     std::vector<int> key{int(colors.size()), depth, samples, depthLoad, depthStore, int(viewMask)};
     const bool tile = render && render->tileShading;
@@ -2496,7 +2496,14 @@ void Command::render(Render op) {
     }
     if (op.passLayout) {
         validateSubpassLayout(*d, *op.passLayout);
-        require(!op.depthResolve && !op.rateMap, "Unsupported subpass extension combination");
+        require(bool(op.depthResolve) == op.passLayout->hasDepthResolve(),
+                "Depth resolve target differs from subpass layout");
+        if (op.depthResolve) {
+            require(!op.depth->depth() || op.depthResolveMode == op.passLayout->depthResolveMode,
+                    "Depth resolve mode differs from subpass layout");
+            require(!op.depth->stencil() || op.stencilResolveMode == op.passLayout->stencilResolveMode,
+                    "Stencil resolve mode differs from subpass layout");
+        }
         require(op.passLayout->colors == formats && op.passLayout->samples == samples &&
                     op.passLayout->depth == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED),
                 "Render attachments do not match subpass layout");
@@ -2508,15 +2515,11 @@ void Command::render(Render op) {
         std::set<uint32_t> usedAttachments;
         for (const auto &sub : op.passLayout->subpasses) {
             for (auto input : sub.inputs) {
-                const auto base = op.colors.size() + bool(op.depth);
-                auto t = input < op.colors.size() ? op.colors[input].texture
-                         : input < base           ? op.depth
-                                                  : op.colors[op.passLayout->resolveColors[input - base]].resolve;
-                require(t && (t->usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT),
+                const auto a = subpassAttachment(op, input);
+                require(a.texture && (a.texture->usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT),
                         "Subpass input requires INPUT_ATTACHMENT usage");
                 if (!usedAttachments.count(input))
-                    require(input < base && (input < op.colors.size() ? op.colors[input].load : op.depthLoad) ==
-                                                VK_ATTACHMENT_LOAD_OP_LOAD,
+                    require(a.load == VK_ATTACHMENT_LOAD_OP_LOAD,
                             "Attachment first used as input must LOAD previously initialized contents");
             }
             usedAttachments.insert(sub.inputs.begin(), sub.inputs.end());
@@ -2527,6 +2530,8 @@ void Command::render(Render op) {
                     usedAttachments.insert(op.colors.size() + bool(op.depth) + n);
             if (sub.depth)
                 usedAttachments.insert(uint32_t(op.colors.size()));
+            if (sub.resolveDepth)
+                usedAttachments.insert(op.passLayout->depthResolveIndex());
         }
     }
     require(bool(op.rateMap) == bool(op.rateMapTexelSize.width),
@@ -2665,17 +2670,9 @@ void Command::render(Render op) {
                             schema->inputAttachmentIndex < op.passLayout->subpasses[draw.subpass].inputs.size(),
                         "Missing input attachment index");
                 const auto index = op.passLayout->subpasses[draw.subpass].inputs[schema->inputAttachmentIndex];
-                const auto base = op.colors.size() + bool(op.depth);
-                const auto *resolved = index >= base ? &op.colors[op.passLayout->resolveColors[index - base]] : nullptr;
-                const auto &t = resolved                   ? resolved->resolve
-                                : index < op.colors.size() ? op.colors[index].texture
-                                                           : op.depth;
-                const auto mip = resolved                   ? resolved->resolveMip
-                                 : index < op.colors.size() ? op.colors[index].mip
-                                                            : op.depthMip;
-                const auto layer = resolved                   ? resolved->resolveLayer
-                                   : index < op.colors.size() ? op.colors[index].layer
-                                                              : op.depthLayer;
+                const auto attachment = subpassAttachment(op, index);
+                const auto &t = attachment.texture;
+                const auto mip = attachment.mip, layer = attachment.layer;
                 require(b.texture && &b.texture->root() == &t->root() && b.texture->format == t->format &&
                             b.texture->baseMip == t->baseMip + mip && b.texture->baseLayer == t->baseLayer + layer &&
                             b.texture->options.layers == op.layers,

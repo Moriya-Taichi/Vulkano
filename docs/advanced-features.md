@@ -337,7 +337,12 @@ Memorylessでも利用でき、Subpass間の読み取りに必要な内容をRen
 MSAA入力には`subpassInputMS`を使います。
 Color Resolveを行う場合はLayoutの`resolveColorAttachments`と、Render Passの`ColorAttachment.resolveTexture`を揃えます。
 Resolve結果を入力にする際のIndexは`layout.resolveAttachmentIndex(colorIndex)`で取得できます。
-DepthはColor Attachmentの後、ResolveはDepthの後に並びます。
+DepthはColor Attachmentの後、Color ResolveはDepthの後に並び、Depth/Stencil Resolveが最後に続きます。
+`RenderSubpass.resolveDepthStencil = true`のSubpassでDepth/StencilをResolveします。
+Layoutの`depthResolveMode`・`stencilResolveMode`を`DepthAttachment`と揃え、`resolveTexture`を渡します。
+結果を読む後続Subpassには`layout.depthResolveAttachmentIndex()`をInput AttachmentのIndexとして指定します。
+Resolve結果を使わないSubpassを挟んでも、後続の読み取りまで内容を保持します。
+Rate Mapは明示的なSubpass Layoutでも利用でき、すべてのSubpassのPipelineとRender Passで同じTexel Sizeを指定します。
 同じSubpassで読み書きするAttachmentは分離します。
 
 ## 位置ごとのShading Rate

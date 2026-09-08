@@ -319,7 +319,7 @@ struct Shader {
 void validateCooperativeShader(Device &, const Shader &, const std::array<uint32_t, 3> &);
 struct SubpassDescription {
     std::vector<uint32_t> colors, inputs;
-    bool depth = false;
+    bool depth = false, resolveDepth = false;
 };
 struct SubpassLayout {
     std::vector<VkFormat> colors;
@@ -327,6 +327,10 @@ struct SubpassLayout {
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     std::vector<SubpassDescription> subpasses;
     std::vector<uint32_t> resolveColors;
+    VkResolveModeFlagBits depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                          stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    bool hasDepthResolve() const;
+    uint32_t depthResolveIndex() const;
     std::vector<int> key;
 };
 std::shared_ptr<SubpassLayout> parseSubpassLayout(const std::vector<int> &);
@@ -469,7 +473,8 @@ struct Render {
 };
 VkRenderPass makeSubpassPass(Device &, const SubpassLayout &, const std::vector<Attachment> &, VkAttachmentLoadOp,
                              VkAttachmentStoreOp, uint32_t viewMask, bool tileShading = false,
-                             VkExtent2D tileApron = {});
+                             VkExtent2D tileApron = {}, VkExtent2D rateMapTexelSize = {});
+Attachment subpassAttachment(const Render &, uint32_t index);
 struct ImageRegion {
     uint32_t mip = 0, layer = 0, layers = 1;
     VkOffset3D origin{};
