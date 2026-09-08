@@ -354,3 +354,29 @@ Shader側は対応端末でSPIR-V Sparse Residency命令を使えます。
 
 Mapping操作は先行Commandの完了を待つ同期APIです。
 Frameの描画中に頻繁に呼ぶことを避け、Region単位でまとめて更新します。
+
+## 外部Fenceとの同期
+
+`EXTERNAL_SYNC_FD`が利用可能な端末では、AndroidなどのSYNC_FDをVulkanのBinary Semaphoreに取り込めます。
+ImportはFDを複製し、渡した`SyncFd`の所有権を変更しません。
+
+```kotlin
+val signal = device.makeExternalSemaphore()
+command.signalExternalSemaphore(signal)
+command.commit()
+val fence = signal.exportSyncFd() // GPU完了前でも取得可能
+// 他のAPIに渡す場合はfence.detach()でFDの所有権を移す。
+fence.close()
+```
+
+`device.importSyncFd(fd)`で取り込んだSemaphoreは、Commandの`waitForExternalSemaphore`で待機します。
+Semaphoreは1回だけ使えます。
+GPUでSignalするSemaphoreもExportは1回で、同じSignalをWaitとExportの両方に消費することはできません。
+`SyncFd.adopt(-1)`は、すでに完了したFenceを表します。
+
+## Immutable Sampler
+
+`BindingLayout.immutableSampler`でSamplerをPipelineに固定できます。
+固定したSamplerはPipelineが保持するため、作成元のSamplerを閉じても利用できます。
+描画時は`setTexture(texture, index)`にSamplerを渡す必要がありません。
+独立したSampler Bindingを固定した場合は、そのBindingへの`setSampler`も不要です。

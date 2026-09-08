@@ -22,6 +22,7 @@ struct Device;
 struct Extensions;
 struct Heap;
 struct SparseState;
+struct ExternalSemaphore;
 struct TextureBuffer;
 struct SharedEvent;
 struct CounterPool;
@@ -93,6 +94,7 @@ enum Feature : uint64_t {
     CooperativeMatrix = 1ull << 58,
     SparseResources = 1ull << 59
 };
+enum ExtraFeature : uint64_t { HardwareBufferInterop = 1, ExternalSyncFd = 2, SamplerYcbcr = 4 };
 enum class Storage { Shared, Private, Memoryless };
 
 struct Object {
@@ -106,7 +108,7 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t family = 0, timestampBits = 0, sparseFamily = 0;
     VkQueue sparseQueue = VK_NULL_HANDLE;
-    uint64_t available = 0, enabled = 0;
+    uint64_t available = 0, enabled = 0, availableExtra = 0, enabledExtra = 0;
     VkDeviceSize sparseVirtualBytes = 0;
     VkPhysicalDeviceFeatures coreFeatures{};
     std::shared_ptr<Extensions> extensions;
@@ -142,7 +144,7 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     std::vector<RetiredSurface> retiredSurfaces;
     size_t liveDrawables = 0, liveSurfaces = 0;
     void reclaimPresentation(bool shutdown = false);
-    static std::shared_ptr<Device> create(uint64_t required, bool validation, bool allowSoftware);
+    static std::shared_ptr<Device> create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra = 0);
     Device *owner() const override { return const_cast<Device *>(this); }
     void collect();
     void waitIdle();
@@ -227,6 +229,9 @@ struct Sampler : Resource {
     VkSampler sampler = VK_NULL_HANDLE;
     bool linear;
     bool compare = false;
+    VkSamplerYcbcrConversion conversion = VK_NULL_HANDLE;
+    uint32_t descriptorCost = 1;
+    std::shared_ptr<Resource> conversionOwner;
     VkSamplerReductionMode reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
     Sampler(std::shared_ptr<Device>, bool linear, bool repeat, float anisotropy,
             VkSamplerMipmapMode mipFilter = VK_SAMPLER_MIPMAP_MODE_NEAREST, float minLod = 0,
@@ -250,6 +255,10 @@ struct BindingLayout {
     bool arrayed = false, multisampled = false, shadow = false, runtime = false;
     uint32_t inputAttachmentIndex = 0;
     int numericType = -1;
+    std::shared_ptr<Sampler> immutableSampler;
+    uint64_t descriptorCost() const {
+        return uint64_t(count) * (immutableSampler ? immutableSampler->descriptorCost : 1);
+    }
 };
 struct Shader {
     std::vector<uint32_t> code;
@@ -429,6 +438,9 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     void trace(std::shared_ptr<RayTracingPipeline>, std::vector<Binding>, std::vector<uint8_t>,
                std::array<uint32_t, 3>);
     std::vector<std::pair<std::shared_ptr<SharedEvent>, uint64_t>> eventWaits, eventSignals;
+    std::vector<std::shared_ptr<ExternalSemaphore>> externalWaits, externalSignals;
+    void waitExternal(std::shared_ptr<ExternalSemaphore>);
+    void signalExternal(std::shared_ptr<ExternalSemaphore>);
     std::vector<std::shared_ptr<CounterPool>> counters;
     std::vector<uint32_t> counterIndices;
     void sample(std::shared_ptr<CounterPool>, uint32_t index);

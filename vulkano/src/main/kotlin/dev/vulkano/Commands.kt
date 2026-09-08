@@ -35,6 +35,20 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
         check(encoder == null) { "End the current encoder first" }
     }
 
+    /** Waits once before this command starts; uses a binary external semaphore. */
+    fun waitForExternalSemaphore(semaphore: ExternalSemaphore): Unit = access {
+        recording()
+        require(semaphore.device === device)
+        Native.waitExternalSemaphore(it, semaphore.handle())
+    }
+
+    /** Signals once after all work completes. Submit before exporting its SyncFd. */
+    fun signalExternalSemaphore(semaphore: ExternalSemaphore): Unit = access {
+        recording()
+        require(semaphore.device === device)
+        Native.signalExternalSemaphore(it, semaphore.handle())
+    }
+
     fun makeComputeCommandEncoder(): ComputeCommandEncoder = access {
         recording()
         ComputeCommandEncoder(this).also { encoder = it }

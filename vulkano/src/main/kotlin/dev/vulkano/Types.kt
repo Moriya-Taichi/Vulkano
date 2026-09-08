@@ -1,7 +1,7 @@
 package dev.vulkano
 
 /** Optional features are queried independently and enabled only when requested. */
-enum class Feature(internal val bit: Long) {
+enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     SAMPLER_ANISOTROPY(1),
     SHADER_INT16(2),
     STORAGE_BUFFER_16_BIT_ACCESS(4),
@@ -62,6 +62,9 @@ enum class Feature(internal val bit: Long) {
     ATTACHMENT_SHADING_RATE(1L shl 57),
     COOPERATIVE_MATRIX(1L shl 58),
     SPARSE_RESOURCES(1L shl 59),
+    ANDROID_HARDWARE_BUFFER(1, 1),
+    EXTERNAL_SYNC_FD(2, 1),
+    SAMPLER_YCBCR_CONVERSION(4, 1),
 }
 
 enum class StorageMode {
@@ -264,7 +267,12 @@ data class ClearColor(
     val alpha: Float = 1f,
 )
 
-data class BindingLayout(val index: Int, val type: BindingType, val count: Int = 1) {
+data class BindingLayout(
+    val index: Int,
+    val type: BindingType,
+    val count: Int = 1,
+    val immutableSampler: Sampler? = null,
+) {
     init {
         require(index >= 0 && count > 0)
     }

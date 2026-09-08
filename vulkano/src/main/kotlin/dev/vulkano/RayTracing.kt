@@ -241,7 +241,7 @@ fun Device.makeRayTracingPipelineState(
             descriptor.shaders.map { it.stage.vk }.toIntArray(),
             descriptor.groups.flatMap { it.pack() }.toIntArray(),
             descriptor.maxRecursionDepth,
-            descriptor.bindings.flatMap { listOf(it.index, it.type.vk, it.count) }.toIntArray(),
+            packLayout(descriptor.bindings),
             descriptor.pushConstantBytes,
         )
     RayTracingPipelineState(this, id, Native.pipelineLocalSize(id)[3])

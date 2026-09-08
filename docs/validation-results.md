@@ -75,3 +75,12 @@ Android実機での実行結果は含みません。
 追加のスキップはSparse BufferとSparse Textureの2件で、使用したLavapipeがSparse Residencyに対応しないためです。
 Sparse Shaderはglslcでコンパイルし、spirv-valで検証しました。
 Native回帰テスト724項目も成功しました。
+
+### 外部同期とImmutable Sampler
+
+Sparseまでを含むCommit `8b96ae8832bb80512954ccdac762fff12e98fd37`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34226576729)が成功しました。
+その後、外部SYNC_FDとImmutable Samplerを追加しました。
+ローカルではNative 725項目、Kotlin/JNI 44件中35件成功・9件スキップ・失敗0件です。
+Immutable SamplerはCombinedとSeparateの両方で、Samplerを閉じた後のGPU描画と読み戻しを確認しました。
+この環境にSYNC_FD対応がないため、GPU Signal・Export・Import・Waitの成功経路はスキップしています。
+Feature未有効時の拒否と完了済みFDの所有権操作は実行しました。

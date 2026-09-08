@@ -24,7 +24,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
 | Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer/圧縮Format |
 | Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Swizzle、Usage制限、VkBufferView |
-| Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color |
+| Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color、Immutable Sampler |
 | 転送 | Blit Encoder | Buffer、Texture領域、Mip、Slice、Fill |
 | Argument Bufferに相当する配列 | BindingLayout / arrayElement | 固定Descriptor Array、端末依存のRuntime Array、BDAによる間接参照 |
 | Function Constants | FunctionConstants | 32ビットのSpecialization Constants |
@@ -34,7 +34,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Ray Tracing Pipeline | RayTracingPipelineState / traceRays | Raygen、Miss、Hit、Intersection、Callable、SBT。端末依存 |
 | Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
 | Sparse Resource | makeSparseBuffer / makeSparseTexture | Page/Tile/Mip TailのMapping、必要なMetadataの確保、Mapping共有、CPU/Shader Residency検査 |
-| Event | makeSharedEvent | Timeline Semaphore。WaitはCommandの開始前、Signalは完了時 |
+| Event / 外部同期 | makeSharedEvent / makeExternalSemaphore | TimelineとBinary Semaphore、SYNC_FDのImport/Export。WaitはCommand開始前、Signalは完了時 |
 | Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
 | Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
 | SIMD / 数値型 / Atomic | SPIR-V Shader | Subgroup、8/16/64ビット型、64ビット整数Buffer Atomic、32ビットFloat Buffer Atomicは個別Feature |
@@ -52,7 +52,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
 | GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
-| Androidとの画像共有 | AHardwareBuffer、外部Semaphore、Camera用Format変換 |
+| Androidとの画像共有 | AHardwareBuffer、Camera用Format変換 |
 | 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
 

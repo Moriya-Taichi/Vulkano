@@ -7,7 +7,12 @@ internal object Native {
         System.loadLibrary("vulkano")
     }
 
-    external fun createDevice(features: Long, validation: Boolean, allowSoftware: Boolean): Long
+    external fun createDevice(
+        features: Long,
+        validation: Boolean,
+        allowSoftware: Boolean,
+        extra: Long,
+    ): Long
 
     external fun deviceName(device: Long): String
 
@@ -233,6 +238,18 @@ internal object Native {
     ): Long
 
     external fun aliasResources(command: Long, before: Long, after: Long)
+
+    external fun createExternalSemaphore(device: Long, fd: Int): Long
+
+    external fun exportSyncFd(semaphore: Long): Int
+
+    external fun duplicateSyncFd(fd: Int): Int
+
+    external fun closeSyncFd(fd: Int)
+
+    external fun waitExternalSemaphore(command: Long, semaphore: Long)
+
+    external fun signalExternalSemaphore(command: Long, semaphore: Long)
 
     external fun sparseCapabilities(device: Long): LongArray
 

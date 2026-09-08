@@ -65,12 +65,21 @@ struct Extensions {
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR matrixProperties{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
     std::vector<VkCooperativeMatrixPropertiesKHR> matrixConfigurations;
-    uint64_t available = 0;
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
+    VkExternalSemaphoreProperties syncFdProperties{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+    PFN_vkImportSemaphoreFdKHR importSemaphoreFd = nullptr;
+    PFN_vkGetSemaphoreFdKHR getSemaphoreFd = nullptr;
+#ifdef __ANDROID__
+    PFN_vkGetAndroidHardwareBufferPropertiesANDROID hardwareBufferProperties = nullptr;
+#endif
+    uint64_t available = 0, availableExtra = 0;
     bool core12 = false;
     void *chain = nullptr;
     std::vector<VkExtensionProperties> supported;
     void inspect(VkPhysicalDevice, uint32_t api, const std::vector<VkExtensionProperties> &);
     void enable(uint64_t, std::vector<const char *> &);
     void load(Device &);
+    void enableExtra(uint64_t, std::vector<const char *> &);
 };
 } // namespace vulkano

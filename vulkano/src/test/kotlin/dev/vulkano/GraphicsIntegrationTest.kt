@@ -36,6 +36,110 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun immutableSamplersRetainClosedSamplerAndNeedNoDynamicBinding(): Unit =
+        device().use { d ->
+            val texture =
+                d.makeTexture(
+                    TextureDescriptor(
+                        1,
+                        1,
+                        usage = setOf(TextureUsage.SAMPLED, TextureUsage.TRANSFER_DESTINATION),
+                    )
+                )
+            val upload = d.makeBuffer(4).apply { write(byteArrayOf(21, 42, 63, -1)) }
+            val output = d.makeBuffer(4)
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        1,
+                        1,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            d.submit { blit { copy(upload, texture) } }
+            for (separate in listOf(false, true)) {
+                val sampler = d.makeSampler()
+                val bindings =
+                    if (separate)
+                        listOf(
+                            BindingLayout(0, BindingType.SAMPLED_IMAGE),
+                            BindingLayout(1, BindingType.SAMPLER, immutableSampler = sampler),
+                        )
+                    else
+                        listOf(
+                            BindingLayout(
+                                0,
+                                BindingType.SAMPLED_TEXTURE,
+                                immutableSampler = sampler,
+                            )
+                        )
+                val pipeline =
+                    d.makeRenderPipelineState(
+                        d.function("fullscreen.vert.spv"),
+                        d.function(if (separate) "separate.frag.spv" else "sample.frag.spv"),
+                        bindings = bindings,
+                    )
+                sampler.close()
+                d.submit {
+                    render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                        setRenderPipelineState(pipeline)
+                        setTexture(texture, 0)
+                        drawPrimitives(3)
+                    }
+                    blit { copy(target, output) }
+                }
+                assertArrayEquals(byteArrayOf(21, 42, 63, -1), output.readBytes(4))
+            }
+        }
+
+    @Test
+    fun externalSyncRequiresFeatureAndOwnsFd(): Unit =
+        device().use { d ->
+            SyncFd.adopt(-1).use { signalled ->
+                signalled.duplicate().use { copy -> assertEquals(-1, copy.detach()) }
+                assertThrows(IllegalArgumentException::class.java) { d.importSyncFd(signalled) }
+            }
+            assertThrows(IllegalArgumentException::class.java) { d.makeExternalSemaphore() }
+            val closed = SyncFd.adopt(-1)
+            closed.close()
+            closed.close()
+            assertThrows(IllegalStateException::class.java) { closed.detach() }
+        }
+
+    @Test
+    fun externalSyncSignalExportImportAndWait(): Unit {
+        assumeTrue(device().use { Feature.EXTERNAL_SYNC_FD in it.capabilities.availableFeatures })
+        device(setOf(Feature.EXTERNAL_SYNC_FD)).use { d ->
+            val signal = d.makeExternalSemaphore()
+            assertThrows(IllegalArgumentException::class.java) { signal.exportSyncFd() }
+            val source = d.makeBuffer(4)
+            val output = d.makeBuffer(4)
+            val first = d.makeCommandQueue().makeCommandBuffer()
+            first.blit { fill(source, 37) }
+            first.signalExternalSemaphore(signal)
+            first.commit()
+            signal.exportSyncFd().use { fd ->
+                val imported = d.importSyncFd(fd)
+                d.submit {
+                    waitForExternalSemaphore(imported)
+                    blit { copy(source, output) }
+                }
+                assertArrayEquals(ByteArray(4) { 37 }, output.readBytes(4))
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.submit { waitForExternalSemaphore(imported) }
+                }
+            }
+            assertThrows(IllegalArgumentException::class.java) { signal.exportSyncFd() }
+            first.waitUntilCompleted()
+            first.close()
+            SyncFd.adopt(-1).use { fd ->
+                val imported = d.importSyncFd(fd)
+                d.submit { waitForExternalSemaphore(imported) }
+            }
+        }
+    }
+
+    @Test
     fun sparseResourcesRequireExplicitFeature(): Unit =
         device().use { d ->
             val caps = d.sparseCapabilities()

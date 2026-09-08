@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "heaps.hpp"
+#include "interop.hpp"
 #include "ray.hpp"
 #include "sparse.hpp"
 #include "synchronization.hpp"
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <set>
 #include <type_traits>
+#include <unistd.h>
 #ifdef __ANDROID__
 #include <android/native_window_jni.h>
 #endif
@@ -112,13 +114,16 @@ Shader shader(JNIEnv *env, jbyteArray source, jstring entry) {
 }
 std::vector<BindingLayout> layout(JNIEnv *env, jintArray source) {
     auto data = ints(env, source);
-    require(data.size() % 3 == 0, "Invalid binding layout");
+    require(data.size() % 5 == 0, "Invalid binding layout");
     std::vector<BindingLayout> result;
-    for (size_t i = 0; i < data.size(); i += 3) {
+    for (size_t i = 0; i < data.size(); i += 5) {
         require(data[i] >= 0, "Negative binding");
         require(data[i + 2] > 0, "Invalid descriptor count");
         BindingLayout b{static_cast<uint32_t>(data[i]), static_cast<VkDescriptorType>(data[i + 1])};
         b.count = data[i + 2];
+        const auto sampler = uint64_t(uint32_t(data[i + 3])) | (uint64_t(uint32_t(data[i + 4])) << 32);
+        if (sampler)
+            b.immutableSampler = get<Sampler>(jlong(sampler));
         result.push_back(b);
     }
     return result;
@@ -204,8 +209,9 @@ struct PendingRender : Resource {
 } // namespace
 #define JNI_METHOD(returnType, name) extern "C" JNIEXPORT returnType JNICALL Java_dev_vulkano_internal_Native_##name
 
-JNI_METHOD(jlong, createDevice)(JNIEnv *e, jobject, jlong features, jboolean validation, jboolean software) {
-    return guard(e, [&] { return put(Device::create(features, validation, software)); });
+JNI_METHOD(jlong, createDevice)
+(JNIEnv *e, jobject, jlong features, jboolean validation, jboolean software, jlong extra) {
+    return guard(e, [&] { return put(Device::create(features, validation, software, extra)); });
 }
 JNI_METHOD(jstring, deviceName)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] { return e->NewStringUTF(get<Device>(id)->properties.deviceName); });
@@ -235,7 +241,9 @@ JNI_METHOD(jlongArray, deviceInfo)(JNIEnv *e, jobject, jlong id) {
                          d->subgroup.supportedStages,
                          d->subgroup.supportedOperations,
                          d->memoryBudget,
-                         static_cast<jlong>(l.maxSamplerAnisotropy * 1000)});
+                         static_cast<jlong>(l.maxSamplerAnisotropy * 1000),
+                         static_cast<jlong>(d->availableExtra),
+                         static_cast<jlong>(d->enabledExtra)});
     });
 }
 JNI_METHOD(jlongArray, memoryHeaps)(JNIEnv *e, jobject, jlong id) {
@@ -525,4 +533,5 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
 #include "jni_synchronization.inc"
 
 #include "jni_heaps.inc"
+#include "jni_interop.inc"
 #include "jni_sparse.inc"

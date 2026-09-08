@@ -25,8 +25,12 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
             Native.deviceName(nativeHandle),
             "${version ushr 22}.${(version ushr 12) and 1023}.${version and 4095}",
             p[1] == 4L,
-            Feature.entries.filterTo(mutableSetOf()) { p[2] and it.bit != 0L },
-            Feature.entries.filterTo(mutableSetOf()) { p[3] and it.bit != 0L },
+            Feature.entries.filterTo(mutableSetOf()) {
+                p[if (it.group == 0) 2 else 22] and it.bit != 0L
+            },
+            Feature.entries.filterTo(mutableSetOf()) {
+                p[if (it.group == 0) 3 else 23] and it.bit != 0L
+            },
             DeviceLimits(
                 p[4],
                 p[5],
@@ -245,9 +249,10 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
         ): Device {
             val id =
                 Native.createDevice(
-                    requiredFeatures.fold(0L) { a, b -> a or b.bit },
+                    requiredFeatures.filter { it.group == 0 }.fold(0L) { a, b -> a or b.bit },
                     enableValidation,
                     allowSoftwareRenderer,
+                    requiredFeatures.filter { it.group == 1 }.fold(0L) { a, b -> a or b.bit },
                 )
             try {
                 return Device(id)
@@ -259,8 +264,13 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
     }
 }
 
-private fun packLayout(bindings: List<BindingLayout>): IntArray =
-    bindings.flatMap { listOf(it.index, it.type.vk, it.count) }.toIntArray()
+internal fun packLayout(bindings: List<BindingLayout>): IntArray =
+    bindings
+        .flatMap {
+            val sampler = it.immutableSampler?.handle() ?: 0L
+            listOf(it.index, it.type.vk, it.count, sampler.toInt(), (sampler ushr 32).toInt())
+        }
+        .toIntArray()
 
 abstract class Resource internal constructor(val device: Device, private var id: Long) :
     AutoCloseable {

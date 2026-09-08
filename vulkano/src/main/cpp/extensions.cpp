@@ -18,6 +18,7 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         available |= DepthResolve;
     core12 = api >= VK_API_VERSION_1_2;
     void *head = nullptr;
+    link(head, ycbcr);
     if (has(e, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) &&
         (core12 || has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))
         link(head, fragmentRate);
@@ -60,6 +61,22 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
+    if (ycbcr.samplerYcbcrConversion)
+        availableExtra |= SamplerYcbcr;
+    if (has(e, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)) {
+        VkPhysicalDeviceExternalSemaphoreInfo info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+        info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+        vkGetPhysicalDeviceExternalSemaphoreProperties(d, &info, &syncFdProperties);
+        constexpr auto required =
+            VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT | VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
+        if ((syncFdProperties.externalSemaphoreFeatures & required) == required)
+            availableExtra |= ExternalSyncFd;
+    }
+#ifdef __ANDROID__
+    if (has(e, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
+        has(e, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME))
+        availableExtra |= HardwareBufferInterop;
+#endif
     if (indexing.runtimeDescriptorArray && indexing.descriptorBindingPartiallyBound &&
         indexing.shaderSampledImageArrayNonUniformIndexing && indexing.shaderStorageBufferArrayNonUniformIndexing &&
         indexing.shaderStorageImageArrayNonUniformIndexing && indexing.shaderUniformBufferArrayNonUniformIndexing)
@@ -316,7 +333,36 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
         extension(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
     }
 }
+void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & SamplerYcbcr) {
+        ycbcr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
+        ycbcr.samplerYcbcrConversion = true;
+        link(chain, ycbcr);
+    }
+    if (extra & ExternalSyncFd)
+        extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+#ifdef __ANDROID__
+    if (extra & HardwareBufferInterop) {
+        extensions.push_back(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+    }
+#endif
+}
 void Extensions::load(Device &d) {
+    if (d.enabledExtra & ExternalSyncFd) {
+        importSemaphoreFd =
+            reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(vkGetDeviceProcAddr(d.device, "vkImportSemaphoreFdKHR"));
+        getSemaphoreFd =
+            reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(vkGetDeviceProcAddr(d.device, "vkGetSemaphoreFdKHR"));
+        require(importSemaphoreFd && getSemaphoreFd, "External semaphore entry points are missing");
+    }
+#ifdef __ANDROID__
+    if (d.enabledExtra & HardwareBufferInterop) {
+        hardwareBufferProperties = reinterpret_cast<PFN_vkGetAndroidHardwareBufferPropertiesANDROID>(
+            vkGetDeviceProcAddr(d.device, "vkGetAndroidHardwareBufferPropertiesANDROID"));
+        require(hardwareBufferProperties, "Hardware buffer entry point is missing");
+    }
+#endif
 #define GET(member, name)                                                                                              \
     member = reinterpret_cast<decltype(member)>(vkGetDeviceProcAddr(d.device, name));                                  \
     require(member, "Enabled Vulkan entry point is missing")

@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "extensions.hpp"
 #include "heaps.hpp"
+#include "interop.hpp"
 #include "ray.hpp"
 #include "sparse.hpp"
 #include "spirv-reflect/spirv_reflect.h"
@@ -848,6 +849,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
                         reflected.at(b.binding).type == b.type && b.count > 0 &&
                         (reflected.at(b.binding).count == 0 || reflected.at(b.binding).count == b.count),
                     "Explicit binding differs from shader declaration");
+            reflected.at(b.binding).immutableSampler = b.immutableSampler;
             if (reflected.at(b.binding).runtime)
                 reflected.at(b.binding).count = b.count;
         }
@@ -864,7 +866,8 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 }
 } // namespace
 
-std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware) {
+std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
+    require((extra >> 3) == 0, "Unknown extended feature");
     require((required >> 60) == 0, "Unknown requested feature");
     if (required & (RayQuery | RayPipeline))
         required |= BufferAddress;
@@ -977,7 +980,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         auto extended = std::make_shared<Extensions>();
         extended->inspect(physical, std::min(props.apiVersion, app.apiVersion), exts);
         available |= extended->available;
-        if ((available & required) != required)
+        if ((available & required) != required || (extended->availableExtra & extra) != extra)
             continue;
         result->extensions = extended;
         uint32_t qc = 0;
@@ -1005,6 +1008,8 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         result->properties.apiVersion = std::min(props.apiVersion, app.apiVersion);
         result->available = available;
         result->enabled = required;
+        result->availableExtra = extended->availableExtra;
+        result->enabledExtra = extra;
         result->family = static_cast<uint32_t>(it - families.begin());
         result->timestampBits = it->timestampValidBits;
         result->memoryBudget = extension(exts, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -1017,6 +1022,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         if ((required & (Float16 | Int8)) && !coreFloat16)
             enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
         extended->enable(required, enabledExtensions);
+        extended->enableExtra(extra, enabledExtensions);
         VkPhysicalDeviceFeatures enabledFeatures{};
         enabledFeatures.robustBufferAccess = f.robustBufferAccess;
         enabledFeatures.samplerAnisotropy = (required & Anisotropy) != 0;
@@ -1243,6 +1249,8 @@ void Pipeline::makeLayout() {
     require(pushBytes % 4 == 0 && pushBytes <= d->properties.limits.maxPushConstantsSize,
             "Invalid push constant byte count");
     std::vector<VkDescriptorSetLayoutBinding> vkBindings;
+    std::vector<std::vector<VkSampler>> immutableSamplers;
+    immutableSamplers.reserve(bindings.size());
     std::set<uint32_t> indices;
     std::map<VkDescriptorType, uint64_t> counts;
     for (const auto &b : bindings) {
@@ -1255,8 +1263,18 @@ void Pipeline::makeLayout() {
                     b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER || b.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
                 "Unsupported descriptor type");
 
-        counts[b.type] += b.count;
-        vkBindings.push_back({b.binding, b.type, b.count, b.stages, nullptr});
+        if (b.immutableSampler) {
+            require(b.immutableSampler->owner() == d.get() &&
+                        (b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || b.type == VK_DESCRIPTOR_TYPE_SAMPLER),
+                    "Immutable sampler requires a sampler binding on the same device");
+            require(!b.immutableSampler->conversion || b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    "YCbCr conversion requires a combined image sampler");
+            immutableSamplers.emplace_back(b.count, b.immutableSampler->sampler);
+        } else
+            immutableSamplers.emplace_back();
+        counts[b.type] += b.descriptorCost();
+        vkBindings.push_back(
+            {b.binding, b.type, b.count, b.stages, b.immutableSampler ? immutableSamplers.back().data() : nullptr});
     }
     const auto &l = d->properties.limits;
     auto checkLimits = [&](const std::map<VkDescriptorType, uint64_t> &counts, bool perStage) {
@@ -1302,7 +1320,7 @@ void Pipeline::makeLayout() {
             std::map<VkDescriptorType, uint64_t> stageCounts;
             for (const auto &b : bindings)
                 if (b.stages & stage)
-                    stageCounts[b.type] += b.count;
+                    stageCounts[b.type] += b.descriptorCost();
             checkLimits(stageCounts, true);
         }
     std::vector<VkDescriptorBindingFlags> flags;
@@ -1749,10 +1767,17 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
     }
     table->write(shift, data.data(), data.size());
 }
+static void resolveSamplers(const Pipeline &p, std::vector<Binding> &bindings) {
+    for (auto &b : bindings)
+        for (const auto &schema : p.bindings)
+            if (b.index == schema.binding && schema.immutableSampler && !b.sampler)
+                b.sampler = schema.immutableSampler;
+}
 void Command::trace(std::shared_ptr<RayTracingPipeline> p, std::vector<Binding> bs, std::vector<uint8_t> constants,
                     std::array<uint32_t, 3> size) {
     recording();
     require(p && p->rayTracing, "Ray pipeline required");
+    resolveSamplers(*p, bs);
     validateBindings(*p, bs, constants);
     uint64_t total = 1;
     for (auto n : size) {
@@ -1803,7 +1828,7 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
     same(*this, p);
     require(constants.size() == p.pushBytes, "Set exactly the pipeline's declared push constant bytes");
     for (const auto &schema : p.bindings) {
-        if (schema.runtime)
+        if (schema.runtime || (schema.type == VK_DESCRIPTOR_TYPE_SAMPLER && schema.immutableSampler))
             continue; // Unbound runtime elements MUST NOT be accessed by a shader.
         size_t count = std::count_if(bs.begin(), bs.end(), [&](const Binding &b) { return b.index == schema.binding; });
         require(count == schema.count, "Every fixed binding/array element must be supplied");
@@ -1815,6 +1840,8 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
             std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.binding == b.index; });
         require(schema != p.bindings.end() && b.element < schema->count,
                 "Binding/array element is not declared in pipeline");
+        require(!schema->immutableSampler || b.sampler == schema->immutableSampler,
+                "Binding sampler differs from the immutable pipeline sampler");
         const auto &limits = d->properties.limits;
         if (schema->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || schema->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             require(b.buffer && !b.texture && !b.sampler, "Binding requires a buffer");
@@ -1960,14 +1987,14 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
         } else {
             uint64_t descriptors = 0;
             for (const auto &b : p.bindings)
-                descriptors += b.count;
+                descriptors += b.descriptorCost();
             const uint32_t setsPerPool = uint32_t(std::max(
                 1ull, std::min(64ull, 4096ull / std::max(1ull, static_cast<unsigned long long>(descriptors)))));
             auto &arena = descriptorArenas[&p];
             if (!arena.pool || arena.used == setsPerPool) {
                 std::map<VkDescriptorType, uint32_t> counts;
                 for (const auto &b : p.bindings)
-                    counts[b.type] += setsPerPool * b.count;
+                    counts[b.type] += setsPerPool * b.descriptorCost();
                 std::vector<VkDescriptorPoolSize> sizes;
                 for (auto [type, count] : counts)
                     sizes.push_back({type, count});
@@ -2034,6 +2061,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
 void Command::dispatch(Dispatch op) {
     recording();
     require(op.pipeline && op.pipeline->compute, "Compute pipeline required");
+    resolveSamplers(*op.pipeline, op.bindings);
     validateBindings(*op.pipeline, op.bindings, op.constants);
     for (int i = 0; !op.indirect && i < 3; ++i)
         require(op.groups[i] > 0 && op.groups[i] <= d->properties.limits.maxComputeWorkGroupCount[i],
@@ -2204,6 +2232,10 @@ void Command::render(Render op) {
             (void)bl;
             require(a == b || !memoryOverlaps(*a, *b), "Render targets alias placement memory");
         }
+    for (auto &draw : op.draws) {
+        require(bool(draw.pipeline), "Graphics pipeline required");
+        resolveSamplers(*draw.pipeline, draw.bindings);
+    }
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
     for (const auto &draw : op.draws) {
         if (draw.visibility) {
@@ -2582,6 +2614,20 @@ void Command::commit() {
             signals.push_back(event->semaphore);
             signalValues.push_back(value);
         }
+        for (const auto &event : externalWaits) {
+            require(event->state == ExternalSemaphore::State::Imported ||
+                        event->state == ExternalSemaphore::State::Signalled,
+                    "External semaphore has no unconsumed signal");
+            waits.push_back(event->semaphore);
+            waitValues.push_back(0);
+        }
+        for (const auto &event : externalSignals) {
+            require(event->state == ExternalSemaphore::State::Fresh, "External semaphore has already been used");
+            require(std::find(externalWaits.begin(), externalWaits.end(), event) == externalWaits.end(),
+                    "Cannot signal and wait the same external semaphore");
+            signals.push_back(event->semaphore);
+            signalValues.push_back(0);
+        }
         if (presentation) {
             waits.push_back(presentation->acquired);
             waitValues.push_back(0);
@@ -2611,6 +2657,10 @@ void Command::commit() {
         }
         check(vkQueueSubmit(d->queue, 1, &submit, fence), "vkQueueSubmit");
         state = State::Submitted;
+        for (const auto &event : externalWaits)
+            event->state = ExternalSemaphore::State::Consumed;
+        for (const auto &event : externalSignals)
+            event->state = ExternalSemaphore::State::Signalled;
         for (const auto &[event, value] : eventSignals) {
             event->lastScheduled = value;
             event->pendingSignals.emplace_back(value, self);
