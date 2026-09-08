@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) buffer Arguments { uint args[]; };
+layout(set=0,binding=1,std430) buffer Counts { uint counts[]; };
+layout(push_constant) uniform Control { uint count; uint indexed; } control;
+void main() {
+    uint words = control.indexed == 1 ? 5 : (control.indexed == 2 ? 3 : 4);
+    for (uint i = 0; i < 2; ++i) {
+        uint base = 4 + i * words;
+        args[base] = control.indexed == 2 ? 1 : 3;
+        args[base+1] = 1;
+        args[base+2] = control.indexed == 2 ? 1 : 0;
+        if (words >= 4) args[base+3] = 0;
+        if (words == 5) args[base+4] = 0;
+    }
+    counts[1] = control.count;
+}

@@ -183,9 +183,10 @@ JNI_METHOD(void, drawAdvanced)
         auto v = ints(e, counts);
         auto h = longValues(e, resources);
         auto f = floatValues(e, state);
-        require(v.size() >= 20 && v[18] >= 0 && v[19] >= 0 && v.size() == 20 + size_t(v[19]) * 4 && h.size() >= 5 &&
-                    (h.size() - 5) % 3 == 0 && f.size() == 14 + size_t(v[18]) * 6 && v[0] > 0 && v[1] > 0 &&
-                    v[2] >= 0 && v[3] >= 0 && h[1] >= 0 && h[3] >= 0 && v[6] > 0 && v[7] >= 0,
+        require(v.size() >= 20 && v[18] >= 0 && v[19] >= 0 && v.size() == 20 + size_t(v[19]) * 4 && h.size() >= 7 &&
+                    (h.size() - 7) % 3 == 0 && f.size() == 14 + size_t(v[18]) * 6 && v[0] > 0 && v[1] > 0 &&
+                    v[2] >= 0 && v[3] >= 0 && h[1] >= 0 && h[3] >= 0 && h[6] >= 0 && v[6] >= 0 && (v[6] > 0 || h[5]) &&
+                    v[7] >= 0,
                 "Invalid draw descriptor");
         Draw d{get<Pipeline>(pipeline), bindings(e, bs), bytes(e, constants), uint32_t(v[0]),
                uint32_t(v[1]),          uint32_t(v[2]),  uint32_t(v[3])};
@@ -202,12 +203,17 @@ JNI_METHOD(void, drawAdvanced)
         if (h[2])
             d.indirect = get<Buffer>(h[2]);
         d.indirectOffset = h[3];
+        if (h[5]) {
+            require(bool(d.indirect), "A count buffer requires indirect draw arguments");
+            d.countBuffer = get<Buffer>(h[5]);
+            d.countOffset = h[6];
+        }
         if (h[4]) {
             d.visibility = get<CounterPool>(h[4]);
             require(v[14] >= 0, "Invalid visibility index");
             d.visibilityIndex = v[14];
         }
-        for (size_t i = 5; i < h.size(); i += 3) {
+        for (size_t i = 7; i < h.size(); i += 3) {
             require(h[i] >= 0 && h[i] <= UINT32_MAX && h[i + 2] >= 0, "Invalid vertex buffer");
             d.vertexBuffers.push_back({uint32_t(h[i]), get<Buffer>(h[i + 1]), VkDeviceSize(h[i + 2])});
         }

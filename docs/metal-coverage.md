@@ -13,7 +13,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | MSAA | sampleCount / resolveTexture | FormatごとのSample Count検査、Color/Depth/Stencil Resolve、Transient Attachment |
 | Mip生成 | generateMipmaps | Subresource別BarrierとBlit。BlitとFilterをサポートするFormat |
 | Indexed / Instanced Draw | drawIndexedPrimitives | UINT16 / UINT32、Base Vertex、First Instance |
-| Indirect Draw / Dispatch | Indirect Bufferを受けるEncoder API | Draw、Indexed Draw、Compute、Mesh。Multi Drawは端末依存 |
+| Indirect Draw / Dispatch | Indirect Bufferを受けるEncoder API | Draw、Indexed Draw、Compute、Mesh。GPU側Count Bufferによる描画数指定。端末依存 |
 | Vertex Descriptor | vertexBuffers / vertexAttributes | Vertex Input、頂点ごとまたはInstanceごとの入力 |
 | 複数Render Target | colorAttachments | DeviceのAttachment上限まで。Independent Blendは端末依存 |
 | Depth / Stencil | DepthStencilDescriptor | Compare、Mask、Stencil操作、Depth Bias、Depth Bounds |

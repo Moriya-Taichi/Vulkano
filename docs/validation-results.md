@@ -93,3 +93,13 @@ HardwareBufferのImport、Feature拒否、所有権検査、RGB描画・読み�
 ローカルではKotlin/JNI 47件中36件成功・11件スキップ・失敗0件です。
 追加の2件はAndroid専用のため、ローカルでは実行していません。
 YUVのCamera/Codec画像、外部所有権BarrierのDriver上での挙動はAndroid実機での検証が必要です。
+
+
+### GPU側Count Bufferによる間接描画
+
+HardwareBufferまでを含むCommit `ecd71b3ecd0e033b194f9bae0eb9083dec60c2b4`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34230869015)が成功しました。
+GPUがPrivate Bufferへ書いた引数・描画数を使い、通常・Indexed・Mesh Drawを検証するテストを追加しました。
+ローカルDriverはMesh Shaderにも対応しており、3種類ともGPU出力の照合に成功しました。
+0件、上限でのClamp、Count Offset、Stride、Buffer範囲とFeature拒否を確認しています。
+ローカルではNative 725項目、Kotlin/JNI 49件中38件成功・11件スキップ・失敗0件です。
+Validation LayerのエラーとSync Hazardは検出されませんでした。

@@ -867,7 +867,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 3) == 0, "Unknown extended feature");
+    require((extra >> 4) == 0, "Unknown extended feature");
     require((required >> 60) == 0, "Unknown requested feature");
     if (required & (RayQuery | RayPipeline))
         required |= BufferAddress;
@@ -1021,7 +1021,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
             enabledExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         if ((required & (Float16 | Int8)) && !coreFloat16)
             enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
-        extended->enable(required, enabledExtensions);
+        extended->enable(required, enabledExtensions, extra);
         extended->enableExtra(extra, enabledExtensions);
         VkPhysicalDeviceFeatures enabledFeatures{};
         enabledFeatures.robustBufferAccess = f.robustBufferAccess;
@@ -1052,7 +1052,8 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         enableStorage.uniformAndStorageBuffer16BitAccess = (required & Uniform16) != 0;
         enableF16.pNext = extended->chain;
         enableStorage.pNext =
-            (required & (Float16 | Int8)) && !(extended->core12 && (required & (SamplerMinMax | ViewportLayer)))
+            (required & (Float16 | Int8)) &&
+                    !(extended->core12 && ((required & (SamplerMinMax | ViewportLayer)) || (extra & DrawIndirectCount)))
                 ? &enableF16
                 : extended->chain;
         float priority = 1;
@@ -2349,12 +2350,27 @@ void Command::render(Render op) {
         if (draw.indirect) {
             same(*this, *draw.indirect);
             const uint32_t commandBytes = draw.pipeline->graphics.mesh ? 12 : draw.indexBuffer ? 20 : 16;
-            require(draw.drawCount > 0 && draw.drawCount <= l.maxDrawIndirectCount && draw.indirectOffset % 4 == 0 &&
-                        (draw.drawCount == 1 || (draw.stride >= commandBytes && draw.stride % 4 == 0)) &&
+            require((draw.countBuffer || draw.drawCount > 0) && draw.drawCount <= l.maxDrawIndirectCount &&
+                        draw.indirectOffset % 4 == 0 &&
+                        ((draw.drawCount == 1 && !draw.countBuffer) ||
+                         (draw.stride >= commandBytes && draw.stride % 4 == 0)) &&
                         (draw.indirect->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
                     "Invalid indirect draw range");
-            require(draw.drawCount == 1 || (d->enabled & MultiDraw), "Multi-draw feature was not enabled");
-            range(draw.indirect->size, draw.indirectOffset, uint64_t(draw.drawCount - 1) * draw.stride + commandBytes);
+            require(draw.countBuffer || draw.drawCount == 1 || (d->enabled & MultiDraw),
+                    "Multi-draw feature was not enabled");
+            if (draw.drawCount)
+                range(draw.indirect->size, draw.indirectOffset,
+                      uint64_t(draw.drawCount - 1) * draw.stride + commandBytes);
+            else
+                require(draw.indirectOffset <= draw.indirect->size, "Indirect offset exceeds buffer size");
+            if (draw.countBuffer) {
+                same(*this, *draw.countBuffer);
+                require((d->enabledExtra & DrawIndirectCount) && draw.countOffset % 4 == 0 &&
+                            (draw.countBuffer->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+                        "Draw count requires enabled feature and an aligned indirect count buffer");
+                range(draw.countBuffer->size, draw.countOffset, 4);
+                buffers.push_back(draw.countBuffer);
+            }
             buffers.push_back(draw.indirect);
         } else
             require((!op.viewMask || uint64_t(draw.firstInstance) + draw.instances - 1 <=
@@ -2496,7 +2512,20 @@ void Command::render(Render op) {
                 vkCmdBeginQuery(c.command, draw.visibility->pool, draw.visibilityIndex,
                                 (c.d->enabled & PreciseOcclusion) ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
             if (draw.indirect) {
-                if (draw.pipeline->graphics.mesh)
+                if (draw.countBuffer) {
+                    if (draw.pipeline->graphics.mesh)
+                        c.d->extensions->drawMeshIndirectCount(c.command, draw.indirect->buffer, draw.indirectOffset,
+                                                               draw.countBuffer->buffer, draw.countOffset,
+                                                               draw.drawCount, draw.stride);
+                    else if (draw.indexBuffer)
+                        c.d->extensions->drawIndexedIndirectCount(c.command, draw.indirect->buffer, draw.indirectOffset,
+                                                                  draw.countBuffer->buffer, draw.countOffset,
+                                                                  draw.drawCount, draw.stride);
+                    else
+                        c.d->extensions->drawIndirectCount(c.command, draw.indirect->buffer, draw.indirectOffset,
+                                                           draw.countBuffer->buffer, draw.countOffset, draw.drawCount,
+                                                           draw.stride);
+                } else if (draw.pipeline->graphics.mesh)
                     c.d->extensions->drawMeshIndirect(c.command, draw.indirect->buffer, draw.indirectOffset,
                                                       draw.drawCount, draw.stride);
                 else if (draw.indexBuffer)

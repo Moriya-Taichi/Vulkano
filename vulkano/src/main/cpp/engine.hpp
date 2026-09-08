@@ -97,7 +97,7 @@ enum Feature : uint64_t {
     CooperativeMatrix = 1ull << 58,
     SparseResources = 1ull << 59
 };
-enum ExtraFeature : uint64_t { HardwareBufferInterop = 1, ExternalSyncFd = 2, SamplerYcbcr = 4 };
+enum ExtraFeature : uint64_t { HardwareBufferInterop = 1, ExternalSyncFd = 2, SamplerYcbcr = 4, DrawIndirectCount = 8 };
 enum class Storage { Shared, Private, Memoryless };
 
 struct Object {
@@ -370,8 +370,8 @@ struct Draw {
     std::vector<Binding> bindings;
     std::vector<uint8_t> constants;
     uint32_t vertices = 3, instances = 1, firstVertex = 0, firstInstance = 0;
-    std::shared_ptr<Buffer> indexBuffer, indirect;
-    VkDeviceSize indexOffset = 0, indirectOffset = 0;
+    std::shared_ptr<Buffer> indexBuffer, indirect, countBuffer;
+    VkDeviceSize indexOffset = 0, indirectOffset = 0, countOffset = 0;
     VkIndexType indexType = VK_INDEX_TYPE_UINT16;
     int32_t baseVertex = 0;
     uint32_t drawCount = 1, stride = 0;

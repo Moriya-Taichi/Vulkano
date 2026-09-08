@@ -423,3 +423,28 @@ CPUで同期済みの場合は外部Semaphoreを省けます。
 `releaseExternalTexture`は画像をGENERAL Layoutで返します。
 通常は`ExternalTextureOwner.FOREIGN`を使い、同じGPU/Driver UUIDを持つ別のVulkan DeviceやOpenGL ESから渡す場合は`EXTERNAL`を指定します。
 同じBufferを同じDeviceに重複してImportせず、必要に応じてTexture Viewを作成します。
+
+
+## GPUで決める描画数
+
+`DRAW_INDIRECT_COUNT`を有効化すると、Draw Commandの個数もGPU上のBufferから読み取れます。
+引数Bufferと個数Bufferには`BufferUsage.INDIRECT`を指定し、Computeで書く場合は`STORAGE`も付けます。
+
+```kotlin
+encoder.drawPrimitives(
+    indirectBuffer = drawArguments,
+    countBuffer = drawCount,
+    maxDrawCount = 256,
+    indirectOffset = 0,
+    countOffset = 0,
+)
+```
+
+実行する個数はBuffer内の32ビット符号なし整数と`maxDrawCount`の小さい方です。
+Bufferの個数が0なら描画を実行しません。
+`drawIndexedPrimitives`と`drawMeshThreadgroups`にも同じCount Bufferを受けるオーバーロードがあります。
+Indexed DrawのStrideは20バイト、通常Drawは16バイト、Meshは12バイト以上の4バイト単位です。
+個数のOffsetも4バイト単位にします。
+個数Bufferに書く値は、端末の`maxDrawIndirectCount`以内にしてください。
+これらの呼び出しは`MULTI_DRAW_INDIRECT`とは別のFeatureで、同じPipelineとBindingを使います。
+PipelineやBindingそのものをGPUで選択するDevice Generated Commandsは、別の機能です。

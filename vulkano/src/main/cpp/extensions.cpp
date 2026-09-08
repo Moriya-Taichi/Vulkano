@@ -108,11 +108,15 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         VkPhysicalDeviceFeatures2 core{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         core.pNext = &coreFeatures12;
         vkGetPhysicalDeviceFeatures2(d, &core);
+        if (coreFeatures12.drawIndirectCount)
+            availableExtra |= DrawIndirectCount;
         if (coreFeatures12.samplerFilterMinmax)
             available |= SamplerMinMax;
         if (coreFeatures12.shaderOutputViewportIndex && coreFeatures12.shaderOutputLayer)
             available |= ViewportLayer;
     } else {
+        if (has(e, VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME))
+            availableExtra |= DrawIndirectCount;
         if (has(e, VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME))
             available |= SamplerMinMax;
         if (has(e, VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME))
@@ -156,7 +160,7 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     if (!(matrixProperties.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT))
         available &= ~CooperativeMatrix;
 }
-void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
+void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t extra) {
     chain = nullptr;
     auto extension = [&](const char *name) {
         require(has(supported, name), "Missing extension dependency");
@@ -288,7 +292,7 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
         link(chain, mesh);
         extension(VK_EXT_MESH_SHADER_EXTENSION_NAME);
     }
-    if (core12 && (f & (SamplerMinMax | ViewportLayer))) {
+    if (core12 && ((f & (SamplerMinMax | ViewportLayer)) || (extra & DrawIndirectCount))) {
         // Keep only non-promoted extensions and Vulkan1.1 multiview in this chain.
         chain = nullptr;
         if (f & CooperativeMatrix)
@@ -310,6 +314,7 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
         if (f & (FragmentRate | PrimitiveRate | AttachmentRate))
             link(chain, fragmentRate);
         coreFeatures12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        coreFeatures12.drawIndirectCount = bool(extra & DrawIndirectCount);
         coreFeatures12.samplerFilterMinmax = bool(f & SamplerMinMax);
         coreFeatures12.shaderOutputViewportIndex = coreFeatures12.shaderOutputLayer = bool(f & ViewportLayer);
         coreFeatures12.bufferDeviceAddress = bool(f & BufferAddress);
@@ -334,6 +339,8 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if ((extra & DrawIndirectCount) && !core12)
+        extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     if (extra & SamplerYcbcr) {
         ycbcr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
         ycbcr.samplerYcbcrConversion = true;
@@ -366,6 +373,13 @@ void Extensions::load(Device &d) {
 #define GET(member, name)                                                                                              \
     member = reinterpret_cast<decltype(member)>(vkGetDeviceProcAddr(d.device, name));                                  \
     require(member, "Enabled Vulkan entry point is missing")
+    if (d.enabledExtra & DrawIndirectCount) {
+        GET(drawIndirectCount, core12 ? "vkCmdDrawIndirectCount" : "vkCmdDrawIndirectCountKHR");
+        GET(drawIndexedIndirectCount, core12 ? "vkCmdDrawIndexedIndirectCount" : "vkCmdDrawIndexedIndirectCountKHR");
+        if (d.enabled & MeshShader) {
+            GET(drawMeshIndirectCount, "vkCmdDrawMeshTasksIndirectCountEXT");
+        }
+    }
     if (d.enabled & (DepthResolve | AttachmentRate)) {
         GET(createRenderPass2, core12 ? "vkCreateRenderPass2" : "vkCreateRenderPass2KHR");
     }

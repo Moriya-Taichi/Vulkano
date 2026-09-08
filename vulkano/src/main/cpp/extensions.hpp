@@ -36,6 +36,9 @@ struct Extensions {
     PFN_vkWaitSemaphores waitSemaphores = nullptr;
     PFN_vkCmdDrawMeshTasksEXT drawMesh = nullptr;
     PFN_vkCmdDrawMeshTasksIndirectEXT drawMeshIndirect = nullptr;
+    PFN_vkCmdDrawIndirectCount drawIndirectCount = nullptr;
+    PFN_vkCmdDrawIndexedIndirectCount drawIndexedIndirectCount = nullptr;
+    PFN_vkCmdDrawMeshTasksIndirectCountEXT drawMeshIndirectCount = nullptr;
     VkPhysicalDeviceVulkan12Features coreFeatures12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceMultiviewProperties multiviewProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES};
     VkPhysicalDeviceTimelineSemaphoreProperties timelineProperties{
@@ -78,7 +81,7 @@ struct Extensions {
     void *chain = nullptr;
     std::vector<VkExtensionProperties> supported;
     void inspect(VkPhysicalDevice, uint32_t api, const std::vector<VkExtensionProperties> &);
-    void enable(uint64_t, std::vector<const char *> &);
+    void enable(uint64_t, std::vector<const char *> &, uint64_t extra = 0);
     void load(Device &);
     void enableExtra(uint64_t, std::vector<const char *> &);
 };

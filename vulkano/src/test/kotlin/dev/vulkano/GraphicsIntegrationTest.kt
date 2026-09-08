@@ -36,6 +36,177 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun indirectCountRequiresFeature(): Unit =
+        device().use { d ->
+            val args = d.makeBuffer(16, usage = setOf(BufferUsage.INDIRECT))
+            val count = d.makeBuffer(4, usage = setOf(BufferUsage.INDIRECT))
+            val target =
+                d.makeTexture(TextureDescriptor(1, 1, usage = setOf(TextureUsage.COLOR_ATTACHMENT)))
+            val pipeline =
+                d.makeRenderPipelineState(
+                    d.function("fullscreen.vert.spv"),
+                    d.function("solid.frag.spv"),
+                )
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit {
+                    render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                        setRenderPipelineState(pipeline)
+                        drawPrimitives(args, count, 1)
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun gpuGeneratedIndirectCountSupportsZeroClampIndexedAndMeshDraw(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        assumeTrue(Feature.DRAW_INDIRECT_COUNT in available)
+        val mesh = Feature.MESH_SHADER in available
+        device(
+                setOf(Feature.DRAW_INDIRECT_COUNT) +
+                    if (mesh) setOf(Feature.MESH_SHADER) else emptySet()
+            )
+            .use { d ->
+                val usage = setOf(BufferUsage.INDIRECT, BufferUsage.STORAGE)
+                val args = d.makeBuffer(64, usage = usage, storageMode = StorageMode.PRIVATE)
+                val count = d.makeBuffer(8, usage = usage, storageMode = StorageMode.PRIVATE)
+                val indices = d.makeBuffer(6, usage = setOf(BufferUsage.INDEX))
+                indices.write(
+                    ByteBuffer.allocateDirect(6)
+                        .order(ByteOrder.nativeOrder())
+                        .putShort(0)
+                        .putShort(1)
+                        .putShort(2)
+                        .apply { flip() }
+                )
+                val compute =
+                    d.makeComputePipelineState(
+                        d.function("draw-count.comp.spv"),
+                        pushConstantBytes = 8,
+                    )
+                val pipeline =
+                    d.makeRenderPipelineState(
+                        RenderPipelineDescriptor(
+                            d.function("fullscreen.vert.spv"),
+                            d.function("solid.frag.spv"),
+                            colorAttachments =
+                                listOf(
+                                    RenderColorAttachmentDescriptor(
+                                        blendingEnabled = true,
+                                        sourceRGBBlendFactor = BlendFactor.ONE,
+                                        destinationRGBBlendFactor = BlendFactor.ONE,
+                                    )
+                                ),
+                        )
+                    )
+                val meshPipeline =
+                    if (mesh)
+                        d.makeRenderPipelineState(
+                            RenderPipelineDescriptor(
+                                d.function("fullscreen.mesh.spv"),
+                                d.function("solid.frag.spv"),
+                                meshShader = true,
+                                colorAttachments =
+                                    listOf(
+                                        RenderColorAttachmentDescriptor(
+                                            blendingEnabled = true,
+                                            sourceRGBBlendFactor = BlendFactor.ONE,
+                                            destinationRGBBlendFactor = BlendFactor.ONE,
+                                        )
+                                    ),
+                            )
+                        )
+                    else null
+                val target =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            1,
+                            1,
+                            usage =
+                                setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                        )
+                    )
+                val readback = d.makeBuffer(4)
+                // Multi-draw-indirect is deliberately not enabled: count draws have their own
+                // feature.
+                for (mode in 0..(if (mesh) 2 else 1)) for ((gpuCount, maximum) in
+                    listOf(0 to 2, 1 to 2, 2 to 2, 3 to 1, 2 to 0)) {
+                    d.submit {
+                        compute {
+                            setComputePipelineState(compute)
+                            setBuffer(args, 0)
+                            setBuffer(count, 1)
+                            setBytes(
+                                ByteBuffer.allocate(8)
+                                    .order(ByteOrder.nativeOrder())
+                                    .putInt(gpuCount)
+                                    .putInt(mode)
+                                    .array()
+                            )
+                            dispatchThreadgroups(Size(1))
+                        }
+                        render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                            setRenderPipelineState(
+                                if (mode == 2) checkNotNull(meshPipeline) else pipeline
+                            )
+                            if (mode == 2)
+                                drawMeshThreadgroups(
+                                    args,
+                                    count,
+                                    maximum,
+                                    indirectOffset = 16,
+                                    countOffset = 4,
+                                )
+                            else if (mode == 1)
+                                drawIndexedPrimitives(
+                                    indices,
+                                    args,
+                                    count,
+                                    maximum,
+                                    indirectOffset = 16,
+                                    countOffset = 4,
+                                )
+                            else
+                                drawPrimitives(
+                                    args,
+                                    count,
+                                    maximum,
+                                    indirectOffset = 16,
+                                    countOffset = 4,
+                                )
+                        }
+                        blit { copy(target, readback) }
+                    }
+                    val draws = minOf(gpuCount, maximum)
+                    assertEquals(64 * draws, readback.readBytes(4)[1].toInt() and 255)
+                }
+                for ((offset, stride, maximum) in
+                    listOf(
+                        Triple(2L, 16, 1),
+                        Triple(8L, 16, 1),
+                        Triple(4L, 4, 1),
+                        Triple(4L, 16, 4),
+                    )) {
+                    assertThrows(IllegalArgumentException::class.java) {
+                        d.submit {
+                            render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                                setRenderPipelineState(pipeline)
+                                drawPrimitives(
+                                    args,
+                                    count,
+                                    maximum,
+                                    indirectOffset = 16,
+                                    countOffset = offset,
+                                    stride = stride,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    @Test
     fun hardwareBufferImportAndOwnershipRequireExternalResources(): Unit =
         device().use { d ->
             assertThrows(IllegalArgumentException::class.java) {

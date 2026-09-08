@@ -65,6 +65,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     ANDROID_HARDWARE_BUFFER(1, 1),
     EXTERNAL_SYNC_FD(2, 1),
     SAMPLER_YCBCR_CONVERSION(4, 1),
+    DRAW_INDIRECT_COUNT(8, 1),
 }
 
 enum class StorageMode {

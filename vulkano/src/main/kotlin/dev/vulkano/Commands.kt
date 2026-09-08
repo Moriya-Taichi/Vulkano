@@ -515,6 +515,8 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
         drawCount: Int = 1,
         stride: Int = 0,
         meshGroups: Size? = null,
+        countBuffer: Buffer? = null,
+        countOffset: Long = 0,
     ): Unit = encode {
         require(
             count > 0 &&
@@ -526,6 +528,10 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
         )
         require(indexBuffer == null || indexBuffer.device === commandBuffer.device)
         require(indirect == null || indirect.device === commandBuffer.device)
+        require(
+            countBuffer == null || (indirect != null && countBuffer.device === commandBuffer.device)
+        )
+        require(countOffset >= 0 && drawCount >= 0 && (drawCount > 0 || countBuffer != null))
         val v = viewports.firstOrNull() ?: Viewport(0f, 0f, 1f, 1f)
         val s = scissors.firstOrNull()
         Native.drawAdvanced(
@@ -561,6 +567,8 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
                     indirect?.handle() ?: 0,
                     indirectOffset,
                     visibility?.handle() ?: 0,
+                    countBuffer?.handle() ?: 0,
+                    countOffset,
                 ) +
                     vertexBuffers.flatMap { (index, value) ->
                         listOf(index.toLong(), value.first.handle(), value.second)
@@ -655,6 +663,77 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
             indirectOffset = indirectOffset,
             drawCount = drawCount,
             stride = stride,
+        )
+
+    /** Draws min(GPU count, maxDrawCount) commands. GPU count must obey maxDrawIndirectCount. */
+    fun drawPrimitives(
+        indirectBuffer: Buffer,
+        countBuffer: Buffer,
+        maxDrawCount: Int,
+        indirectOffset: Long = 0,
+        countOffset: Long = 0,
+        stride: Int = 16,
+    ) =
+        draw(
+            1,
+            1,
+            0,
+            0,
+            indirect = indirectBuffer,
+            indirectOffset = indirectOffset,
+            drawCount = maxDrawCount,
+            stride = stride,
+            countBuffer = countBuffer,
+            countOffset = countOffset,
+        )
+
+    fun drawIndexedPrimitives(
+        indexBuffer: Buffer,
+        indirectBuffer: Buffer,
+        countBuffer: Buffer,
+        maxDrawCount: Int,
+        indexType: IndexType = IndexType.UINT16,
+        indexBufferOffset: Long = 0,
+        indirectOffset: Long = 0,
+        countOffset: Long = 0,
+        stride: Int = 20,
+    ) =
+        draw(
+            1,
+            1,
+            0,
+            0,
+            indexBuffer = indexBuffer,
+            indexType = indexType,
+            indexOffset = indexBufferOffset,
+            indirect = indirectBuffer,
+            indirectOffset = indirectOffset,
+            drawCount = maxDrawCount,
+            stride = stride,
+            countBuffer = countBuffer,
+            countOffset = countOffset,
+        )
+
+    fun drawMeshThreadgroups(
+        indirectBuffer: Buffer,
+        countBuffer: Buffer,
+        maxDrawCount: Int,
+        indirectOffset: Long = 0,
+        countOffset: Long = 0,
+        stride: Int = 12,
+    ) =
+        draw(
+            1,
+            1,
+            0,
+            0,
+            indirect = indirectBuffer,
+            indirectOffset = indirectOffset,
+            drawCount = maxDrawCount,
+            stride = stride,
+            countBuffer = countBuffer,
+            countOffset = countOffset,
+            meshGroups = Size(1),
         )
 
     fun drawMeshThreadgroups(groups: Size) = draw(1, 1, 0, 0, meshGroups = groups)
