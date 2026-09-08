@@ -35,8 +35,16 @@ jobs:
           cmake -S "$RUNNER_TEMP/vulkano-vvl" -B "$RUNNER_TEMP/vulkano-vvl-build" -G Ninja -DUPDATE_DEPS=ON -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/vulkano-vvl-install"
           cmake --build "$RUNNER_TEMP/vulkano-vvl-build" --parallel 2
           cmake --install "$RUNNER_TEMP/vulkano-vvl-build"
+      - uses: actions/cache/save@v4
+        if: steps.validation-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/vulkano-vvl-install
+          key: ${{ runner.os }}-vulkano-vvl-1.4.335-gcc13-v1
       - name: Select matching Vulkan validation layers
-        run: echo "VK_LAYER_PATH=$RUNNER_TEMP/vulkano-vvl-install/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+        run: |
+          echo "VK_LAYER_PATH=$RUNNER_TEMP/vulkano-vvl-install/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/vulkano-vvl-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          ldd -r "$RUNNER_TEMP/vulkano-vvl-install/lib/libVkLayer_khronos_validation.so"
       - name: Compile and validate shader fixtures
         run: |
           python3 tools/compile-test-shaders.py
