@@ -36,3 +36,23 @@ NativeではShared/Private間の転送、複数Compute Dispatchの依存関係�
 - Kotlin/JNI GPU統合テスト6件、APIテスト2件成功。スキップなし。Upload CPU read拒否とGPU結果の一致を含む。
 - 両ABIのRelease AAR、サンプルDebug / Release APKのビルド成功。
 - Xclipse実機の性能とNon-coherentメモリは未検証。Wave幅や専用VRAMを仮定していない。
+
+## 機能拡張の検証（2026-09-08）
+
+[PR #7](https://github.com/Moriya-Taichi/Vulkano/pull/7)の初回コミット`65ecae7`はAndroid CIが成功しました。
+両ABIのAAR、Debug/Releaseのサンプル、Instrumentation APK、JNIテスト、Maven公開用成果物を検証しています。
+Instrumentation APKの端末での実行は含みません。
+
+ローカルではLavapipe（Mesa 24.0.5、LLVM 17）とValidation Layerを使っています。
+MSAAとColor/Depth Resolve、Indexed/Indirect Draw、MRT、Vertex Input、Mip生成、Array/View、Texture Buffer、Function Constants、Timeline Event、Counter、Heap、Pipeline Cache、整数ClearをGPU出力と照合しました。
+Tessellation、Mesh、Multiview、Runtime Descriptor Array、Shading Rate、Ray TracingはFeatureに応じて実行するテストです。
+Ray QueryとRay Tracing PipelineはこのローカルDriverでは非対応のため、成功経路を実行していません。
+
+ローカルのKotlin/JNIテストは36件中30件成功、6件スキップです。
+スキップはPipeline Shading Rate、Rate Map、Ray Tracing Pipeline、AS Copy/Compaction、AS Archive、Cooperative Matrixです。
+Ray Queryの成功経路は、非対応時の拒否を確認する分岐に入るため実行していません。
+Tensor View、SubpassのMemoryless/MSAA/Depth入力、Color Resolve、Multiview、Swizzleの結果を追加で照合しています。
+新しいSurfaceの取得待ちとNative Handleの破棄経路は、Androidでの実行確認が必要です。
+
+Nativeの既存724チェックも保持しています。
+新機能のMali、PowerVR、Adreno、Xclipse上での性能、電力、Driver固有の挙動は実機未検証です。

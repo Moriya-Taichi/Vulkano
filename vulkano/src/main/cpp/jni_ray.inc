@@ -1,7 +1,8 @@
 JNI_METHOD(jlong, bufferAddress)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] { return jlong(bufferAddress(*get<Buffer>(id))); });
 }
-JNI_METHOD(jlong, createPrimitiveAcceleration)(JNIEnv *e, jobject, jlong device, jlongArray values, jboolean update) {
+JNI_METHOD(jlong, createPrimitiveAcceleration)
+(JNIEnv *e, jobject, jlong device, jlongArray values, jboolean update, jboolean compact) {
     return guard(e, [&] {
         auto v = longValues(e, values);
         require(!v.empty() && v.size() % 10 == 0, "Invalid geometry descriptor");
@@ -24,11 +25,11 @@ JNI_METHOD(jlong, createPrimitiveAcceleration)(JNIEnv *e, jobject, jlong device,
             g.flags = v[i + 9];
             geometries.push_back(g);
         }
-        return put(std::make_shared<AccelerationStructure>(get<Device>(device), geometries, update));
+        return put(std::make_shared<AccelerationStructure>(get<Device>(device), geometries, update, compact));
     });
 }
 JNI_METHOD(jlong, createInstanceAcceleration)
-(JNIEnv *e, jobject, jlong device, jlongArray values, jfloatArray matrices, jboolean update) {
+(JNIEnv *e, jobject, jlong device, jlongArray values, jfloatArray matrices, jboolean update, jboolean compact) {
     return guard(e, [&] {
         auto v = longValues(e, values);
         auto m = floatValues(e, matrices);
@@ -46,7 +47,7 @@ JNI_METHOD(jlong, createInstanceAcceleration)
             a.flags = v[i + 4];
             instances.push_back(a);
         }
-        return put(std::make_shared<AccelerationStructure>(get<Device>(device), instances, update));
+        return put(std::make_shared<AccelerationStructure>(get<Device>(device), instances, update, compact));
     });
 }
 JNI_METHOD(void, buildAcceleration)(JNIEnv *e, jobject, jlong command, jlong structure, jboolean update) {
@@ -98,5 +99,51 @@ JNI_METHOD(void, traceRays)
         require(s.size() == 3 && s[0] > 0 && s[1] > 0 && s[2] > 0, "Invalid trace dimensions");
         get<Command>(command)->trace(get<RayTracingPipeline>(pipeline), bindings(e, bs), bytes(e, constants),
                                      {uint32_t(s[0]), uint32_t(s[1]), uint32_t(s[2])});
+    });
+}
+
+JNI_METHOD(jlong, createAccelerationCopy)(JNIEnv *e, jobject, jlong source, jboolean compact) {
+    return guard(
+        e, [&] { return put(std::make_shared<AccelerationStructure>(get<AccelerationStructure>(source), compact)); });
+}
+JNI_METHOD(void, copyAcceleration)(JNIEnv *e, jobject, jlong command, jlong source, jlong destination) {
+    return guard(e, [&] {
+        get<Command>(command)->copyAccelerationStructure(get<AccelerationStructure>(source),
+                                                         get<AccelerationStructure>(destination));
+    });
+}
+JNI_METHOD(jlong, accelerationStorageSize)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] { return jlong(get<AccelerationStructure>(id)->storage->size); });
+}
+
+JNI_METHOD(jbyteArray, serializeAcceleration)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto data = serializeAccelerationStructure(get<AccelerationStructure>(id));
+        auto result = e->NewByteArray(data.size());
+        if (!result)
+            throw std::bad_alloc();
+        e->SetByteArrayRegion(result, 0, data.size(), reinterpret_cast<const jbyte *>(data.data()));
+        return result;
+    });
+}
+JNI_METHOD(jlongArray, accelerationArchiveAddresses)(JNIEnv *e, jobject, jbyteArray data) {
+    return guard(e, [&] {
+        auto values = accelerationArchiveAddresses(bytes(e, data));
+        auto result = e->NewLongArray(values.size());
+        if (!result)
+            throw std::bad_alloc();
+        e->SetLongArrayRegion(result, 0, values.size(), reinterpret_cast<const jlong *>(values.data()));
+        return result;
+    });
+}
+JNI_METHOD(jlong, restoreAcceleration)(JNIEnv *e, jobject, jlong id, jbyteArray data, jlongArray mapping) {
+    return guard(e, [&] {
+        auto v = longValues(e, mapping);
+        require(v.size() % 2 == 0, "Invalid BLAS address mapping");
+        std::map<uint64_t, std::shared_ptr<AccelerationStructure>> replacements;
+        for (size_t n = 0; n < v.size(); n += 2)
+            require(replacements.emplace(uint64_t(v[n]), get<AccelerationStructure>(v[n + 1])).second,
+                    "Duplicate BLAS address");
+        return put(restoreAccelerationStructure(get<Device>(id), bytes(e, data), replacements));
     });
 }

@@ -19,13 +19,15 @@ VkDeviceAddress bufferAddress(const Buffer &b) {
     return b.d->extensions->getBufferAddress(b.d->device, &i);
 }
 AccelerationStructure::AccelerationStructure(std::shared_ptr<Device> device, const std::vector<Geometry> &descriptors,
-                                             bool update)
+                                             bool update, bool compact)
     : Resource(std::move(device)) {
     require(d->enabled & (RayQuery | RayPipeline), "Ray tracing feature was not enabled");
     require(!descriptors.empty() && descriptors.size() <= d->extensions->accelerationProperties.maxGeometryCount,
             "Invalid geometry count");
     if (update)
         flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    if (compact)
+        flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
     uint64_t primitives = 0;
     for (const auto &g : descriptors) {
         require(g.vertices && g.primitiveCount, "Geometry requires a vertex/AABB buffer and primitives");
@@ -80,7 +82,8 @@ AccelerationStructure::AccelerationStructure(std::shared_ptr<Device> device, con
     allocate();
 }
 AccelerationStructure::AccelerationStructure(std::shared_ptr<Device> device,
-                                             const std::vector<AccelerationInstance> &instances, bool update)
+                                             const std::vector<AccelerationInstance> &instances, bool update,
+                                             bool compact)
     : Resource(std::move(device)) {
     require(d->enabled & (RayQuery | RayPipeline), "Ray tracing feature was not enabled");
     type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
@@ -88,6 +91,8 @@ AccelerationStructure::AccelerationStructure(std::shared_ptr<Device> device,
             "Invalid instance count");
     if (update)
         flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    if (compact)
+        flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
     std::vector<VkAccelerationStructureInstanceKHR> data;
     for (const auto &i : instances) {
         require(i.structure && i.structure->owner() == d.get() &&
@@ -119,15 +124,16 @@ AccelerationStructure::AccelerationStructure(std::shared_ptr<Device> device,
     primitiveCounts.push_back(uint32_t(data.size()));
     allocate();
 }
-void AccelerationStructure::allocate() {
+void AccelerationStructure::allocate(bool querySizes) {
     VkAccelerationStructureBuildGeometryInfoKHR build{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
     build.type = type;
     build.flags = flags;
     build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     build.geometryCount = uint32_t(geometries.size());
     build.pGeometries = geometries.data();
-    d->extensions->buildSizes(d->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build,
-                              primitiveCounts.data(), &sizes);
+    if (querySizes)
+        d->extensions->buildSizes(d->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build,
+                                  primitiveCounts.data(), &sizes);
     storage = std::make_shared<Buffer>(d, sizes.accelerationStructureSize,
                                        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -151,6 +157,7 @@ AccelerationStructure::~AccelerationStructure() {
 void Command::build(std::shared_ptr<AccelerationStructure> target, bool update) {
     recording();
     require(target && target->owner() == d.get(), "Invalid acceleration structure device");
+    require(!target->copyDestination, "Copy destinations are immutable; create a geometry descriptor to build/refit");
     require(!update || (target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
             "Acceleration structure was not created for refit");
     uint64_t size = update ? target->sizes.updateScratchSize : target->sizes.buildScratchSize;
@@ -189,6 +196,76 @@ void Command::build(std::shared_ptr<AccelerationStructure> target, bool update) 
             ranges.push_back({n, 0, 0, 0});
         const auto *ptr = ranges.data();
         c.d->extensions->buildAcceleration(c.command, 1, &i, &ptr);
+        c.accelerationStates[target.get()] = true;
+    });
+}
+} // namespace vulkano
+
+namespace vulkano {
+AccelerationStructure::AccelerationStructure(std::shared_ptr<AccelerationStructure> source, bool compact)
+    : Resource(source->d), type(source->type), flags(source->flags), sizes(source->sizes), children(source->children),
+      copyGeneration(source->generation), copySource(source) {
+    copyDestination = true;
+    require(source->built, "Build the source acceleration structure before creating a copy destination");
+    if (compact) {
+        require(source->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR,
+                "Source was not built with compaction enabled");
+        // Query results require GPU completion. Avoid blocking a timeline wait while holding the JNI lock.
+        d->collect();
+        require(d->pending.empty(), "Complete pending commands before requesting compacted storage");
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+        info.queryCount = 1;
+        VkQueryPool query = VK_NULL_HANDLE;
+        check(vkCreateQueryPool(d->device, &info, nullptr, &query), "create compacted-size query");
+        try {
+            auto command = std::make_shared<Command>(d);
+            command->buffers.push_back(source->storage);
+            command->operations.push_back([source, query](Command &c) {
+                c.barrier();
+                vkCmdResetQueryPool(c.command, query, 0, 1);
+                c.d->extensions->accelerationPropertiesQuery(c.command, 1, &source->acceleration,
+                                                             VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                                             query, 0);
+            });
+            command->commit();
+            command->wait(UINT64_MAX);
+            uint64_t bytes = 0;
+            check(vkGetQueryPoolResults(d->device, query, 0, 1, 8, &bytes, 8, VK_QUERY_RESULT_64_BIT),
+                  "read compacted size");
+            require(bytes > 0 && bytes <= source->storage->size, "Invalid compacted-size result");
+            sizes.accelerationStructureSize = bytes;
+            vkDestroyQueryPool(d->device, query, nullptr);
+            query = VK_NULL_HANDLE;
+        } catch (...) {
+            if (query)
+                vkDestroyQueryPool(d->device, query, nullptr);
+            throw;
+        }
+        copyMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+    }
+    allocate(false);
+}
+void Command::copyAccelerationStructure(std::shared_ptr<AccelerationStructure> source,
+                                        std::shared_ptr<AccelerationStructure> target) {
+    recording();
+    require(source && target && source->owner() == d.get() && target->owner() == d.get() && source != target,
+            "Invalid acceleration copy resources");
+    require(target->copySource.lock() == source && !target->built,
+            "Use a fresh copy destination created from the source");
+    buffers.push_back(source->storage);
+    buffers.push_back(target->storage);
+    operations.push_back([source, target](Command &c) {
+        require(source->built && source->generation == target->copyGeneration &&
+                    !c.accelerationStates.count(source.get()),
+                "Source changed after the copy destination was sized");
+        require(!target->built && !c.accelerationStates.count(target.get()), "Copy destination already initialized");
+        c.barrier();
+        VkCopyAccelerationStructureInfoKHR copy{VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+        copy.src = source->acceleration;
+        copy.dst = target->acceleration;
+        copy.mode = target->copyMode;
+        c.d->extensions->copyAcceleration(c.command, &copy);
         c.accelerationStates[target.get()] = true;
     });
 }

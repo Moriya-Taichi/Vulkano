@@ -37,7 +37,7 @@ AARは`vulkano/build/outputs/aar/vulkano-release.aar`に生成されます。ソ
 # Kotlinの契約テスト。通常はGPU統合テストをスキップ
 ./gradlew :vulkano:testDebugUnitTest
 
-# 接続したAndroid端末でJNI経由のComputeを検証
+# 接続したAndroid端末で共通の描画・Compute・Resourceテストを検証
 ./gradlew :vulkano:connectedDebugAndroidTest
 ```
 

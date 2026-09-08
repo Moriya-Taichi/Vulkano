@@ -45,11 +45,38 @@ VkImageView makeView(Device &d, VkImage image, VkFormat format) {
     check(vkCreateImageView(d.device, &info, nullptr, &view), "vkCreateImageView");
     return view;
 }
+void validateRateTexel(Device &d, VkExtent2D size) {
+    require(d.enabled & AttachmentRate, "Attachment shading rate was not enabled");
+    const auto &p = d.extensions->fragmentRateProperties;
+    require(size.width && !(size.width & (size.width - 1)) && size.height && !(size.height & (size.height - 1)) &&
+                size.width >= p.minFragmentShadingRateAttachmentTexelSize.width &&
+                size.height >= p.minFragmentShadingRateAttachmentTexelSize.height &&
+                size.width <= p.maxFragmentShadingRateAttachmentTexelSize.width &&
+                size.height <= p.maxFragmentShadingRateAttachmentTexelSize.height &&
+                uint64_t(size.width) <=
+                    uint64_t(size.height) * p.maxFragmentShadingRateAttachmentTexelSizeAspectRatio &&
+                uint64_t(size.height) <= uint64_t(size.width) * p.maxFragmentShadingRateAttachmentTexelSizeAspectRatio,
+            "Rate map texel size exceeds device limits");
+}
 VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat depth, VkSampleCountFlagBits samples,
                       const std::vector<Attachment> &targets = {},
                       VkAttachmentLoadOp depthLoad = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                      VkAttachmentStoreOp depthStore = VK_ATTACHMENT_STORE_OP_DONT_CARE, uint32_t viewMask = 0) {
+                      VkAttachmentStoreOp depthStore = VK_ATTACHMENT_STORE_OP_DONT_CARE, uint32_t viewMask = 0,
+                      const Render *render = nullptr) {
+    if (render && render->passLayout) {
+        require(!render->depthResolve && !render->rateMapTexelSize.width,
+                "Subpass layout cannot combine depth resolve or rate map");
+        return makeSubpassPass(d, *render->passLayout, targets, depthLoad, depthStore, viewMask);
+    }
     std::vector<int> key{int(colors.size()), depth, samples, depthLoad, depthStore, int(viewMask)};
+    const bool depthResolve = render && render->depthResolve;
+    const bool rateMap = render && render->rateMapTexelSize.width;
+    if (rateMap)
+        validateRateTexel(d, render->rateMapTexelSize);
+    key.insert(key.end(),
+               {rateMap ? int(render->rateMapTexelSize.width) : 0, rateMap ? int(render->rateMapTexelSize.height) : 0});
+    key.insert(key.end(), {depthResolve, depthResolve ? int(render->depthResolveMode) : 0,
+                           depthResolve ? int(render->stencilResolveMode) : 0});
     std::vector<VkAttachmentDescription> attachments;
     std::vector<VkAttachmentReference> refs, resolves;
     for (size_t n = 0; n < colors.size(); ++n) {
@@ -118,7 +145,90 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
     if (viewMask)
         i.pNext = &mv;
     VkRenderPass pass;
-    check(vkCreateRenderPass(d.device, &i, nullptr, &pass), "vkCreateRenderPass");
+    if (!depthResolve && !rateMap) {
+        check(vkCreateRenderPass(d.device, &i, nullptr, &pass), "vkCreateRenderPass");
+    } else {
+        require(!depthResolve || (d.enabled & DepthResolve), "Depth/stencil resolve feature was not enabled");
+        std::vector<VkAttachmentDescription2> descriptions;
+        for (const auto &a : attachments) {
+            VkAttachmentDescription2 b{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            b.flags = a.flags;
+            b.format = a.format;
+            b.samples = a.samples;
+            b.loadOp = a.loadOp;
+            b.storeOp = a.storeOp;
+            b.stencilLoadOp = a.stencilLoadOp;
+            b.stencilStoreOp = a.stencilStoreOp;
+            b.initialLayout = a.initialLayout;
+            b.finalLayout = a.finalLayout;
+            descriptions.push_back(b);
+        }
+        auto ref = [](const VkAttachmentReference &a) {
+            VkAttachmentReference2 b{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+            b.attachment = a.attachment;
+            b.layout = a.layout;
+            return b;
+        };
+        std::vector<VkAttachmentReference2> colors2, resolves2;
+        for (auto a : refs)
+            colors2.push_back(ref(a));
+        for (auto a : resolves)
+            resolves2.push_back(ref(a));
+        auto depth2 = ref(dr);
+        VkAttachmentReference2 resolve2{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+        resolve2.attachment = uint32_t(descriptions.size());
+        resolve2.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentDescription2 target{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+        target.format = depth;
+        target.samples = VK_SAMPLE_COUNT_1_BIT;
+        target.loadOp = target.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        target.storeOp = target.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        target.initialLayout = target.finalLayout = resolve2.layout;
+        if (depthResolve)
+            descriptions.push_back(target);
+        VkSubpassDescriptionDepthStencilResolve resolve{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+        resolve.depthResolveMode =
+            depthResolve && render->depth->depth() ? render->depthResolveMode : VK_RESOLVE_MODE_NONE;
+        resolve.stencilResolveMode =
+            depthResolve && render->depth->stencil() ? render->stencilResolveMode : VK_RESOLVE_MODE_NONE;
+        resolve.pDepthStencilResolveAttachment = &resolve2;
+        VkSubpassDescription2 sub2{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+        if (depthResolve)
+            sub2.pNext = &resolve;
+        VkAttachmentReference2 rateReference{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+        VkFragmentShadingRateAttachmentInfoKHR rateInfo{VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR};
+        if (rateMap) {
+            rateReference.attachment = uint32_t(descriptions.size());
+            rateReference.layout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+            VkAttachmentDescription2 rate{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            rate.format = VK_FORMAT_R8_UINT;
+            rate.samples = VK_SAMPLE_COUNT_1_BIT;
+            rate.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            rate.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            rate.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            rate.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            rate.initialLayout = rate.finalLayout = rateReference.layout;
+            descriptions.push_back(rate);
+            rateInfo.pFragmentShadingRateAttachment = &rateReference;
+            rateInfo.shadingRateAttachmentTexelSize = render->rateMapTexelSize;
+            rateInfo.pNext = sub2.pNext;
+            sub2.pNext = &rateInfo;
+        }
+        sub2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub2.viewMask = viewMask;
+        sub2.colorAttachmentCount = uint32_t(colors2.size());
+        sub2.pColorAttachments = colors2.data();
+        sub2.pResolveAttachments = anyResolve ? resolves2.data() : nullptr;
+        sub2.pDepthStencilAttachment = depth != VK_FORMAT_UNDEFINED ? &depth2 : nullptr;
+        VkRenderPassCreateInfo2 info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+        info.attachmentCount = uint32_t(descriptions.size());
+        info.pAttachments = descriptions.data();
+        info.subpassCount = 1;
+        info.pSubpasses = &sub2;
+        info.correlatedViewMaskCount = viewMask ? 1 : 0;
+        info.pCorrelatedViewMasks = &viewMask;
+        check(d.extensions->createRenderPass2(d.device, &info, nullptr, &pass), "vkCreateRenderPass2");
+    }
     try {
         d.renderPassCache.emplace(key, pass);
     } catch (...) {
@@ -132,6 +242,7 @@ struct Module {
     VkShaderModule module = VK_NULL_HANDLE;
     uint32_t entryId = 0;
     std::vector<BindingLayout> reflectedBindings;
+    std::map<uint32_t, int> inputs, outputs;
     uint32_t reflectedPushBytes = 0;
     std::array<uint32_t, 3> local{0, 0, 0};
     std::vector<VkSpecializationMapEntry> specEntries;
@@ -149,6 +260,9 @@ struct Module {
         for (size_t i = 5; i < code.size();) {
             uint32_t words = code[i] >> 16, op = code[i] & 0xffff;
             require(words > 0 && words <= code.size() - i, "Malformed SPIR-V instruction");
+            if (op == SpvOpDecorate && words == 4 && code[i + 2] == SpvDecorationBuiltIn &&
+                code[i + 3] == SpvBuiltInPrimitiveShadingRateKHR)
+                require(d.enabled & PrimitiveRate, "Primitive shading rate shader feature was not enabled");
             if (op == SpvOpMemoryModel)
                 require(
                     words == 3 &&
@@ -237,11 +351,53 @@ struct Module {
         require(reflectedEntry &&
                     reflectedEntry->spirv_execution_model == static_cast<SpvExecutionModel>(executionModel),
                 "Invalid shader stage");
+        auto interface = [&](auto &&self, const SpvReflectInterfaceVariable &v, std::map<uint32_t, int> &out) -> void {
+            if (v.decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
+                return;
+            if (v.member_count) {
+                for (uint32_t n = 0; n < v.member_count; ++n)
+                    self(self, v.members[n], out);
+                return;
+            }
+            require(v.location != UINT32_MAX, "Shader interface has no location");
+            uint64_t locations = std::max(1u, v.numeric.matrix.column_count);
+            for (uint32_t n = 0; n < v.array.dims_count; ++n) {
+                require(v.array.dims[n] > 0 && locations <= UINT32_MAX / v.array.dims[n], "Invalid interface array");
+                locations *= v.array.dims[n];
+            }
+            if (v.numeric.scalar.width == 64 && v.numeric.vector.component_count > 2)
+                locations *= 2;
+            require(locations <= 128 && v.location <= UINT32_MAX - locations,
+                    "Shader interface exceeds supported location range");
+            for (uint32_t n = 0; n < locations; ++n)
+                out[v.location + n] = numericClass(VkFormat(v.format));
+        };
+        if (executionModel == 0)
+            for (uint32_t n = 0; n < reflectedEntry->input_variable_count; ++n)
+                interface(interface, *reflectedEntry->input_variables[n], inputs);
+        if (executionModel == 4)
+            for (uint32_t n = 0; n < reflectedEntry->output_variable_count; ++n)
+                interface(interface, *reflectedEntry->output_variables[n], outputs);
+        // Public FunctionConstants stores exactly one 32-bit scalar per constant ID.
+        std::map<uint32_t, uint32_t> scalarSizes, constantTypes;
+        for (size_t at = 5; at < code.size(); at += code[at] >> 16) {
+            const auto op = code[at] & 0xffff, words = code[at] >> 16;
+            if (op == SpvOpTypeBool && words == 2)
+                scalarSizes[code[at + 1]] = 4;
+            if ((op == SpvOpTypeInt || op == SpvOpTypeFloat) && words >= 3)
+                scalarSizes[code[at + 1]] = code[at + 2] / 8;
+            if ((op == SpvOpSpecConstant || op == SpvOpSpecConstantTrue || op == SpvOpSpecConstantFalse) && words >= 3)
+                constantTypes[code[at + 2]] = code[at + 1];
+        }
         for (const auto &[id, value] : shader.constants) {
             bool found = false;
             for (uint32_t n = 0; n < reflection.spec_constant_count; ++n)
-                if (reflection.spec_constants[n].constant_id == id)
+                if (reflection.spec_constants[n].constant_id == id) {
+                    auto type = constantTypes.find(reflection.spec_constants[n].spirv_id);
+                    require(type != constantTypes.end() && scalarSizes[type->second] == 4,
+                            "Function constant must be a 32-bit scalar");
                     found = true;
+                }
             require(found, "Unknown specialization constant ID");
             specEntries.push_back({id, uint32_t(specData.size() * 4), 4});
             specData.push_back(value);
@@ -253,6 +409,11 @@ struct Module {
             uint64_t requiredFeature = 0;
             VkSubgroupFeatureFlags subgroupOperation = 0;
             switch (cap) {
+            case SpvCapabilityCooperativeMatrixKHR:
+                require(executionModel == 5, "Cooperative matrix is exposed in compute shaders");
+                validateCooperativeShader(d, shader, local);
+                requiredFeature = CooperativeMatrix;
+                break;
             case SpvCapabilityMatrix:
             case SpvCapabilityShader:
             case SpvCapabilityImageQuery:
@@ -261,15 +422,18 @@ struct Module {
             case SpvCapabilityImage1D:
             case SpvCapabilitySampledBuffer:
             case SpvCapabilityImageBuffer:
+            case SpvCapabilityInputAttachment:
             case SpvCapabilityImageMSArray:
                 break;
             case SpvCapabilityImageGatherExtended:
                 requiredFeature = ImageGather;
                 break;
             case SpvCapabilityInt8:
+                hasSmallArithmetic = true;
                 requiredFeature = Int8;
                 break;
             case SpvCapabilityFloat64:
+                hasSmallArithmetic = true;
                 requiredFeature = Float64;
                 break;
             case SpvCapabilityStorageBuffer8BitAccess:
@@ -341,10 +505,14 @@ struct Module {
             case SpvCapabilityVulkanMemoryModelDeviceScope:
                 requiredFeature = MemoryModel;
                 break;
+            case SpvCapabilityFragmentShadingRateKHR:
+                requiredFeature = FragmentRate | PrimitiveRate | AttachmentRate;
+                break;
             case SpvCapabilityTessellation:
                 requiredFeature = Tessellation;
                 break;
             case SpvCapabilityInt64:
+                hasSmallArithmetic = true;
                 requiredFeature = Int64;
                 break;
             case SpvCapabilityPhysicalStorageBufferAddresses:
@@ -427,8 +595,7 @@ struct Module {
                         "Unsupported subgroup stage/operation");
             }
         }
-        require(!(hasSubgroups && (hasSmallArithmetic || (d.enabled & (Int8 | Int64 | Float64)))) ||
-                    (d.enabled & SubgroupExtended),
+        require(!(hasSubgroups && hasSmallArithmetic) || (d.enabled & SubgroupExtended),
                 "16-bit arithmetic with subgroups requires extended-type support, which is not enabled");
         for (uint32_t set = 0; set < reflectedEntry->descriptor_set_count; ++set) {
             const auto &descriptors = reflectedEntry->descriptor_sets[set];
@@ -444,6 +611,15 @@ struct Module {
                 binding.arrayed = b.image.arrayed;
                 binding.multisampled = b.image.ms;
                 binding.shadow = b.image.depth;
+                if (b.type_description &&
+                    (b.type_description->type_flags &
+                     (SPV_REFLECT_TYPE_FLAG_EXTERNAL_IMAGE | SPV_REFLECT_TYPE_FLAG_EXTERNAL_SAMPLED_IMAGE))) {
+                    const auto &t = *b.type_description;
+                    require(t.traits.numeric.scalar.width == 32, "Image sampled components must be 32-bit scalars");
+                    binding.numericType = (t.type_flags & SPV_REFLECT_TYPE_FLAG_FLOAT) ? 0
+                                          : t.traits.numeric.scalar.signedness         ? 1
+                                                                                       : 2;
+                }
                 if (binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
                     binding.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
                     binding.minimumBytes = b.block.size;
@@ -469,6 +645,11 @@ struct Module {
                             "Unsupported image dimension");
                     if (binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
                         binding.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                        if (executionModel <= 4 || executionModel == SpvExecutionModelMeshEXT ||
+                            executionModel == SpvExecutionModelTaskEXT)
+                            require((b.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) ||
+                                        (d.enabled & (executionModel == 4 ? FragmentStores : VertexStores)),
+                                    "Writable graphics images require stores/atomics feature");
                         switch (b.image.image_format) {
                         case SpvImageFormatUnknown:
                             require(d.enabled & (StorageRead | StorageWrite),
@@ -597,6 +778,10 @@ struct Module {
                                 "Unsupported storage image format; declare rgba8/rgba16f/rgba32f/r32f");
                         }
                     }
+                } else if (binding.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                    require(executionModel == 4 && b.count == 1,
+                            "Input attachment must be a scalar fragment descriptor");
+                    binding.inputAttachmentIndex = b.input_attachment_index;
                 } else if (binding.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
                 } else if (binding.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
                     require(d.enabled & (RayQuery | RayPipeline), "Acceleration binding requires ray tracing feature");
@@ -636,7 +821,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
             if (!inserted) {
                 require(it->second.type == b.type && it->second.storageFormat == b.storageFormat &&
                             it->second.count == b.count && it->second.imageDim == b.imageDim &&
-                            it->second.arrayed == b.arrayed && it->second.multisampled == b.multisampled,
+                            it->second.arrayed == b.arrayed && it->second.multisampled == b.multisampled &&
+                            it->second.numericType == b.numericType &&
+                            it->second.inputAttachmentIndex == b.inputAttachmentIndex,
                         "Shader stages disagree on descriptor type");
                 it->second.minimumBytes = std::max(it->second.minimumBytes, b.minimumBytes);
                 it->second.stages |= b.stages;
@@ -669,7 +856,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware) {
-    require((required >> 54) == 0, "Unknown requested feature");
+    require((required >> 59) == 0, "Unknown requested feature");
     if (required & (RayQuery | RayPipeline))
         required |= BufferAddress;
     if (required & TaskShader)
@@ -678,6 +865,8 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         required |= Storage16;
     if (required & Atomics64)
         required |= Int64;
+    if (required & CooperativeMatrix)
+        required |= MemoryModel;
     auto result = std::make_shared<Device>();
     uint32_t loaderVersion = VK_API_VERSION_1_0;
     check(vkEnumerateInstanceVersion(&loaderVersion), "vkEnumerateInstanceVersion");
@@ -872,6 +1061,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
 Device::~Device() {
     if (device)
         vkDeviceWaitIdle(device);
+    reclaimPresentation(true);
     for (auto [key, pass] : renderPassCache) {
         (void)key;
         vkDestroyRenderPass(device, pass, nullptr);
@@ -894,6 +1084,8 @@ void Device::collect() {
                                      return !cmd || cmd->wait(0);
                                  }),
                   pending.end());
+    if (pending.empty())
+        reclaimPresentation();
 }
 void Device::waitIdle() {
     check(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
@@ -976,7 +1168,7 @@ void Pipeline::makeLayout() {
                     b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR ||
                     b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || b.type == VK_DESCRIPTOR_TYPE_SAMPLER ||
                     b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
-                    b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+                    b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER || b.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
                 "Unsupported descriptor type");
 
         counts[b.type] += b.count;
@@ -996,6 +1188,9 @@ void Pipeline::makeLayout() {
                 "Too many sampled images/texel buffers");
         require(samplers <= (perStage ? l.maxPerStageDescriptorSamplers : l.maxDescriptorSetSamplers),
                 "Too many samplers");
+        require(count(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) <=
+                    (perStage ? l.maxPerStageDescriptorInputAttachments : l.maxDescriptorSetInputAttachments),
+                "Too many input attachments");
         require(storage <= (perStage ? l.maxPerStageDescriptorStorageImages : l.maxDescriptorSetStorageImages),
                 "Too many storage images/texel buffers");
         require(count(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) <=
@@ -1083,6 +1278,18 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
     try {
         auto &g = graphics;
         const auto &l = d->properties.limits;
+        if (g.passLayout) {
+            validateSubpassLayout(*d, *g.passLayout);
+            require(g.subpass < g.passLayout->subpasses.size(), "Invalid subpass index");
+            const auto &sub = g.passLayout->subpasses[g.subpass];
+            std::vector<VkFormat> outputs;
+            for (auto index : sub.colors)
+                outputs.push_back(g.passLayout->colors[index]);
+            require(outputs == g.colors && g.samples == g.passLayout->samples &&
+                        depth == (sub.depth ? g.passLayout->depth : VK_FORMAT_UNDEFINED),
+                    "Pipeline formats do not match subpass layout");
+        } else
+            require(g.subpass == 0, "Subpass index requires a render pass layout");
         if (g.colors.empty() && color != VK_FORMAT_UNDEFINED)
             g.colors.push_back(color);
         require(g.colors.size() <= l.maxColorAttachments, "Too many color attachments");
@@ -1160,6 +1367,20 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
                             g.vertexBindings.empty() && g.attributes.empty()),
                 "Invalid/disabled mesh pipeline");
         Module vs(*d, vertex, g.mesh ? SpvExecutionModelMeshEXT : 0), fs(*d, fragment, 4);
+        for (const auto &[location, kind] : vs.inputs) {
+            const auto attribute = std::find_if(g.attributes.begin(), g.attributes.end(),
+                                                [&](const auto &a) { return a.location == location; });
+            require(attribute != g.attributes.end(), "Vertex shader input has no attribute");
+            require(numericClass(attribute->format) == kind, "Vertex attribute numeric type differs from shader");
+        }
+        for (const auto &binding : fs.reflectedBindings)
+            if (binding.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+                require(g.passLayout && binding.inputAttachmentIndex < g.passLayout->subpasses[g.subpass].inputs.size(),
+                        "Shader input attachment index is missing in subpass");
+        for (const auto &[location, kind] : fs.outputs)
+            if (location < g.colors.size())
+                require(numericClass(g.colors[location]) == kind,
+                        "Fragment output numeric type differs from attachment");
         stages = (g.mesh ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT;
         std::unique_ptr<Module> task;
         if (g.task) {
@@ -1190,8 +1411,11 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         require(!g.viewMask || (32u - uint32_t(__builtin_clz(g.viewMask))) <=
                                    d->extensions->multiviewProperties.maxMultiviewViewCount,
                 "View mask exceeds multiview limit");
+        Render compatibleRender;
+        compatibleRender.rateMapTexelSize = g.rateMapTexelSize;
+        compatibleRender.passLayout = g.passLayout;
         compatiblePass = makePass(*d, g.colors, depth, g.samples, {}, VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                  VK_ATTACHMENT_STORE_OP_DONT_CARE, g.viewMask);
+                                  VK_ATTACHMENT_STORE_OP_DONT_CARE, g.viewMask, &compatibleRender);
         std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
         auto stage = [&](Module &m, const Shader &s, VkShaderStageFlagBits flag) {
             shaderStages.push_back({VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, flag, m.module,
@@ -1253,7 +1477,46 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         dyn.dynamicStateCount = 6;
         dyn.pDynamicStates = states;
+        VkPipelineFragmentShadingRateStateCreateInfoKHR rate{
+            VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR};
+        rate.fragmentSize = g.fragmentSize;
+        rate.combinerOps[0] = g.primitiveRateCombiner;
+        rate.combinerOps[1] = g.attachmentRateCombiner;
+        const bool useRate = g.fragmentSize.width != 1 || g.fragmentSize.height != 1 ||
+                             g.primitiveRateCombiner != VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR ||
+                             g.attachmentRateCombiner != VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
+        require(!useRate || (d->enabled & (FragmentRate | PrimitiveRate | AttachmentRate)),
+                "Fragment shading rate was not enabled");
+        if (useRate) {
+            require((d->enabled & FragmentRate) || (g.fragmentSize.width == 1 && g.fragmentSize.height == 1),
+                    "Pipeline fragment shading rate was not enabled");
+            require(g.primitiveRateCombiner == VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR ||
+                        (d->enabled & PrimitiveRate),
+                    "Primitive shading rate was not enabled");
+            require(g.attachmentRateCombiner == VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR ||
+                        ((d->enabled & AttachmentRate) && g.rateMapTexelSize.width),
+                    "Rate map combiner requires a rate map layout");
+            require(g.attachmentRateCombiner <= VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR &&
+                        (g.attachmentRateCombiner <= VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR ||
+                         d->extensions->fragmentRateProperties.fragmentShadingRateNonTrivialCombinerOps),
+                    "Unsupported rate map combiner");
+            require(g.primitiveRateCombiner <= VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR &&
+                        (g.primitiveRateCombiner <= VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR ||
+                         d->extensions->fragmentRateProperties.fragmentShadingRateNonTrivialCombinerOps),
+                    "Unsupported shading rate combiner");
+            require(std::any_of(d->extensions->fragmentRates.begin(), d->extensions->fragmentRates.end(),
+                                [&](const auto &r) {
+                                    return r.fragmentSize.width == g.fragmentSize.width &&
+                                           r.fragmentSize.height == g.fragmentSize.height &&
+                                           (r.sampleCounts & g.samples);
+                                }),
+                    "Unsupported fragment size/sample count combination");
+            require(!g.mesh || g.primitiveRateCombiner == VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+                    "Mesh primitive shading rate requires additional mesh feature");
+        }
         VkGraphicsPipelineCreateInfo i{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        if (useRate)
+            i.pNext = &rate;
         i.stageCount = uint32_t(shaderStages.size());
         i.pStages = shaderStages.data();
         i.pVertexInputState = g.mesh ? nullptr : &vi;
@@ -1267,6 +1530,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         i.pDynamicState = &dyn;
         i.layout = layout;
         i.renderPass = compatiblePass;
+        i.subpass = g.subpass;
         check(vkCreateGraphicsPipelines(d->device, d->pipelineCache, 1, &i, nullptr, &pipeline),
               "vkCreateGraphicsPipelines");
     } catch (...) {
@@ -1482,6 +1746,16 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                     "Buffer binding offset is not aligned");
             require(b.length <= (uniform ? limits.maxUniformBufferRange : limits.maxStorageBufferRange),
                     "Buffer binding exceeds device range limit");
+        } else if (schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+            require(b.texture && !b.sampler && !b.buffer && !b.texel && !b.acceleration &&
+                        (b.texture->usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) && b.texture->options.mipLevels == 1 &&
+                        b.texture->imageType() == VK_IMAGE_TYPE_2D &&
+                        schema->multisampled == (b.texture->options.samples > 1),
+                    "Invalid input attachment binding");
+            same(*this, *b.texture);
+            b.texture->usable();
+            require(numericClass(b.texture->format) == schema->numericType,
+                    "Input attachment numeric type differs from shader");
         } else if (schema->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
             require(b.sampler && !b.texture && !b.buffer && !b.texel && !b.acceleration, "Sampler binding required");
             same(*this, *b.sampler);
@@ -1490,6 +1764,8 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
             require(b.texel && !b.buffer && !b.texture && !b.acceleration && !b.sampler,
                     "Texture buffer binding required");
             same(*this, *b.texel);
+            require(numericClass(b.texel->format) == schema->numericType,
+                    "Texel buffer numeric type differs from shader");
             require(b.texel->writable == (schema->type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER),
                     "Texture buffer read/write type mismatch");
             require(!b.texel->writable ||
@@ -1504,6 +1780,7 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
             require(b.texture && !b.buffer, "Binding requires a texture");
             same(*this, *b.texture);
             b.texture->usable();
+            require(numericClass(b.texture->format) == schema->numericType, "Texture numeric type differs from shader");
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                                  schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             require(sampled || (b.texture->options.mipLevels == 1 && (schema->storageFormat == VK_FORMAT_UNDEFINED ||
@@ -1534,6 +1811,9 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                 require(!b.sampler->linear ||
                             (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT),
                         "Texture format does not support linear filtering");
+                require(b.sampler->reductionMode == VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE ||
+                            (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT),
+                        "Texture format does not support min/max filtering");
             }
         }
     }
@@ -1552,6 +1832,8 @@ void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, b
                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             auto schema =
                 std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.binding == b.index; });
+            if (schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+                continue;
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                                  schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             transition(*b.texture, layout, !compute || sampled);
@@ -1649,7 +1931,8 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 } else {
                     imageInfo[i] = {b.sampler ? b.sampler->sampler : VK_NULL_HANDLE,
                                     b.texture ? b.texture->view : VK_NULL_HANDLE,
-                                    (b.texture && (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT))
+                                    (w.descriptorType != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && b.texture &&
+                                     (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT))
                                         ? VK_IMAGE_LAYOUT_GENERAL
                                         : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                     w.pImageInfo = &imageInfo[i];
@@ -1751,6 +2034,83 @@ void Command::render(Render op) {
         attachment(op.depth, op.depthMip, op.depthLayer, op.depthLoad, op.depthStore, samples, true);
         require(std::isfinite(op.clearDepth) && op.clearDepth >= 0 && op.clearDepth <= 1, "Invalid depth clear");
     }
+    if (op.depthResolve) {
+        require(op.depth && samples > 1 && (d->enabled & DepthResolve) && op.depth->format == op.depthResolve->format,
+                "Invalid/disabled depth resolve");
+        attachment(op.depthResolve, op.depthResolveMip, op.depthResolveLayer, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                   VK_ATTACHMENT_STORE_OP_STORE, VK_SAMPLE_COUNT_1_BIT, true);
+        const auto &p = d->extensions->depthResolveProperties;
+        auto supported = [](VkResolveModeFlagBits mode, VkResolveModeFlags flags) {
+            return mode && !(mode & (mode - 1)) && (mode & flags);
+        };
+        require(!op.depth->depth() || supported(op.depthResolveMode, p.supportedDepthResolveModes),
+                "Unsupported depth resolve mode");
+        require(!op.depth->stencil() || supported(op.stencilResolveMode, p.supportedStencilResolveModes),
+                "Unsupported stencil resolve mode");
+        require(!op.depth->depth() || !op.depth->stencil() || p.independentResolve ||
+                    op.depthResolveMode == op.stencilResolveMode,
+                "Device requires matching depth/stencil resolve modes");
+    }
+    if (op.passLayout) {
+        validateSubpassLayout(*d, *op.passLayout);
+        require(!op.depthResolve && !op.rateMap, "Unsupported subpass extension combination");
+        require(op.passLayout->colors == formats && op.passLayout->samples == samples &&
+                    op.passLayout->depth == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED),
+                "Render attachments do not match subpass layout");
+        for (size_t n = 0; n < op.colors.size(); ++n)
+            require(bool(op.colors[n].resolve) ==
+                        (std::find(op.passLayout->resolveColors.begin(), op.passLayout->resolveColors.end(), n) !=
+                         op.passLayout->resolveColors.end()),
+                    "Resolve targets differ from subpass layout");
+        std::set<uint32_t> usedAttachments;
+        for (const auto &sub : op.passLayout->subpasses) {
+            for (auto input : sub.inputs) {
+                const auto base = op.colors.size() + bool(op.depth);
+                auto t = input < op.colors.size() ? op.colors[input].texture
+                         : input < base           ? op.depth
+                                                  : op.colors[op.passLayout->resolveColors[input - base]].resolve;
+                require(t && (t->usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT),
+                        "Subpass input requires INPUT_ATTACHMENT usage");
+                if (!usedAttachments.count(input))
+                    require(input < base && (input < op.colors.size() ? op.colors[input].load : op.depthLoad) ==
+                                                VK_ATTACHMENT_LOAD_OP_LOAD,
+                            "Attachment first used as input must LOAD previously initialized contents");
+            }
+            usedAttachments.insert(sub.inputs.begin(), sub.inputs.end());
+            usedAttachments.insert(sub.colors.begin(), sub.colors.end());
+            for (size_t n = 0; n < op.passLayout->resolveColors.size(); ++n)
+                if (std::find(sub.colors.begin(), sub.colors.end(), op.passLayout->resolveColors[n]) !=
+                    sub.colors.end())
+                    usedAttachments.insert(op.colors.size() + bool(op.depth) + n);
+            if (sub.depth)
+                usedAttachments.insert(uint32_t(op.colors.size()));
+        }
+    }
+    require(bool(op.rateMap) == bool(op.rateMapTexelSize.width),
+            "Rate map texture and texel size must be provided together");
+    if (op.rateMap) {
+        validateRateTexel(*d, op.rateMapTexelSize);
+        same(*this, *op.rateMap);
+        auto &t = *op.rateMap;
+        t.usable();
+        const auto size = t.extent(op.rateMip);
+        require(t.format == VK_FORMAT_R8_UINT && t.options.samples == 1 && t.imageType() == VK_IMAGE_TYPE_2D &&
+                    (t.usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR),
+                "Invalid rate map texture");
+        require(uint64_t(size.width) * op.rateMapTexelSize.width >= extent.width &&
+                    uint64_t(size.height) * op.rateMapTexelSize.height >= extent.height,
+                "Rate map is too small for render area");
+        require(op.rateLayer < t.options.layers &&
+                    (t.options.layers - op.rateLayer == 1 ||
+                     (d->extensions->fragmentRateProperties.layeredShadingRateAttachments &&
+                      t.options.layers - op.rateLayer >= op.layers)),
+                "Invalid rate map layer range");
+        for (auto [root, mip, layer] : used) {
+            (void)mip;
+            (void)layer;
+            require(&t.root() != root, "Rate map aliases a render target");
+        }
+    }
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
     for (const auto &draw : op.draws) {
         if (draw.visibility) {
@@ -1764,15 +2124,53 @@ void Command::render(Render op) {
         }
         require(draw.pipeline && !draw.pipeline->compute, "Graphics pipeline required");
         validateBindings(*draw.pipeline, draw.bindings, draw.constants);
-        require(draw.pipeline->graphics.colors == formats &&
-                    draw.pipeline->depthFormat == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED) &&
-                    draw.pipeline->graphics.samples == samples && draw.pipeline->graphics.viewMask == op.viewMask,
-                "Pipeline attachment formats/sample count mismatch");
+        if (op.passLayout) {
+            require(
+                draw.pipeline->graphics.passLayout && draw.pipeline->graphics.passLayout->key == op.passLayout->key &&
+                    draw.subpass == draw.pipeline->graphics.subpass && draw.subpass < op.passLayout->subpasses.size() &&
+                    draw.pipeline->graphics.viewMask == op.viewMask,
+                "Pipeline subpass layout/index mismatch");
+        } else {
+            require(!draw.pipeline->graphics.passLayout && draw.pipeline->graphics.colors == formats &&
+                        draw.pipeline->depthFormat == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED) &&
+                        draw.pipeline->graphics.samples == samples && draw.pipeline->graphics.viewMask == op.viewMask,
+                    "Pipeline attachment formats/sample count mismatch");
+        }
+        require(draw.pipeline->graphics.rateMapTexelSize.width == op.rateMapTexelSize.width &&
+                    draw.pipeline->graphics.rateMapTexelSize.height == op.rateMapTexelSize.height,
+                "Pipeline rate map layout differs from render pass");
         for (const auto &b : draw.bindings) {
             if (b.texel)
                 buffers.push_back(b.texel->buffer);
             if (b.buffer)
                 buffers.push_back(b.buffer);
+            const auto schema = std::find_if(draw.pipeline->bindings.begin(), draw.pipeline->bindings.end(),
+                                             [&](const auto &s) { return s.binding == b.index; });
+            if (schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+                require(op.passLayout &&
+                            schema->inputAttachmentIndex < op.passLayout->subpasses[draw.subpass].inputs.size(),
+                        "Missing input attachment index");
+                const auto index = op.passLayout->subpasses[draw.subpass].inputs[schema->inputAttachmentIndex];
+                const auto base = op.colors.size() + bool(op.depth);
+                const auto *resolved = index >= base ? &op.colors[op.passLayout->resolveColors[index - base]] : nullptr;
+                const auto &t = resolved                   ? resolved->resolve
+                                : index < op.colors.size() ? op.colors[index].texture
+                                                           : op.depth;
+                const auto mip = resolved                   ? resolved->resolveMip
+                                 : index < op.colors.size() ? op.colors[index].mip
+                                                            : op.depthMip;
+                const auto layer = resolved                   ? resolved->resolveLayer
+                                   : index < op.colors.size() ? op.colors[index].layer
+                                                              : op.depthLayer;
+                require(b.texture && &b.texture->root() == &t->root() && b.texture->format == t->format &&
+                            b.texture->baseMip == t->baseMip + mip && b.texture->baseLayer == t->baseLayer + layer &&
+                            b.texture->options.layers == op.layers,
+                        "Input descriptor does not match framebuffer attachment subresource");
+                continue;
+            }
+            if (b.texture && op.rateMap)
+                require(&b.texture->root() != &op.rateMap->root(),
+                        "Rate map cannot also be a shader binding in its pass");
             if (b.texture)
                 for (auto [root, mip, layer] : used) {
                     (void)mip;
@@ -1817,7 +2215,9 @@ void Command::render(Render op) {
             range(draw.indirect->size, draw.indirectOffset, uint64_t(draw.drawCount - 1) * draw.stride + commandBytes);
             buffers.push_back(draw.indirect);
         } else
-            require(draw.vertices && draw.instances && draw.firstVertex <= UINT32_MAX - draw.vertices &&
+            require((!op.viewMask || uint64_t(draw.firstInstance) + draw.instances - 1 <=
+                                         d->extensions->multiviewProperties.maxMultiviewInstanceIndex) &&
+                        draw.vertices && draw.instances && draw.firstVertex <= UINT32_MAX - draw.vertices &&
                         draw.firstInstance <= UINT32_MAX - draw.instances,
                     "Invalid draw counts");
         std::set<uint32_t> bound;
@@ -1848,7 +2248,8 @@ void Command::render(Render op) {
                         uint64_t(s.offset.y) + s.extent.height <= extent.height,
                     "Invalid scissor");
         require(std::isfinite(draw.lineWidth) && draw.lineWidth > 0 &&
-                    (draw.lineWidth == 1 || (d->enabled & WideLines)),
+                    (draw.lineWidth == 1 || ((d->enabled & WideLines) && draw.lineWidth >= l.lineWidthRange[0] &&
+                                             draw.lineWidth <= l.lineWidthRange[1])),
                 "Invalid/disabled wide line");
         require(std::isfinite(draw.biasClamp) && std::isfinite(draw.depthBias) && std::isfinite(draw.slopeBias) &&
                     (draw.biasClamp == 0 || (d->enabled & DepthBiasClamp)),
@@ -1878,7 +2279,7 @@ void Command::render(Render op) {
                        a.mip, a.layer);
             views.push_back(a.texture->attachmentView(a.mip, a.layer, op.layers));
             VkClearValue value{};
-            std::copy(a.clear.begin(), a.clear.end(), value.color.float32);
+            std::memcpy(&value.color, a.clear.data(), sizeof(value.color));
             clears.push_back(value);
         }
         if (op.depth) {
@@ -1895,8 +2296,21 @@ void Command::render(Render op) {
                 views.push_back(a.resolve->attachmentView(a.resolveMip, a.resolveLayer, op.layers));
                 clears.push_back({});
             }
+        if (op.depthResolve) {
+            transition(*op.depthResolve, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, op.depthResolveMip,
+                       op.depthResolveLayer);
+            views.push_back(op.depthResolve->attachmentView(op.depthResolveMip, op.depthResolveLayer, op.layers));
+            clears.push_back({});
+        }
+        if (op.rateMap) {
+            const auto layers = op.rateMap->options.layers - op.rateLayer == 1 ? 1 : op.layers;
+            c.transition(*op.rateMap, VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR, true, op.rateMip,
+                         op.rateLayer, 1, layers);
+            views.push_back(op.rateMap->attachmentView(op.rateMip, op.rateLayer, layers));
+            clears.push_back({});
+        }
         auto pass = makePass(*c.d, formats, op.depth ? op.depth->format : VK_FORMAT_UNDEFINED, samples, op.colors,
-                             op.depthLoad, op.depthStore, op.viewMask);
+                             op.depthLoad, op.depthStore, op.viewMask, &op);
         VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fi.renderPass = pass;
         fi.attachmentCount = uint32_t(views.size());
@@ -1915,7 +2329,12 @@ void Command::render(Render op) {
         bi.clearValueCount = uint32_t(clears.size());
         bi.pClearValues = clears.data();
         vkCmdBeginRenderPass(c.command, &bi, VK_SUBPASS_CONTENTS_INLINE);
+        uint32_t activeSubpass = 0;
         for (const auto &draw : op.draws) {
+            while (activeSubpass < draw.subpass) {
+                vkCmdNextSubpass(c.command, VK_SUBPASS_CONTENTS_INLINE);
+                ++activeSubpass;
+            }
             const VkViewport defaultViewport{0, float(extent.height), float(extent.width), -float(extent.height), 0, 1};
             const VkRect2D defaultScissor{{0, 0}, {extent.width, extent.height}};
             for (uint32_t n = 0; n < draw.pipeline->graphics.viewportCount; ++n) {
@@ -1954,12 +2373,19 @@ void Command::render(Render op) {
             if (draw.visibility)
                 vkCmdEndQuery(c.command, draw.visibility->pool, draw.visibilityIndex);
         }
+        if (op.passLayout)
+            while (activeSubpass + 1 < op.passLayout->subpasses.size()) {
+                vkCmdNextSubpass(c.command, VK_SUBPASS_CONTENTS_INLINE);
+                ++activeSubpass;
+            }
         vkCmdEndRenderPass(c.command);
         for (const auto &a : op.colors) {
             initialized(*a.texture, a.store == VK_ATTACHMENT_STORE_OP_STORE, a.mip, a.layer);
             if (a.resolve)
                 initialized(*a.resolve, true, a.resolveMip, a.resolveLayer);
         }
+        if (op.depthResolve)
+            initialized(*op.depthResolve, true, op.depthResolveMip, op.depthResolveLayer);
         if (op.depth)
             initialized(*op.depth, op.depthStore == VK_ATTACHMENT_STORE_OP_STORE, op.depthMip, op.depthLayer);
     });
@@ -1974,7 +2400,7 @@ void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkD
     range(dst->size, to, size);
     require((src->usage & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) && (dst->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT),
             "Blit requires transfer usage");
-    require(src != dst, "Copies within the same buffer are unsupported");
+    require(src != dst || so + size <= to || to + size <= so, "Buffer copy ranges overlap");
     require(so % 4 == 0 && to % 4 == 0 && size % 4 == 0, "Buffer blits require 4-byte alignment");
     buffers.push_back(src);
     buffers.push_back(dst);
@@ -2027,10 +2453,18 @@ void Command::commit() {
         std::vector<VkSemaphore> waits, signals;
         std::vector<uint64_t> waitValues, signalValues;
         for (const auto &[event, value] : eventWaits) {
+            const auto current = event->value();
+            require(value <= current ||
+                        value - current <= d->extensions->timelineProperties.maxTimelineSemaphoreValueDifference,
+                    "Event wait exceeds timeline distance limit");
             waits.push_back(event->semaphore);
             waitValues.push_back(value);
         }
         for (const auto &[event, value] : eventSignals) {
+            const auto current = event->value();
+            require(value > current &&
+                        value - current <= d->extensions->timelineProperties.maxTimelineSemaphoreValueDifference,
+                    "Event signal exceeds timeline distance limit");
             require(value > event->lastScheduled && value > event->value(),
                     "Event signals must increase monotonically");
             for (const auto &wait : eventWaits)
@@ -2078,8 +2512,10 @@ void Command::commit() {
         }
         for (auto &b : buffers)
             ++b->inFlight;
-        for (const auto &[a, built] : accelerationStates)
+        for (const auto &[a, built] : accelerationStates) {
             a->built = built;
+            ++a->generation;
+        }
         for (const auto &[texture, current] : images) {
             texture->states = current;
             texture->layout = current[0].layout;
@@ -2149,6 +2585,7 @@ Command::~Command() {
 Surface::Surface(std::shared_ptr<Device> device, ANativeWindow *nativeWindow, uint32_t w, uint32_t h)
     : Resource(std::move(device)), requestedWidth(w), requestedHeight(h), window(nativeWindow) {
     require(window != nullptr && w > 0 && h > 0, "Invalid Android surface size");
+    d->retiredSurfaces.reserve(d->retiredSurfaces.size() + d->liveSurfaces + 1);
     ANativeWindow_acquire(window);
     try {
         VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
@@ -2159,6 +2596,7 @@ Surface::Surface(std::shared_ptr<Device> device, ANativeWindow *nativeWindow, ui
               "query presentation support");
         require(supported, "Selected graphics/compute queue cannot present to this surface");
         rebuild();
+        ++d->liveSurfaces;
     } catch (...) {
         for (auto view : views)
             vkDestroyImageView(d->device, view, nullptr);
@@ -2173,6 +2611,9 @@ Surface::Surface(std::shared_ptr<Device> device, ANativeWindow *nativeWindow, ui
 #endif
 void Surface::rebuild() {
     require(!outstanding, "Close or present the acquired drawable before resizing");
+    d->collect();
+    require(d->pending.empty() && d->retiredDrawables.empty(),
+            "Complete submitted work and image acquisition before rebuilding the surface");
     d->waitIdle();
     VkSurfaceCapabilitiesKHR caps;
     check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(d->physical, surface, &caps), "query surface capabilities");
@@ -2251,6 +2692,9 @@ void Surface::resize(uint32_t width, uint32_t height) {
 }
 std::shared_ptr<Drawable> Surface::acquire(uint64_t timeout) {
     require(!outstanding, "Only one drawable may be acquired per surface");
+    d->collect();
+    if (!d->pending.empty() || !d->retiredDrawables.empty())
+        return nullptr;
     // Conservative pacing: presentation waits must finish before semaphores or
     // swapchain views can be reused/destroyed. No presentation-fence extension required.
     d->waitIdle();
@@ -2278,25 +2722,24 @@ std::shared_ptr<Drawable> Surface::acquire(uint64_t timeout) {
     return drawable;
 }
 Surface::~Surface() {
-    vkQueueWaitIdle(d->queue);
-    for (auto view : views)
-        vkDestroyImageView(d->device, view, nullptr);
-    if (swapchain)
-        vkDestroySwapchainKHR(d->device, swapchain, nullptr);
-    if (surface)
-        vkDestroySurfaceKHR(d->instance, surface, nullptr);
+    // Capacity is reserved at construction; retirement cannot allocate or hold a Device reference.
+    d->retiredSurfaces.push_back({surface, swapchain, std::move(views)
 #ifdef __ANDROID__
-    if (window)
-        ANativeWindow_release(window);
+                                                          ,
+                                  window
 #endif
+    });
+    --d->liveSurfaces;
 }
 Drawable::Drawable(std::shared_ptr<Surface> s) : Resource(s->d), surface(std::move(s)) {
+    d->retiredDrawables.reserve(d->retiredDrawables.size() + d->liveDrawables + 1);
     try {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(d->device, &si, nullptr, &acquired), "create acquire semaphore");
         check(vkCreateSemaphore(d->device, &si, nullptr, &rendered), "create present semaphore");
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         check(vkCreateFence(d->device, &fi, nullptr, &acquireFence), "create acquire fence");
+        ++d->liveDrawables;
     } catch (...) {
         if (acquired)
             vkDestroySemaphore(d->device, acquired, nullptr);
@@ -2306,20 +2749,57 @@ Drawable::Drawable(std::shared_ptr<Surface> s) : Resource(s->d), surface(std::mo
     }
 }
 Drawable::~Drawable() {
-    if (didAcquire) {
-        vkWaitForFences(d->device, 1, &acquireFence, VK_TRUE, UINT64_MAX);
-        vkQueueWaitIdle(d->queue); // render-completion fences do not retire present waits
-        if (!presented) {
-            surface->outstanding = false;
-            surface->needsRebuild = true;
-        }
+    if (didAcquire && !presented) {
+        surface->outstanding = false;
+        surface->needsRebuild = true;
     }
     frame->active = false;
-    if (acquireFence)
-        vkDestroyFence(d->device, acquireFence, nullptr);
-    if (acquired)
-        vkDestroySemaphore(d->device, acquired, nullptr);
-    if (rendered)
-        vkDestroySemaphore(d->device, rendered, nullptr);
+    d->retiredDrawables.push_back({acquired, rendered, acquireFence, didAcquire});
+    --d->liveDrawables;
+}
+} // namespace vulkano
+
+namespace vulkano {
+void Device::reclaimPresentation(bool shutdown) {
+    if (retiredDrawables.empty() && retiredSurfaces.empty())
+        return;
+    // A render fence alone does not prove that the presentation semaphore wait has retired.
+    const auto idle = vkQueueWaitIdle(queue);
+    if (!shutdown)
+        check(idle, "retire presentation work");
+    for (const auto &item : retiredDrawables) {
+        if (!item.didAcquire || !item.fence)
+            continue;
+        if (shutdown)
+            vkWaitForFences(device, 1, &item.fence, VK_TRUE, UINT64_MAX);
+        else {
+            auto status = vkGetFenceStatus(device, item.fence);
+            if (status == VK_NOT_READY)
+                return;
+            check(status, "retire acquired image");
+        }
+    }
+    for (const auto &item : retiredDrawables) {
+        if (item.fence)
+            vkDestroyFence(device, item.fence, nullptr);
+        if (item.acquired)
+            vkDestroySemaphore(device, item.acquired, nullptr);
+        if (item.rendered)
+            vkDestroySemaphore(device, item.rendered, nullptr);
+    }
+    retiredDrawables.clear();
+    for (const auto &item : retiredSurfaces) {
+        for (auto view : item.views)
+            vkDestroyImageView(device, view, nullptr);
+        if (item.swapchain)
+            vkDestroySwapchainKHR(device, item.swapchain, nullptr);
+        if (item.surface)
+            vkDestroySurfaceKHR(instance, item.surface, nullptr);
+#ifdef __ANDROID__
+        if (item.window)
+            ANativeWindow_release(item.window);
+#endif
+    }
+    retiredSurfaces.clear();
 }
 } // namespace vulkano

@@ -93,9 +93,27 @@ JNI_METHOD(jboolean, pollIdle)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] {
         auto d = get<Device>(id);
         d->collect();
-        if (!d->pending.empty())
+        if (!d->pending.empty() || !d->retiredDrawables.empty())
             return false;
         check(vkQueueWaitIdle(d->queue), "wait for presentation idle");
         return true;
+    });
+}
+
+JNI_METHOD(jlongArray, counterInfo)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto pool = get<CounterPool>(id);
+        uint32_t bits = 0;
+        std::memcpy(&bits, &pool->d->properties.limits.timestampPeriod, 4);
+        return longs(e, {pool->timestamp ? jlong(pool->d->timestampBits) : 0, jlong(bits)});
+    });
+}
+
+JNI_METHOD(jlongArray, counterCapabilities)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto d = get<Device>(id);
+        uint32_t period;
+        std::memcpy(&period, &d->properties.limits.timestampPeriod, 4);
+        return longs(e, {jlong(d->timestampBits), jlong(period), bool(d->available & PreciseOcclusion)});
     });
 }

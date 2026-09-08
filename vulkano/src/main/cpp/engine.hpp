@@ -17,6 +17,7 @@ namespace vulkano {
 
 void require(bool condition, const char *message);
 void check(VkResult result, const char *operation);
+int numericClass(VkFormat format);
 struct Device;
 struct Extensions;
 struct Heap;
@@ -83,7 +84,12 @@ enum Feature : uint64_t {
     Float64 = 1ull << 50,
     PreciseOcclusion = 1ull << 51,
     Uniform16 = 1ull << 52,
-    MemoryModel = 1ull << 53
+    MemoryModel = 1ull << 53,
+    DepthResolve = 1ull << 54,
+    FragmentRate = 1ull << 55,
+    PrimitiveRate = 1ull << 56,
+    AttachmentRate = 1ull << 57,
+    CooperativeMatrix = 1ull << 58
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -115,6 +121,23 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     std::array<CommandAllocation, 8> idleCommands{};
     size_t idleCommandCount = 0;
     std::vector<std::weak_ptr<Command>> pending;
+    struct RetiredDrawable {
+        VkSemaphore acquired, rendered;
+        VkFence fence;
+        bool didAcquire;
+    };
+    struct RetiredSurface {
+        VkSurfaceKHR surface;
+        VkSwapchainKHR swapchain;
+        std::vector<VkImageView> views;
+#ifdef __ANDROID__
+        ANativeWindow *window;
+#endif
+    };
+    std::vector<RetiredDrawable> retiredDrawables;
+    std::vector<RetiredSurface> retiredSurfaces;
+    size_t liveDrawables = 0, liveSurfaces = 0;
+    void reclaimPresentation(bool shutdown = false);
     static std::shared_ptr<Device> create(uint64_t required, bool validation, bool allowSoftware);
     Device *owner() const override { return const_cast<Device *>(this); }
     void collect();
@@ -163,6 +186,7 @@ struct Texture : Resource {
     TextureOptions options;
     uint32_t baseMip = 0, baseLayer = 0;
     std::shared_ptr<Texture> parent;
+    VkComponentMapping components{};
     std::vector<ImageState> states;
     std::map<std::tuple<uint32_t, uint32_t, uint32_t>, VkImageView> attachmentViews;
     VkImageUsageFlags usage;
@@ -182,7 +206,7 @@ struct Texture : Resource {
     VkImageCreateFlags flags() const;
     Texture &root() { return parent ? parent->root() : *this; }
     Texture(std::shared_ptr<Texture>, VkFormat, VkImageViewType, uint32_t mip, uint32_t mipCount, uint32_t layer,
-            uint32_t layerCount);
+            uint32_t layerCount, VkImageUsageFlags viewUsage = 0, VkComponentMapping swizzle = {});
     VkImageView attachmentView(uint32_t mip, uint32_t layer, uint32_t layers = 1);
     uint32_t blockWidth() const;
     uint32_t blockHeight() const;
@@ -195,6 +219,7 @@ struct Sampler : Resource {
     VkSampler sampler = VK_NULL_HANDLE;
     bool linear;
     bool compare = false;
+    VkSamplerReductionMode reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
     Sampler(std::shared_ptr<Device>, bool linear, bool repeat, float anisotropy,
             VkSamplerMipmapMode mipFilter = VK_SAMPLER_MIPMAP_MODE_NEAREST, float minLod = 0,
             float maxLod = VK_LOD_CLAMP_NONE, float bias = 0, VkCompareOp comparison = VK_COMPARE_OP_ALWAYS,
@@ -215,14 +240,33 @@ struct BindingLayout {
     VkShaderStageFlags stages = 0;
     uint32_t imageDim = 1;
     bool arrayed = false, multisampled = false, shadow = false, runtime = false;
+    uint32_t inputAttachmentIndex = 0;
+    int numericType = -1;
 };
 struct Shader {
     std::vector<uint32_t> code;
     std::string entry = "main";
     std::map<uint32_t, uint32_t> constants;
 };
+void validateCooperativeShader(Device &, const Shader &, const std::array<uint32_t, 3> &);
+struct SubpassDescription {
+    std::vector<uint32_t> colors, inputs;
+    bool depth = false;
+};
+struct SubpassLayout {
+    std::vector<VkFormat> colors;
+    VkFormat depth = VK_FORMAT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    std::vector<SubpassDescription> subpasses;
+    std::vector<uint32_t> resolveColors;
+    std::vector<int> key;
+};
+std::shared_ptr<SubpassLayout> parseSubpassLayout(const std::vector<int> &);
+void validateSubpassLayout(Device &, const SubpassLayout &);
 struct GraphicsOptions {
     bool mesh = false;
+    std::shared_ptr<SubpassLayout> passLayout;
+    uint32_t subpass = 0;
     std::shared_ptr<Shader> task;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -247,6 +291,9 @@ struct GraphicsOptions {
     VkLogicOp logic = VK_LOGIC_OP_COPY;
     bool depthBounds = false;
     float minDepthBounds = 0, maxDepthBounds = 1;
+    VkExtent2D fragmentSize{1, 1}, rateMapTexelSize{};
+    VkFragmentShadingRateCombinerOpKHR attachmentRateCombiner = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
+    VkFragmentShadingRateCombinerOpKHR primitiveRateCombiner = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR;
 };
 struct Pipeline : Resource {
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -311,6 +358,7 @@ struct Draw {
     uint32_t stencilReference = 0;
     std::shared_ptr<CounterPool> visibility;
     uint32_t visibilityIndex = 0;
+    uint32_t subpass = 0;
 };
 struct Attachment {
     std::shared_ptr<Texture> texture, resolve;
@@ -320,6 +368,7 @@ struct Attachment {
     std::array<float, 4> clear{0, 0, 0, 1};
 };
 struct Render {
+    std::shared_ptr<SubpassLayout> passLayout;
     std::shared_ptr<Texture> color, depth;
     VkAttachmentLoadOp colorLoad = VK_ATTACHMENT_LOAD_OP_CLEAR, depthLoad = VK_ATTACHMENT_LOAD_OP_CLEAR;
     VkAttachmentStoreOp colorStore = VK_ATTACHMENT_STORE_OP_STORE, depthStore = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -329,7 +378,16 @@ struct Render {
     std::vector<Attachment> colors;
     uint32_t depthMip = 0, depthLayer = 0, clearStencil = 0;
     uint32_t viewMask = 0, layers = 1;
+    std::shared_ptr<Texture> depthResolve;
+    std::shared_ptr<Texture> rateMap;
+    VkExtent2D rateMapTexelSize{};
+    uint32_t rateMip = 0, rateLayer = 0;
+    uint32_t depthResolveMip = 0, depthResolveLayer = 0;
+    VkResolveModeFlagBits depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
+                          stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
 };
+VkRenderPass makeSubpassPass(Device &, const SubpassLayout &, const std::vector<Attachment> &, VkAttachmentLoadOp,
+                             VkAttachmentStoreOp, uint32_t viewMask);
 struct ImageRegion {
     uint32_t mip = 0, layer = 0, layers = 1;
     VkOffset3D origin{};
@@ -359,6 +417,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     explicit Command(std::shared_ptr<Device>);
     std::unordered_map<AccelerationStructure *, bool> accelerationStates;
     void build(std::shared_ptr<AccelerationStructure>, bool update = false);
+    void copyAccelerationStructure(std::shared_ptr<AccelerationStructure>, std::shared_ptr<AccelerationStructure>);
     void trace(std::shared_ptr<RayTracingPipeline>, std::vector<Binding>, std::vector<uint8_t>,
                std::array<uint32_t, 3>);
     std::vector<std::pair<std::shared_ptr<SharedEvent>, uint64_t>> eventWaits, eventSignals;

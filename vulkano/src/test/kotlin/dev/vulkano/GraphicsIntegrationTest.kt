@@ -17,12 +17,7 @@ class GraphicsIntegrationTest {
         Device.create(features, System.getenv("VULKANO_VALIDATION") != null, true)
 
     private fun Device.function(file: String, constants: FunctionConstants = FunctionConstants()) =
-        makeLibrary(
-                checkNotNull(javaClass.classLoader!!.getResourceAsStream(file)).use {
-                    it.readBytes()
-                }
-            )
-            .makeFunction(constants = constants)
+        makeLibrary(TestShaders.read(file)).makeFunction(constants = constants)
 
     private fun floats(vararg values: Float): ByteBuffer =
         ByteBuffer.allocateDirect(values.size * 4).order(ByteOrder.nativeOrder()).apply {
@@ -344,22 +339,26 @@ class GraphicsIntegrationTest {
                 )
             val view = data.makeTextureBuffer(PixelFormat.R32_UINT, writable = true)
             val pipeline = d.makeComputePipelineState(d.function("texel.comp.spv"))
-            val counters = d.makeCounterSampleBuffer(2)
-            assertNull(counters.read())
+            val counters =
+                if (d.counterCapabilities().timestampValidBits > 0) d.makeCounterSampleBuffer(2)
+                else null
+            assertNull(counters?.read())
             heap.close()
             d.submit {
-                sampleCounters(counters, 0)
+                if (counters != null) sampleCounters(counters, 0)
                 blit { fill(data, 0) }
                 compute {
                     setComputePipelineState(pipeline)
                     setTextureBuffer(view, 0)
                     dispatchThreads(Size(1))
                 }
-                sampleCounters(counters, 1)
+                if (counters != null) sampleCounters(counters, 1)
             }
             assertEquals(42, ByteBuffer.wrap(data.readBytes(4)).order(ByteOrder.nativeOrder()).int)
-            val times = checkNotNull(counters.read())
-            assertTrue(times[1] >= times[0])
+            if (counters != null) {
+                assertNotNull(counters.read())
+                assertTrue(checkNotNull(counters.elapsedNanos(0, 1)) >= 0)
+            }
             val archive = d.serializePipelineCache()
             assertTrue(archive.size >= 32)
             d.loadPipelineCache(archive)
@@ -370,7 +369,8 @@ class GraphicsIntegrationTest {
         }
 
     @Test
-    fun sharedEventGpuSignalAndHostSignal() =
+    fun sharedEventGpuSignalAndHostSignal(): Unit {
+        assumeTrue(device().use { Feature.TIMELINE_SEMAPHORE in it.capabilities.availableFeatures })
         device(setOf(Feature.TIMELINE_SEMAPHORE)).use { d ->
             val event = d.makeSharedEvent()
             val buffer = d.makeBuffer(4)
@@ -388,6 +388,7 @@ class GraphicsIntegrationTest {
             c.close()
             queue.close()
         }
+    }
 
     @Test
     fun specializedWorkgroupAndSeparateSampler() =
@@ -673,6 +674,842 @@ class GraphicsIntegrationTest {
             assertEquals(255, output.readBytes(4)[0].toInt() and 255)
             if (Feature.SAMPLER_MIN_MAX in selected)
                 d.makeSampler(SamplerDescriptor(reductionMode = SamplerReductionMode.MIN)).close()
+        }
+    }
+
+    @Test
+    fun depthResolvePreservesDepthValues() {
+        assumeTrue(
+            device().use { Feature.DEPTH_STENCIL_RESOLVE in it.capabilities.availableFeatures }
+        )
+        device(setOf(Feature.DEPTH_STENCIL_RESOLVE)).use { d ->
+            assertTrue(ResolveMode.SAMPLE_ZERO in d.depthStencilResolveSupport().depthModes)
+            val depth =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        PixelFormat.DEPTH32_FLOAT,
+                        setOf(TextureUsage.DEPTH_ATTACHMENT),
+                        StorageMode.MEMORYLESS,
+                        sampleCount = 4,
+                    )
+                )
+            val resolved =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        PixelFormat.DEPTH32_FLOAT,
+                        setOf(TextureUsage.DEPTH_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val color =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT),
+                        storageMode = StorageMode.MEMORYLESS,
+                        sampleCount = 4,
+                    )
+                )
+            val pipeline =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        sampleCount = 4,
+                        depthFormat = PixelFormat.DEPTH32_FLOAT,
+                    )
+                )
+            val output = d.makeBuffer(64)
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        ColorAttachment(color, storeAction = StoreAction.DONT_CARE),
+                        DepthAttachment(depth, resolveTexture = resolved),
+                    )
+                ) {
+                    setRenderPipelineState(pipeline)
+                    drawPrimitives(3)
+                }
+                blit { copy(resolved, output) }
+            }
+            val pixels =
+                ByteBuffer.wrap(output.readBytes(64)).order(ByteOrder.nativeOrder()).asFloatBuffer()
+            repeat(16) { assertEquals(0.5f, pixels.get(), 0.0001f) }
+        }
+    }
+
+    @Test
+    fun integerClearPreservesAll32Bits() =
+        device().use { d ->
+            for (format in listOf(PixelFormat.R32_UINT, PixelFormat.R32_SINT)) {
+                val texture =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            2,
+                            2,
+                            format,
+                            setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                        )
+                    )
+                val output = d.makeBuffer(16)
+                val value = if (format == PixelFormat.R32_UINT) -1 else Int.MIN_VALUE
+                d.submit {
+                    render(
+                        RenderPassDescriptor(
+                            ColorAttachment(texture, clearIntegerColor = ClearIntegerColor(value))
+                        )
+                    ) {}
+                    blit { copy(texture, output) }
+                }
+                val data =
+                    ByteBuffer.wrap(output.readBytes(16))
+                        .order(ByteOrder.nativeOrder())
+                        .asIntBuffer()
+                repeat(4) { assertEquals(value, data.get()) }
+            }
+        }
+
+    @Test
+    fun missingAndMistypedVertexAttributesAreRejected(): Unit =
+        device().use { d ->
+            val v = d.function("attribute.vert.spv")
+            val f = d.function("solid.frag.spv")
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeRenderPipelineState(RenderPipelineDescriptor(v, f))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        v,
+                        f,
+                        vertexBuffers = listOf(VertexBufferLayout(0, 8)),
+                        vertexAttributes = listOf(VertexAttribute(0, 0, PixelFormat.RG32_UINT)),
+                    )
+                )
+            }
+        }
+
+    @Test
+    fun pipelineShadingRateUsesSupportedSize() {
+        assumeTrue(
+            device().use { Feature.FRAGMENT_SHADING_RATE in it.capabilities.availableFeatures }
+        )
+        device(setOf(Feature.FRAGMENT_SHADING_RATE)).use { d ->
+            val rate =
+                d.fragmentShadingRates().firstOrNull {
+                    1 in it.sampleCounts && it.fragmentSize.width > 1
+                } ?: return@use
+            val texture =
+                d.makeTexture(
+                    TextureDescriptor(
+                        8,
+                        8,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val pipeline =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        fragmentSize = rate.fragmentSize,
+                    )
+                )
+            val output = d.makeBuffer(256)
+            d.submit {
+                render(RenderPassDescriptor(ColorAttachment(texture))) {
+                    setRenderPipelineState(pipeline)
+                    drawPrimitives(3)
+                }
+                blit { copy(texture, output) }
+            }
+            val data = output.readBytes(256)
+            repeat(64) { assertEquals(255, data[it * 4].toInt() and 255) }
+        }
+    }
+
+    @Test
+    fun accelerationCopiesAndCompactionRetainInstances() {
+        assumeTrue(device().use { Feature.RAY_QUERY in it.capabilities.availableFeatures })
+        device(setOf(Feature.RAY_QUERY)).use { d ->
+            val vertices =
+                d.makeBuffer(
+                    36,
+                    usage =
+                        setOf(
+                            BufferUsage.ACCELERATION_STRUCTURE_INPUT,
+                            BufferUsage.SHADER_DEVICE_ADDRESS,
+                        ),
+                )
+            vertices.write(floats(-1f, -1f, 0f, 1f, -1f, 0f, 0f, 1f, 0f))
+            val source =
+                d.makePrimitiveAccelerationStructure(
+                    listOf(TriangleGeometry(vertices, 3)),
+                    allowCompaction = true,
+                )
+            d.submit { accelerationStructure { build(source) } }
+            val clone = source.makeCopyDestination()
+            val compact = source.makeCopyDestination(compact = true)
+            assertTrue(compact.allocatedSize <= source.allocatedSize)
+            d.submit {
+                accelerationStructure {
+                    copy(source, clone)
+                    copy(source, compact)
+                }
+            }
+            source.close()
+            vertices.close()
+            for (structure in listOf(clone, compact)) {
+                val scene =
+                    d.makeInstanceAccelerationStructure(
+                        listOf(AccelerationStructureInstance(structure))
+                    )
+                val output = d.makeBuffer(4)
+                val pipeline = d.makeComputePipelineState(d.function("query.comp.spv"))
+                d.submit {
+                    accelerationStructure { build(scene) }
+                    compute {
+                        setComputePipelineState(pipeline)
+                        setAccelerationStructure(scene, 0)
+                        setBuffer(output, 1)
+                        dispatchThreads(Size(1))
+                    }
+                }
+                assertEquals(
+                    1,
+                    ByteBuffer.wrap(output.readBytes(4)).order(ByteOrder.nativeOrder()).int,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun nonOverlappingCopiesWithinAResource() =
+        device().use { d ->
+            val buffer = d.makeBuffer(16)
+            buffer.write(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0))
+            d.submit {
+                blit { copy(buffer, buffer, length = 8, sourceOffset = 0, destinationOffset = 8) }
+            }
+            assertArrayEquals(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8), buffer.readBytes(8, offset = 8))
+            val texture =
+                d.makeTexture(
+                    TextureDescriptor(
+                        2,
+                        2,
+                        usage =
+                            setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION),
+                    )
+                )
+            d.submit {
+                blit {
+                    copy(buffer, texture)
+                    copy(
+                        texture,
+                        texture,
+                        TextureRegion(size = Size(2, 1)),
+                        TextureRegion(origin = Origin(y = 1), size = Size(2, 1)),
+                    )
+                    copy(texture, buffer)
+                }
+            }
+            assertArrayEquals(buffer.readBytes(8), buffer.readBytes(8, offset = 8))
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit { blit { copy(buffer, buffer, length = 8, destinationOffset = 4) } }
+            }
+            Unit
+        }
+
+    @Test
+    fun compatibleFormatAndSwizzledViewsKeepParentStorage(): Unit =
+        device().use { d ->
+            val source =
+                d.makeTexture(
+                    TextureDescriptor(
+                        2,
+                        2,
+                        usage =
+                            setOf(
+                                TextureUsage.SAMPLED,
+                                TextureUsage.STORAGE,
+                                TextureUsage.TRANSFER_DESTINATION,
+                                TextureUsage.TRANSFER_SOURCE,
+                            ),
+                    )
+                )
+            val view =
+                source.makeTextureView(
+                    usage = setOf(TextureUsage.SAMPLED),
+                    swizzle =
+                        TextureSwizzle(
+                            TextureComponent.BLUE,
+                            TextureComponent.GREEN,
+                            TextureComponent.RED,
+                            TextureComponent.ONE,
+                        ),
+                )
+            val raw =
+                source.makeTextureView(
+                    PixelFormat.R32_UINT,
+                    usage = setOf(TextureUsage.TRANSFER_SOURCE),
+                )
+            val wrongSampleType =
+                source.makeTextureView(PixelFormat.R32_UINT, usage = setOf(TextureUsage.SAMPLED))
+            assertThrows(IllegalArgumentException::class.java) {
+                source.makeTextureView(PixelFormat.R16_UNORM)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                source.makeTextureView(PixelFormat.RGBA8_SRGB)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                source.makeTextureView(swizzle = TextureSwizzle(red = TextureComponent.BLUE))
+            }
+            source
+                .makeTextureView(PixelFormat.RGBA8_SRGB, usage = setOf(TextureUsage.SAMPLED))
+                .close()
+            val original = ByteArray(16) { byteArrayOf(16, 64, 200.toByte(), 128.toByte())[it % 4] }
+            val upload = d.makeBuffer(16).apply { write(original) }
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        2,
+                        2,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val p =
+                d.makeRenderPipelineState(
+                    d.function("fullscreen.vert.spv"),
+                    d.function("separate.frag.spv"),
+                )
+            val sampler = d.makeSampler()
+            val pixels = d.makeBuffer(16)
+            val bytes = d.makeBuffer(16)
+            d.submit { blit { copy(upload, source) } }
+            source.close()
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit {
+                    render(RenderPassDescriptor(ColorAttachment(target))) {
+                        setRenderPipelineState(p)
+                        setTexture(wrongSampleType, 0)
+                        setSampler(sampler, 1)
+                        drawPrimitives(3)
+                    }
+                }
+            }
+            d.submit {
+                render(RenderPassDescriptor(ColorAttachment(target))) {
+                    setRenderPipelineState(p)
+                    setTexture(view, 0)
+                    setSampler(sampler, 1)
+                    drawPrimitives(3)
+                }
+                blit {
+                    copy(target, pixels)
+                    copy(raw, bytes)
+                }
+            }
+            assertArrayEquals(original, bytes.readBytes(16))
+            assertArrayEquals(
+                ByteArray(16) { byteArrayOf(200.toByte(), 64, 16, 255.toByte())[it % 4] },
+                pixels.readBytes(16),
+            )
+            val transfer =
+                d.makeTexture(
+                    TextureDescriptor(
+                        2,
+                        2,
+                        usage =
+                            setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION),
+                    )
+                )
+            val logicalView = transfer.makeTextureView()
+            transfer.close()
+            d.submit {
+                blit {
+                    copy(upload, logicalView)
+                    copy(logicalView, pixels)
+                }
+            }
+            assertArrayEquals(original, pixels.readBytes(16))
+        }
+
+    @Test
+    fun rasterizationRateMapAttachmentDraw(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        assumeTrue(Feature.ATTACHMENT_SHADING_RATE in available)
+        device(setOf(Feature.ATTACHMENT_SHADING_RATE)).use { d ->
+            val texel = d.rasterizationRateMapLimits().minimumTexelSize
+            val fragment = d.fragmentShadingRates().first { 1 in it.sampleCounts }.fragmentSize
+            val width = (16 + texel.width - 1) / texel.width
+            val height = (16 + texel.height - 1) / texel.height
+            val map =
+                d.makeTexture(
+                    TextureDescriptor(
+                        width,
+                        height,
+                        PixelFormat.R8_UINT,
+                        setOf(
+                            TextureUsage.SHADING_RATE_ATTACHMENT,
+                            TextureUsage.TRANSFER_DESTINATION,
+                        ),
+                    )
+                )
+            val upload =
+                d.makeBuffer(maxOf(4, width * height).toLong()).apply {
+                    write(
+                        ByteArray(maxOf(4, width * height)) {
+                            RasterizationRateMap.encode(fragment)
+                        }
+                    )
+                }
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        16,
+                        16,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val output = d.makeBuffer(1024)
+            val p =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        rateMapTexelSize = texel,
+                    )
+                )
+            d.submit {
+                blit { copy(upload, map) }
+                render(
+                    RenderPassDescriptor(
+                        listOf(ColorAttachment(target)),
+                        rasterizationRateMap = RasterizationRateMap(map, texel),
+                    )
+                ) {
+                    setRenderPipelineState(p)
+                    drawPrimitives(3)
+                }
+                blit { copy(target, output) }
+            }
+            assertEquals(255, output.readBytes(4)[3].toInt() and 255)
+        }
+    }
+
+    @Test
+    fun subpassesPreserveMemorylessInputAcrossIntermediatePass(): Unit =
+        device().use { d ->
+            for (samples in listOf(1, 4)) {
+                val scene =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            4,
+                            4,
+                            usage =
+                                setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.INPUT_ATTACHMENT),
+                            storageMode = StorageMode.MEMORYLESS,
+                            sampleCount = samples,
+                        )
+                    )
+                val intermediate =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            4,
+                            4,
+                            usage = setOf(TextureUsage.COLOR_ATTACHMENT),
+                            storageMode = StorageMode.MEMORYLESS,
+                            sampleCount = samples,
+                        )
+                    )
+                val target =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            4,
+                            4,
+                            usage =
+                                setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                            sampleCount = samples,
+                        )
+                    )
+                val resolved =
+                    if (samples == 1) target
+                    else
+                        d.makeTexture(
+                            TextureDescriptor(
+                                4,
+                                4,
+                                usage =
+                                    setOf(
+                                        TextureUsage.COLOR_ATTACHMENT,
+                                        TextureUsage.TRANSFER_SOURCE,
+                                    ),
+                            )
+                        )
+                val layout =
+                    RenderPassLayout(
+                        List(3) { PixelFormat.RGBA8_UNORM },
+                        listOf(
+                            RenderSubpass(listOf(0)),
+                            RenderSubpass(listOf(1)),
+                            RenderSubpass(listOf(2), listOf(0)),
+                        ),
+                        sampleCount = samples,
+                        resolveColorAttachments = if (samples > 1) setOf(2) else emptySet(),
+                    )
+                val pipelines =
+                    (0..2).map { sub ->
+                        d.makeRenderPipelineState(
+                            RenderPipelineDescriptor(
+                                d.function("fullscreen.vert.spv"),
+                                d.function(
+                                    if (sub < 2) "solid.frag.spv"
+                                    else if (samples == 1) "input.frag.spv" else "input_ms.frag.spv"
+                                ),
+                                sampleCount = samples,
+                                subpassLayout = layout,
+                                subpassIndex = sub,
+                            )
+                        )
+                    }
+                val output = d.makeBuffer(64)
+                d.submit {
+                    render(
+                        RenderPassDescriptor(
+                            listOf(
+                                ColorAttachment(scene, storeAction = StoreAction.DONT_CARE),
+                                ColorAttachment(intermediate, storeAction = StoreAction.DONT_CARE),
+                                ColorAttachment(
+                                    target,
+                                    resolveTexture = if (samples > 1) resolved else null,
+                                ),
+                            ),
+                            subpassLayout = layout,
+                        )
+                    ) {
+                        setRenderPipelineState(pipelines[0])
+                        drawPrimitives(3)
+                        nextSubpass()
+                        setRenderPipelineState(pipelines[1])
+                        drawPrimitives(3)
+                        nextSubpass()
+                        setRenderPipelineState(pipelines[2])
+                        setTexture(scene, 0)
+                        drawPrimitives(3)
+                    }
+                    blit { copy(resolved, output) }
+                }
+                assertArrayEquals(
+                    ByteArray(64) {
+                        byteArrayOf(128.toByte(), 64, 255.toByte(), 255.toByte())[it % 4]
+                    },
+                    output.readBytes(64),
+                )
+            }
+        }
+
+    @Test
+    fun depthInputAttachmentReadsPreviousSubpass(): Unit =
+        device().use { d ->
+            val depth =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        PixelFormat.DEPTH32_FLOAT,
+                        setOf(TextureUsage.DEPTH_ATTACHMENT, TextureUsage.INPUT_ATTACHMENT),
+                        StorageMode.MEMORYLESS,
+                    )
+                )
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val scene =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT),
+                        storageMode = StorageMode.MEMORYLESS,
+                    )
+                )
+            val layout =
+                RenderPassLayout(
+                    List(2) { PixelFormat.RGBA8_UNORM },
+                    listOf(
+                        RenderSubpass(listOf(0), usesDepthAttachment = true),
+                        RenderSubpass(listOf(1), listOf(2)),
+                    ),
+                    depthFormat = PixelFormat.DEPTH32_FLOAT,
+                )
+            val first =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        depthFormat = PixelFormat.DEPTH32_FLOAT,
+                        subpassLayout = layout,
+                    )
+                )
+            val second =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("input_depth.frag.spv"),
+                        subpassLayout = layout,
+                        subpassIndex = 1,
+                    )
+                )
+            val output = d.makeBuffer(64)
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        listOf(
+                            ColorAttachment(scene, storeAction = StoreAction.DONT_CARE),
+                            ColorAttachment(target),
+                        ),
+                        DepthAttachment(depth),
+                        subpassLayout = layout,
+                    )
+                ) {
+                    setRenderPipelineState(first)
+                    drawPrimitives(3)
+                    nextSubpass()
+                    setRenderPipelineState(second)
+                    setTexture(depth, 0)
+                    drawPrimitives(3)
+                }
+                blit { copy(target, output) }
+            }
+            assertArrayEquals(
+                ByteArray(64) { byteArrayOf(128.toByte(), 0, 0, 255.toByte())[it % 4] },
+                output.readBytes(64),
+            )
+        }
+
+    @Test
+    fun multiviewSubpassReadsMatchingLayer(): Unit {
+        assumeTrue(device().use { Feature.MULTIVIEW in it.capabilities.availableFeatures })
+        device(setOf(Feature.MULTIVIEW)).use { d ->
+            val scene =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.INPUT_ATTACHMENT),
+                        storageMode = StorageMode.MEMORYLESS,
+                        arrayLength = 2,
+                        textureType = TextureType.TYPE_2D_ARRAY,
+                    )
+                )
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        4,
+                        4,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                        arrayLength = 2,
+                        textureType = TextureType.TYPE_2D_ARRAY,
+                    )
+                )
+            val layout =
+                RenderPassLayout(
+                    List(2) { PixelFormat.RGBA8_UNORM },
+                    listOf(RenderSubpass(listOf(0)), RenderSubpass(listOf(1), listOf(0))),
+                )
+            val first =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("multiview.vert.spv"),
+                        d.function("multiview.frag.spv"),
+                        viewMask = 3,
+                        subpassLayout = layout,
+                    )
+                )
+            val second =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("input.frag.spv"),
+                        viewMask = 3,
+                        subpassLayout = layout,
+                        subpassIndex = 1,
+                    )
+                )
+            val output = d.makeBuffer(128)
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        listOf(
+                            ColorAttachment(scene, storeAction = StoreAction.DONT_CARE),
+                            ColorAttachment(target),
+                        ),
+                        viewMask = 3,
+                        subpassLayout = layout,
+                    )
+                ) {
+                    setRenderPipelineState(first)
+                    drawPrimitives(3)
+                    nextSubpass()
+                    setRenderPipelineState(second)
+                    setTexture(scene, 0)
+                    drawPrimitives(3)
+                }
+                blit { copy(target, output, TextureRegion(size = Size(4, 4), sliceCount = 2)) }
+            }
+            assertArrayEquals(byteArrayOf(0, 0, -1, -1), output.readBytes(4))
+            assertArrayEquals(byteArrayOf(0, -1, 0, -1), output.readBytes(4, offset = 64))
+        }
+    }
+
+    @Test
+    fun tensorViewsRetainBufferAndExposeStrides(): Unit =
+        device().use { d ->
+            val descriptor = TensorDescriptor(listOf(2, 4), TensorDataType.UINT32)
+            assertEquals(32L, descriptor.requiredBytes)
+            val tensor = d.makeTensor(descriptor)
+            val transposed =
+                tensor.makeView(TensorDescriptor(listOf(4, 2), TensorDataType.UINT32, listOf(1, 4)))
+            assertEquals(28L, transposed.descriptor.byteOffset(listOf(3, 1)))
+            tensor.close()
+            val p =
+                d.makeComputePipelineState(
+                    d.function("local_size.comp.spv", FunctionConstants().setInt(0, 8))
+                )
+            d.submit {
+                compute {
+                    setComputePipelineState(p)
+                    setTensor(transposed, 0)
+                    dispatchThreadgroups(Size(1))
+                }
+            }
+            val values =
+                ByteBuffer.wrap(transposed.buffer.readBytes(32)).order(ByteOrder.nativeOrder())
+            repeat(8) { assertEquals(8, values.int) }
+            assertThrows(IllegalArgumentException::class.java) {
+                TensorDescriptor(listOf(Long.MAX_VALUE, 2))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                transposed.makeView(TensorDescriptor(listOf(9), TensorDataType.UINT32))
+            }
+        }
+
+    @Test
+    fun cooperativeMatrixMultiplyOnSupportedGpu(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        assumeTrue(Feature.COOPERATIVE_MATRIX in available && Feature.SHADER_FLOAT16 in available)
+        device(setOf(Feature.COOPERATIVE_MATRIX, Feature.SHADER_FLOAT16)).use { d ->
+            val config =
+                d.cooperativeMatrixConfigurations().firstOrNull {
+                    it.aType == TensorDataType.FLOAT16 &&
+                        it.bType == TensorDataType.FLOAT16 &&
+                        it.accumulatorType == TensorDataType.FLOAT32 &&
+                        it.resultType == TensorDataType.FLOAT32 &&
+                        !it.saturatingAccumulation
+                }
+            assumeTrue(config != null)
+            val selected = checkNotNull(config)
+            val constants =
+                FunctionConstants()
+                    .setInt(0, selected.m)
+                    .setInt(1, selected.n)
+                    .setInt(2, selected.k)
+                    .setInt(3, d.capabilities.subgroupSize)
+            val pipeline = d.makeComputePipelineState(d.function("cooperative.comp.spv", constants))
+            val output =
+                d.makeTensor(TensorDescriptor(listOf(selected.m.toLong(), selected.n.toLong())))
+            d.submit {
+                compute {
+                    setComputePipelineState(pipeline)
+                    setTensor(output, 0)
+                    dispatchThreadgroups(Size(1))
+                }
+            }
+            val data =
+                ByteBuffer.wrap(output.buffer.readBytes(output.descriptor.requiredBytes.toInt()))
+                    .order(ByteOrder.nativeOrder())
+            repeat(selected.m * selected.n) { assertEquals(selected.k.toFloat(), data.float, 0f) }
+        }
+    }
+
+    @Test
+    fun accelerationArchivesRejectMalformedData(): Unit {
+        for (data in listOf(byteArrayOf(), ByteArray(87), ByteArray(128))) {
+            assertThrows(IllegalArgumentException::class.java) {
+                AccelerationStructureArchive.fromByteArray(data)
+            }
+        }
+    }
+
+    @Test
+    fun accelerationArchiveRestoresAndRelocatesBlasReferences(): Unit {
+        assumeTrue(device().use { Feature.RAY_QUERY in it.capabilities.availableFeatures })
+        device(setOf(Feature.RAY_QUERY)).use { d ->
+            val vertices =
+                d.makeBuffer(
+                    36,
+                    usage =
+                        setOf(
+                            BufferUsage.ACCELERATION_STRUCTURE_INPUT,
+                            BufferUsage.SHADER_DEVICE_ADDRESS,
+                        ),
+                )
+            vertices.write(floats(-1f, -1f, 0f, 1f, -1f, 0f, 0f, 1f, 0f))
+            val primitive =
+                d.makePrimitiveAccelerationStructure(listOf(TriangleGeometry(vertices, 3)))
+            val scene =
+                d.makeInstanceAccelerationStructure(
+                    listOf(AccelerationStructureInstance(primitive))
+                )
+            d.submit {
+                accelerationStructure {
+                    build(primitive)
+                    build(scene)
+                }
+            }
+            val blasArchive = primitive.serialize()
+            val tlasArchive =
+                AccelerationStructureArchive.fromByteArray(scene.serialize().toByteArray())
+            val corrupt =
+                blasArchive.toByteArray().apply {
+                    this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte()
+                }
+            assertThrows(IllegalArgumentException::class.java) {
+                AccelerationStructureArchive.fromByteArray(corrupt)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.restoreAccelerationStructure(tlasArchive)
+            }
+            val restoredPrimitive = d.restoreAccelerationStructure(blasArchive)
+            val restoredScene =
+                d.restoreAccelerationStructure(
+                    tlasArchive,
+                    tlasArchive.bottomLevelAddresses.associateWith { restoredPrimitive },
+                )
+            scene.close()
+            primitive.close()
+            vertices.close()
+            restoredPrimitive.close()
+            val pipeline = d.makeComputePipelineState(d.function("query.comp.spv"))
+            val output = d.makeBuffer(4)
+            d.submit {
+                compute {
+                    setComputePipelineState(pipeline)
+                    setAccelerationStructure(restoredScene, 0)
+                    setBuffer(output, 1)
+                    dispatchThreads(Size(1))
+                }
+            }
+            assertEquals(1, ByteBuffer.wrap(output.readBytes(4)).order(ByteOrder.nativeOrder()).int)
         }
     }
 }

@@ -28,7 +28,10 @@ void SharedEvent::signal(uint64_t n) {
                                                    (c->state == Command::State::Submitted && c->wait(0));
                                         }),
                          pendingSignals.end());
-    require(n > value(), "Host signal must increase the current event value");
+    const auto current = value();
+    require(n > current, "Host signal must increase the current event value");
+    require(n - current <= d->extensions->timelineProperties.maxTimelineSemaphoreValueDifference,
+            "Event value exceeds timeline distance limit");
     for (const auto &pending : pendingSignals)
         require(n < pending.first, "Host signal must be below every pending GPU signal");
     VkSemaphoreSignalInfo i{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};

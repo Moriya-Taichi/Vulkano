@@ -1,15 +1,21 @@
 // Included after the shared JNI registry and exception/array helpers.
 JNI_METHOD(jlong, createTextureView)
-(JNIEnv *e, jobject, jlong id, jint format, jint type, jint mip, jint levels, jint layer, jint layers) {
+(JNIEnv *e, jobject, jlong id, jint format, jint type, jint mip, jint levels, jint layer, jint layers, jint usage,
+ jintArray components) {
     return guard(e, [&] {
         require(mip >= 0 && levels > 0 && layer >= 0 && layers > 0 && type >= 0 && type <= 6, "Invalid view range");
-        return put(std::make_shared<Texture>(get<Texture>(id), static_cast<VkFormat>(format),
-                                             static_cast<VkImageViewType>(type), mip, levels, layer, layers));
+        auto swizzle = ints(e, components);
+        require(swizzle.size() == 4 && usage > 0, "Invalid texture view options");
+        return put(std::make_shared<Texture>(
+            get<Texture>(id), static_cast<VkFormat>(format), static_cast<VkImageViewType>(type), mip, levels, layer,
+            layers, usage,
+            VkComponentMapping{VkComponentSwizzle(swizzle[0]), VkComponentSwizzle(swizzle[1]),
+                               VkComponentSwizzle(swizzle[2]), VkComponentSwizzle(swizzle[3])}));
     });
 }
 JNI_METHOD(jlong, createGraphics)
 (JNIEnv *e, jobject, jlong device, jobjectArray codes, jobjectArray entries, jobjectArray constants, jintArray options,
- jintArray schema, jint push, jboolean mesh) {
+ jintArray schema, jint push, jboolean mesh, jintArray subpasses, jint subpass) {
     return guard(e, [&] {
         require(codes && entries && constants && push >= 0, "Invalid graphics descriptor");
         int count = e->GetArrayLength(codes);
@@ -29,10 +35,13 @@ JNI_METHOD(jlong, createGraphics)
             e->DeleteLocalRef(spec);
         }
         auto v = ints(e, options);
-        require(v.size() >= 43 && v[13] >= 0 && v[14] >= 0 && v[15] >= 0, "Invalid graphics options");
-        require(v.size() == 43 + size_t(v[13]) * 9 + size_t(v[14]) * 3 + size_t(v[15]) * 4,
+        require(v.size() >= 49 && v[13] >= 0 && v[14] >= 0 && v[15] >= 0, "Invalid graphics options");
+        require(v.size() == 49 + size_t(v[13]) * 9 + size_t(v[14]) * 3 + size_t(v[15]) * 4,
                 "Invalid graphics option lengths");
         GraphicsOptions g;
+        require(subpass >= 0, "Invalid subpass index");
+        g.passLayout = parseSubpassLayout(ints(e, subpasses));
+        g.subpass = subpass;
         g.mesh = mesh;
         g.samples = static_cast<VkSampleCountFlagBits>(v[1]);
         g.topology = static_cast<VkPrimitiveTopology>(v[2]);
@@ -71,7 +80,13 @@ JNI_METHOD(jlong, createGraphics)
         g.depthBounds = v[40];
         std::memcpy(&g.minDepthBounds, &v[41], 4);
         std::memcpy(&g.maxDepthBounds, &v[42], 4);
-        size_t at = 43;
+        require(v[43] > 0 && v[44] > 0 && v[45] >= 0, "Invalid fragment shading rate");
+        g.fragmentSize = {uint32_t(v[43]), uint32_t(v[44])};
+        require(v[46] >= 0 && v[47] >= 0, "Invalid rate map texel size");
+        g.rateMapTexelSize = {uint32_t(v[46]), uint32_t(v[47])};
+        g.attachmentRateCombiner = VkFragmentShadingRateCombinerOpKHR(v[48]);
+        g.primitiveRateCombiner = VkFragmentShadingRateCombinerOpKHR(v[45]);
+        size_t at = 49;
         for (int n = 0; n < v[13]; ++n, at += 9) {
             g.colors.push_back(static_cast<VkFormat>(v[at]));
             g.blends.push_back({VkBool32(v[at + 1]), static_cast<VkBlendFactor>(v[at + 2]),
@@ -101,18 +116,19 @@ JNI_METHOD(jlong, createGraphics)
     });
 }
 JNI_METHOD(jlong, beginRenderAdvanced)
-(JNIEnv *e, jobject, jlong command, jlongArray handles, jintArray options, jfloatArray clear) {
+(JNIEnv *e, jobject, jlong command, jlongArray handles, jintArray options, jfloatArray clear, jintArray subpasses) {
     return guard(e, [&] {
         auto h = longValues(e, handles);
         auto v = ints(e, options);
         auto f = floatValues(e, clear);
-        require(!h.empty() && h.size() % 2 == 1, "Invalid attachments");
-        size_t count = (h.size() - 1) / 2;
-        require(v.size() == 7 + count * 6 && f.size() == 1 + count * 4, "Invalid render descriptor");
+        require(h.size() >= 3 && h.size() % 2 == 1, "Invalid attachments");
+        size_t count = (h.size() - 3) / 2;
+        require(v.size() == 15 + count * 6 && f.size() == 1 + count * 4, "Invalid render descriptor");
         auto c = get<Command>(command);
         c->recording();
         auto pending = std::make_shared<PendingRender>(c);
         auto &p = pending->pass;
+        p.passLayout = parseSubpassLayout(ints(e, subpasses));
         if (h[0])
             p.depth = get<Texture>(h[0]);
         p.depthLoad = static_cast<VkAttachmentLoadOp>(v[0]);
@@ -125,12 +141,25 @@ JNI_METHOD(jlong, beginRenderAdvanced)
         p.viewMask = uint32_t(v[5]);
         require(v[6] > 0, "Invalid attachment layer count");
         p.layers = v[6];
+        if (h[1])
+            p.depthResolve = get<Texture>(h[1]);
+        require(v[9] >= 0 && v[10] >= 0, "Invalid depth resolve subresource");
+        p.depthResolveMode = VkResolveModeFlagBits(v[7]);
+        p.stencilResolveMode = VkResolveModeFlagBits(v[8]);
+        p.depthResolveMip = v[9];
+        p.depthResolveLayer = v[10];
+        if (h[2])
+            p.rateMap = get<Texture>(h[2]);
+        require(v[11] >= 0 && v[12] >= 0 && v[13] >= 0 && v[14] >= 0, "Invalid rate map range");
+        p.rateMapTexelSize = {uint32_t(v[11]), uint32_t(v[12])};
+        p.rateMip = v[13];
+        p.rateLayer = v[14];
         for (size_t i = 0; i < count; ++i) {
-            size_t n = 7 + i * 6;
+            size_t n = 15 + i * 6;
             Attachment a;
-            a.texture = get<Texture>(h[1 + i * 2]);
-            if (h[2 + i * 2])
-                a.resolve = get<Texture>(h[2 + i * 2]);
+            a.texture = get<Texture>(h[3 + i * 2]);
+            if (h[4 + i * 2])
+                a.resolve = get<Texture>(h[4 + i * 2]);
             a.load = static_cast<VkAttachmentLoadOp>(v[n]);
             a.store = static_cast<VkAttachmentStoreOp>(v[n + 1]);
             for (size_t k = 2; k < 6; ++k)
@@ -196,6 +225,7 @@ JNI_METHOD(void, drawAdvanced)
         d.slopeBias = f[11];
         d.biasClamp = f[12];
         d.lineWidth = f[13];
+        d.subpass = pending->subpass;
         pending->pass.draws.push_back(std::move(d));
     });
 }
@@ -231,5 +261,83 @@ JNI_METHOD(void, fillBuffer)(JNIEnv *e, jobject, jlong command, jlong buffer, jl
     return guard(e, [&] {
         require(offset >= 0 && length > 0, "Invalid buffer fill");
         get<Command>(command)->fill(get<Buffer>(buffer), offset, length, value);
+    });
+}
+
+JNI_METHOD(jintArray, depthResolveSupport)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto &p = get<Device>(id)->extensions->depthResolveProperties;
+        jint values[] = {jint(p.supportedDepthResolveModes), jint(p.supportedStencilResolveModes),
+                         jint(p.independentResolve)};
+        auto array = e->NewIntArray(3);
+        if (!array)
+            throw std::bad_alloc();
+        e->SetIntArrayRegion(array, 0, 3, values);
+        return array;
+    });
+}
+
+JNI_METHOD(jintArray, fragmentShadingRates)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        const auto &rates = get<Device>(id)->extensions->fragmentRates;
+        std::vector<jint> values;
+        for (const auto &r : rates) {
+            values.push_back(r.fragmentSize.width);
+            values.push_back(r.fragmentSize.height);
+            values.push_back(r.sampleCounts);
+        }
+        auto a = e->NewIntArray(values.size());
+        if (!a)
+            throw std::bad_alloc();
+        e->SetIntArrayRegion(a, 0, values.size(), values.data());
+        return a;
+    });
+}
+
+JNI_METHOD(jintArray, rateMapLimits)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto d = get<Device>(id);
+        require(d->available & AttachmentRate, "Attachment shading rate is unavailable");
+        const auto &p = d->extensions->fragmentRateProperties;
+        std::vector<jint> values{int(p.minFragmentShadingRateAttachmentTexelSize.width),
+                                 int(p.minFragmentShadingRateAttachmentTexelSize.height),
+                                 int(p.maxFragmentShadingRateAttachmentTexelSize.width),
+                                 int(p.maxFragmentShadingRateAttachmentTexelSize.height),
+                                 int(p.maxFragmentShadingRateAttachmentTexelSizeAspectRatio),
+                                 int(p.layeredShadingRateAttachments)};
+        auto result = e->NewIntArray(values.size());
+        e->SetIntArrayRegion(result, 0, values.size(), values.data());
+        return result;
+    });
+}
+
+JNI_METHOD(void, nextSubpass)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto p = get<PendingRender>(id);
+        p->command->recording();
+        require(p->pass.passLayout && p->subpass + 1 < p->pass.passLayout->subpasses.size(), "No next subpass");
+        ++p->subpass;
+    });
+}
+
+JNI_METHOD(jlong, referenceBuffer)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] { return put(get<Buffer>(id)); });
+}
+JNI_METHOD(jintArray, cooperativeMatrixConfigurations)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto d = get<Device>(id);
+        std::vector<jint> values;
+        for (const auto &p : d->extensions->matrixConfigurations) {
+            // Workgroup-scope matrices require another extension/feature, so do not advertise them here.
+            if (p.scope != VK_SCOPE_SUBGROUP_KHR)
+                continue;
+            values.insert(values.end(), {jint(p.MSize), jint(p.NSize), jint(p.KSize), jint(p.AType), jint(p.BType),
+                                         jint(p.CType), jint(p.ResultType), jint(p.saturatingAccumulation)});
+        }
+        auto result = e->NewIntArray(values.size());
+        if (!result)
+            throw std::bad_alloc();
+        e->SetIntArrayRegion(result, 0, values.size(), values.data());
+        return result;
     });
 }

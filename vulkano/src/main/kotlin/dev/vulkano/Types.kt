@@ -56,6 +56,11 @@ enum class Feature(internal val bit: Long) {
     PRECISE_OCCLUSION(1L shl 51),
     UNIFORM_AND_STORAGE_BUFFER_16_BIT_ACCESS(1L shl 52),
     VULKAN_MEMORY_MODEL(1L shl 53),
+    DEPTH_STENCIL_RESOLVE(1L shl 54),
+    FRAGMENT_SHADING_RATE(1L shl 55),
+    PRIMITIVE_SHADING_RATE(1L shl 56),
+    ATTACHMENT_SHADING_RATE(1L shl 57),
+    COOPERATIVE_MATRIX(1L shl 58),
 }
 
 enum class StorageMode {
@@ -87,6 +92,8 @@ enum class TextureUsage(internal val bit: Int) {
     STORAGE(8),
     COLOR_ATTACHMENT(16),
     DEPTH_ATTACHMENT(32),
+    INPUT_ATTACHMENT(128),
+    SHADING_RATE_ATTACHMENT(256),
 }
 
 enum class PixelFormat(
@@ -211,6 +218,7 @@ enum class PixelFormat(
 }
 
 enum class BindingType(internal val vk: Int) {
+    INPUT_ATTACHMENT(10),
     SAMPLED_TEXTURE(1),
     STORAGE_TEXTURE(3),
     UNIFORM_BUFFER(6),
@@ -298,7 +306,7 @@ data class TextureDescriptor(
         }
         if (storageMode == StorageMode.MEMORYLESS)
             require(
-                usage ==
+                (usage - TextureUsage.INPUT_ATTACHMENT) ==
                     setOf(
                         if (pixelFormat.isDepth || pixelFormat.isStencil)
                             TextureUsage.DEPTH_ATTACHMENT
@@ -366,6 +374,14 @@ data class SamplerDescriptor(
     val borderColor: BorderColor = BorderColor.FLOAT_TRANSPARENT_BLACK,
 )
 
+/** Integer attachment clear components. Unsigned values use their 32-bit bit pattern. */
+data class ClearIntegerColor(
+    val red: Int = 0,
+    val green: Int = 0,
+    val blue: Int = 0,
+    val alpha: Int = 1,
+)
+
 data class ColorAttachment(
     val texture: Texture,
     val loadAction: LoadAction = LoadAction.CLEAR,
@@ -376,6 +392,20 @@ data class ColorAttachment(
     val resolveTexture: Texture? = null,
     val resolveLevel: Int = 0,
     val resolveSlice: Int = 0,
+    val clearIntegerColor: ClearIntegerColor? = null,
+)
+
+enum class ResolveMode(internal val vk: Int) {
+    SAMPLE_ZERO(1),
+    AVERAGE(2),
+    MIN(4),
+    MAX(8),
+}
+
+data class DepthStencilResolveSupport(
+    val depthModes: Set<ResolveMode>,
+    val stencilModes: Set<ResolveMode>,
+    val independentModes: Boolean,
 )
 
 data class DepthAttachment(
@@ -386,6 +416,11 @@ data class DepthAttachment(
     val level: Int = 0,
     val slice: Int = 0,
     val clearStencil: Int = 0,
+    val resolveTexture: Texture? = null,
+    val resolveLevel: Int = 0,
+    val resolveSlice: Int = 0,
+    val depthResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
+    val stencilResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
 )
 
 data class RenderPassDescriptor(
@@ -393,6 +428,8 @@ data class RenderPassDescriptor(
     val depthAttachment: DepthAttachment? = null,
     val viewMask: Int = 0,
     val renderTargetArrayLength: Int = 1,
+    val rasterizationRateMap: RasterizationRateMap? = null,
+    val subpassLayout: RenderPassLayout? = null,
 ) {
     constructor(
         colorAttachment: ColorAttachment,
@@ -443,3 +480,23 @@ data class MemoryHeap(
     /** Without VK_EXT_memory_budget, these are allocator estimates, not free system RAM. */
     val estimated: Boolean,
 )
+
+/** Components returned by sampling a texture view. */
+enum class TextureComponent {
+    IDENTITY,
+    ZERO,
+    ONE,
+    RED,
+    GREEN,
+    BLUE,
+    ALPHA,
+}
+
+data class TextureSwizzle(
+    val red: TextureComponent = TextureComponent.IDENTITY,
+    val green: TextureComponent = TextureComponent.IDENTITY,
+    val blue: TextureComponent = TextureComponent.IDENTITY,
+    val alpha: TextureComponent = TextureComponent.IDENTITY,
+) {
+    internal fun pack() = intArrayOf(red.ordinal, green.ordinal, blue.ordinal, alpha.ordinal)
+}

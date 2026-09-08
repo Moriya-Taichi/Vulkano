@@ -23,6 +23,11 @@ struct Extensions {
     PFN_vkGetAccelerationStructureBuildSizesKHR buildSizes = nullptr;
     PFN_vkGetAccelerationStructureDeviceAddressKHR getAccelerationAddress = nullptr;
     PFN_vkCmdBuildAccelerationStructuresKHR buildAcceleration = nullptr;
+    PFN_vkCmdCopyAccelerationStructureKHR copyAcceleration = nullptr;
+    PFN_vkCmdCopyAccelerationStructureToMemoryKHR serializeAcceleration = nullptr;
+    PFN_vkCmdCopyMemoryToAccelerationStructureKHR deserializeAcceleration = nullptr;
+    PFN_vkGetDeviceAccelerationStructureCompatibilityKHR accelerationCompatibility = nullptr;
+    PFN_vkCmdWriteAccelerationStructuresPropertiesKHR accelerationPropertiesQuery = nullptr;
     PFN_vkCreateRayTracingPipelinesKHR createRayPipelines = nullptr;
     PFN_vkGetRayTracingShaderGroupHandlesKHR getGroupHandles = nullptr;
     PFN_vkCmdTraceRaysKHR traceRays = nullptr;
@@ -47,6 +52,19 @@ struct Extensions {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES};
     VkPhysicalDeviceVulkanMemoryModelFeatures memoryModel{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES};
+    VkPhysicalDeviceDepthStencilResolveProperties depthResolveProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
+    PFN_vkCreateRenderPass2 createRenderPass2 = nullptr;
+    VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragmentRate{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+    VkPhysicalDeviceFragmentShadingRatePropertiesKHR fragmentRateProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR};
+    std::vector<VkPhysicalDeviceFragmentShadingRateKHR> fragmentRates;
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR matrix{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+    VkPhysicalDeviceCooperativeMatrixPropertiesKHR matrixProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR};
+    std::vector<VkCooperativeMatrixPropertiesKHR> matrixConfigurations;
     uint64_t available = 0;
     bool core12 = false;
     void *chain = nullptr;

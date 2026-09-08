@@ -5,12 +5,21 @@
 #include <set>
 namespace vulkano {
 namespace {
+#include "format_classes.inc"
+constexpr VkImageUsageFlags viewUsages =
+    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+    VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
 VkImageView imageView(Texture &t, VkFormat format, VkImageViewType type, uint32_t mip, uint32_t levels, uint32_t layer,
                       uint32_t layers) {
     VkImageViewCreateInfo i{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     i.image = t.image;
     i.viewType = type;
     i.format = format;
+    i.components = t.components;
+    VkImageViewUsageCreateInfo u{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    u.usage = t.usage;
+    i.pNext = &u;
     i.subresourceRange = {t.depth() ? uint32_t(VK_IMAGE_ASPECT_DEPTH_BIT) : t.aspects(), mip, levels, layer, layers};
     VkImageView v;
     check(vkCreateImageView(t.d->device, &i, nullptr, &v), "vkCreateImageView");
@@ -24,6 +33,57 @@ void sameOwner(const Resource &a, const Resource &b) {
 }
 bool powerOfTwo(uint32_t n) { return n && !(n & (n - 1)) && n <= 64; }
 } // namespace
+int numericClass(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_SINT:
+    case VK_FORMAT_R8G8_SINT:
+    case VK_FORMAT_R8G8B8_SINT:
+    case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_B8G8R8_SINT:
+    case VK_FORMAT_B8G8R8A8_SINT:
+    case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+    case VK_FORMAT_A2R10G10B10_SINT_PACK32:
+    case VK_FORMAT_A2B10G10R10_SINT_PACK32:
+    case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT:
+    case VK_FORMAT_R16G16B16_SINT:
+    case VK_FORMAT_R16G16B16A16_SINT:
+    case VK_FORMAT_R32_SINT:
+    case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R32G32B32_SINT:
+    case VK_FORMAT_R32G32B32A32_SINT:
+    case VK_FORMAT_R64_SINT:
+    case VK_FORMAT_R64G64_SINT:
+    case VK_FORMAT_R64G64B64_SINT:
+    case VK_FORMAT_R64G64B64A64_SINT:
+        return 1;
+    case VK_FORMAT_S8_UINT:
+    case VK_FORMAT_R8_UINT:
+    case VK_FORMAT_R8G8_UINT:
+    case VK_FORMAT_R8G8B8_UINT:
+    case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_B8G8R8_UINT:
+    case VK_FORMAT_B8G8R8A8_UINT:
+    case VK_FORMAT_A8B8G8R8_UINT_PACK32:
+    case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+    case VK_FORMAT_R16_UINT:
+    case VK_FORMAT_R16G16_UINT:
+    case VK_FORMAT_R16G16B16_UINT:
+    case VK_FORMAT_R16G16B16A16_UINT:
+    case VK_FORMAT_R32_UINT:
+    case VK_FORMAT_R32G32_UINT:
+    case VK_FORMAT_R32G32B32_UINT:
+    case VK_FORMAT_R32G32B32A32_UINT:
+    case VK_FORMAT_R64_UINT:
+    case VK_FORMAT_R64G64_UINT:
+    case VK_FORMAT_R64G64B64_UINT:
+    case VK_FORMAT_R64G64B64A64_UINT:
+        return 2;
+    default:
+        return 0;
+    }
+}
 bool Texture::depth() const {
     return format >= VK_FORMAT_D16_UNORM && format <= VK_FORMAT_D32_SFLOAT_S8_UINT && format != VK_FORMAT_S8_UINT;
 }
@@ -152,13 +212,20 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         require(d->enabled & Etc2, "ETC2 compression feature was not enabled");
     if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
         require(d->enabled & Astc, "ASTC compression feature was not enabled");
-    require(usage && !(usage & ~63u), "Unsupported image usage");
+    require(usage && !(usage & ~(63u | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+                                 VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)),
+            "Unsupported image usage");
+    if (usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)
+        require((d->enabled & AttachmentRate) && f == VK_FORMAT_R8_UINT && o.samples == 1 &&
+                    imageType() == VK_IMAGE_TYPE_2D,
+                "Rate map requires attachment shading rate, R8_UINT and single-sampled 2D texture");
     require(depth() || stencil() ? !(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT))
                                  : !(usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT),
             "Attachment format/usage mismatch");
     if (storage == Storage::Memoryless) {
-        require(usage == (depth() || stencil() ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                                               : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+        require((usage & ~VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) == (depth() || stencil()
+                                                                       ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                                       : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
                 "Memoryless textures are attachment-only");
         usage |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
     }
@@ -192,8 +259,7 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         VkMemoryPropertyFlags mf;
         vmaGetAllocationMemoryProperties(d->allocator, allocation, &mf);
         lazy = (mf & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) != 0;
-        if (usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
+        if (usage & viewUsages)
             view = imageView(*this, f, o.type, 0, o.mipLevels, 0, o.layers);
     } catch (...) {
         vmaDestroyImage(d->allocator, image, allocation);
@@ -207,7 +273,7 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
     states.resize(1);
 }
 Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, uint32_t mip, uint32_t levels,
-                 uint32_t layer, uint32_t layers)
+                 uint32_t layer, uint32_t layers, VkImageUsageFlags viewUsage, VkComponentMapping swizzle)
     : Resource(p->d), image(p->image), format(f), width(p->extent(mip).width), height(p->extent(mip).height),
       options(p->options), baseMip(p->baseMip + mip), baseLayer(p->baseLayer + layer), parent(p), usage(p->usage),
       storage(p->storage) {
@@ -216,13 +282,33 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
     require(levels && mip < p->options.mipLevels && levels <= p->options.mipLevels - mip && layers &&
                 layer < p->options.layers && layers <= p->options.layers - layer,
             "Texture view subresource range out of bounds");
-    // Explicitly permit same format and matching UNORM/sRGB pairs. Avoid treating equal byte sizes as format
-    // compatibility.
-    bool pair = ((p->format == VK_FORMAT_R8G8B8A8_UNORM && f == VK_FORMAT_R8G8B8A8_SRGB) ||
-                 (f == VK_FORMAT_R8G8B8A8_UNORM && p->format == VK_FORMAT_R8G8B8A8_SRGB) ||
-                 (p->format == VK_FORMAT_B8G8R8A8_UNORM && f == VK_FORMAT_B8G8R8A8_SRGB) ||
-                 (f == VK_FORMAT_B8G8R8A8_UNORM && p->format == VK_FORMAT_B8G8R8A8_SRGB));
-    require(f == p->format || pair, "Incompatible view format");
+    const auto sourceClass = formatCompatibilityClass(p->root().format);
+    require(f == p->root().format || (sourceClass && sourceClass == formatCompatibilityClass(f)),
+            "Incompatible Vulkan format class");
+    pixelSize();
+    if (viewUsage) {
+        require((viewUsage & p->usage) == viewUsage, "View usage must be a subset of parent usage");
+        usage = viewUsage;
+    }
+    components = swizzle;
+    const bool identity = (swizzle.r == VK_COMPONENT_SWIZZLE_IDENTITY || swizzle.r == VK_COMPONENT_SWIZZLE_R) &&
+                          (swizzle.g == VK_COMPONENT_SWIZZLE_IDENTITY || swizzle.g == VK_COMPONENT_SWIZZLE_G) &&
+                          (swizzle.b == VK_COMPONENT_SWIZZLE_IDENTITY || swizzle.b == VK_COMPONENT_SWIZZLE_B) &&
+                          (swizzle.a == VK_COMPONENT_SWIZZLE_IDENTITY || swizzle.a == VK_COMPONENT_SWIZZLE_A);
+    require(identity || ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !(usage & (viewUsages & ~VK_IMAGE_USAGE_SAMPLED_BIT))),
+            "Component swizzles require a sampled-only image view");
+    for (auto value : {swizzle.r, swizzle.g, swizzle.b, swizzle.a})
+        require(value >= VK_COMPONENT_SWIZZLE_IDENTITY && value <= VK_COMPONENT_SWIZZLE_A, "Invalid component swizzle");
+    VkFormatProperties fp{};
+    vkGetPhysicalDeviceFormatProperties(d->physical, f, &fp);
+    for (auto [use, feature] : std::initializer_list<std::pair<VkImageUsageFlags, VkFormatFeatureFlags>>{
+             {VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+             {VK_IMAGE_USAGE_STORAGE_BIT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT},
+             {VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT},
+             {VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT},
+             {VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR,
+              VK_FORMAT_FEATURE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR}})
+        require(!(usage & use) || (fp.optimalTilingFeatures & feature), "View format does not support requested usage");
     options.type = type;
     options.depth = p->extent(mip).depth;
     options.mipLevels = levels;
@@ -236,7 +322,8 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
         require(d->enabled & CubeArray, "Cube array feature was not enabled");
     if (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_3D)
         require(layers == 1, "Non-array view requires one layer");
-    view = imageView(*this, f, type, baseMip, levels, baseLayer, layers);
+    if (usage & viewUsages)
+        view = imageView(*this, f, type, baseMip, levels, baseLayer, layers);
 }
 VkImageView Texture::attachmentView(uint32_t mip, uint32_t layer, uint32_t layers) {
     require(mip < options.mipLevels && layer < options.layers && layers > 0 && layers <= options.layers - layer &&
@@ -252,6 +339,9 @@ VkImageView Texture::attachmentView(uint32_t mip, uint32_t layer, uint32_t layer
     i.image = image;
     i.viewType = layers == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     i.format = format;
+    VkImageViewUsageCreateInfo u{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    u.usage = usage;
+    i.pNext = &u;
     i.subresourceRange = {aspects(), baseMip + mip, 1, baseLayer + layer, layers};
     VkImageView v;
     check(vkCreateImageView(d->device, &i, nullptr, &v), "create attachment view");
@@ -285,6 +375,7 @@ Sampler::Sampler(std::shared_ptr<Device> device, bool filtering, bool repeat, fl
                  VkSamplerAddressMode address, VkSamplerReductionMode reduction, VkBorderColor border)
     : Resource(std::move(device)), linear(filtering || mip == VK_SAMPLER_MIPMAP_MODE_LINEAR),
       compare(comparisonEnabled) {
+    reductionMode = reduction;
     require(std::isfinite(anisotropy) && anisotropy >= 1 && anisotropy <= d->properties.limits.maxSamplerAnisotropy &&
                 (anisotropy == 1 || (d->enabled & Anisotropy)),
             "Invalid or disabled anisotropy");
@@ -453,24 +544,33 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
     sameOwner(*this, *dest);
     validRegion(*source, a);
     validRegion(*dest, b);
-    require(source->image != dest->image, "Use separate images for texture copies");
+    const bool sameImage = source->image == dest->image;
+    if (sameImage && source->baseMip + a.mip == dest->baseMip + b.mip) {
+        auto overlap = [](uint64_t a, uint64_t an, uint64_t b, uint64_t bn) { return a < b + bn && b < a + an; };
+        const bool aliases = overlap(source->baseLayer + a.layer, a.layers, dest->baseLayer + b.layer, b.layers) &&
+                             overlap(a.origin.x, a.size.width, b.origin.x, b.size.width) &&
+                             overlap(a.origin.y, a.size.height, b.origin.y, b.size.height) &&
+                             overlap(a.origin.z, a.size.depth, b.origin.z, b.size.depth);
+        require(!aliases, "Texture copy regions overlap");
+    }
     require(source->format == dest->format && source->options.samples == dest->options.samples &&
                 a.layers == b.layers && a.size.width == b.size.width && a.size.height == b.size.height &&
                 a.size.depth == b.size.depth,
             "Texture copy format/extent mismatch");
     require((source->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && (dest->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT),
             "Texture transfer usage required");
-    operations.push_back([source, dest, a, b](Command &c) {
+    operations.push_back([source, dest, a, b, sameImage](Command &c) {
         c.barrier();
-        c.transition(*source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, true, a.mip, a.layer, 1, a.layers);
-        c.transition(*dest, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, !fullRegion(*dest, b), b.mip, b.layer, 1, b.layers);
+        const auto sourceLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        const auto destinationLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        c.transition(*source, sourceLayout, true, a.mip, a.layer, 1, a.layers);
+        c.transition(*dest, destinationLayout, !fullRegion(*dest, b), b.mip, b.layer, 1, b.layers);
         VkImageCopy region{{source->aspects(), source->baseMip + a.mip, source->baseLayer + a.layer, a.layers},
                            a.origin,
                            {dest->aspects(), dest->baseMip + b.mip, dest->baseLayer + b.layer, b.layers},
                            b.origin,
                            a.size};
-        vkCmdCopyImage(c.command, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dest->image,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        vkCmdCopyImage(c.command, source->image, sourceLayout, dest->image, destinationLayout, 1, &region);
         c.markInitialized(*dest, true, b.mip, b.layer, 1, b.layers);
     });
 }

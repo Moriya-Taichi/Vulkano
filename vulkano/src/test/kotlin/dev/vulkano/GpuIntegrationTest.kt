@@ -7,13 +7,13 @@ import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Runs the production Kotlin -> JNI -> Vulkan path on a host software ICD. */
+/** Runs the production Kotlin -> JNI -> Vulkan path on Android or a host software ICD. */
 class GpuIntegrationTest {
     @Before fun nativeLibraryAvailable() {
         assumeTrue("Supply -Pvulkano.hostLibraryPath=<CMake build>", System.getProperty("vulkano.runNativeTests") == "true")
     }
     private fun device() = Device.create(enableValidation = System.getenv("VULKANO_VALIDATION") != null, allowSoftwareRenderer = true)
-    private fun shader(name: String) = checkNotNull(javaClass.classLoader!!.getResourceAsStream(name)).use { it.readBytes() }
+    private fun shader(name: String) = TestShaders.read(name)
 
     @Test fun computeAndReadbackThroughKotlin() {
         device().use { device ->

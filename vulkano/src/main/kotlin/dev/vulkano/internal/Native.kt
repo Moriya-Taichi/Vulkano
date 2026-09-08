@@ -92,6 +92,8 @@ internal object Native {
         bindings: IntArray,
         pushBytes: Int,
         mesh: Boolean,
+        subpasses: IntArray,
+        subpass: Int,
     ): Long
 
     external fun createTextureView(
@@ -102,6 +104,8 @@ internal object Native {
         levels: Int,
         slice: Int,
         slices: Int,
+        usage: Int,
+        swizzle: IntArray,
     ): Long
 
     external fun beginRenderAdvanced(
@@ -109,7 +113,10 @@ internal object Native {
         textures: LongArray,
         options: IntArray,
         clear: FloatArray,
+        subpasses: IntArray,
     ): Long
+
+    external fun nextSubpass(encoder: Long)
 
     external fun drawAdvanced(
         encoder: Long,
@@ -227,6 +234,16 @@ internal object Native {
         writable: Boolean,
     ): Long
 
+    external fun referenceBuffer(buffer: Long): Long
+
+    external fun cooperativeMatrixConfigurations(device: Long): IntArray
+
+    external fun rateMapLimits(device: Long): IntArray
+
+    external fun fragmentShadingRates(device: Long): IntArray
+
+    external fun depthResolveSupport(device: Long): IntArray
+
     external fun createEvent(device: Long, initial: Long): Long
 
     external fun eventValue(event: Long): Long
@@ -238,6 +255,10 @@ internal object Native {
     external fun signalCommandEvent(command: Long, event: Long, value: Long)
 
     external fun createCounters(device: Long, count: Int, timestamp: Boolean): Long
+
+    external fun counterCapabilities(device: Long): LongArray
+
+    external fun counterInfo(id: Long): LongArray
 
     external fun readCounters(pool: Long): LongArray
 
@@ -255,6 +276,7 @@ internal object Native {
         device: Long,
         geometries: LongArray,
         refit: Boolean,
+        compact: Boolean,
     ): Long
 
     external fun createInstanceAcceleration(
@@ -262,7 +284,20 @@ internal object Native {
         instances: LongArray,
         transforms: FloatArray,
         refit: Boolean,
+        compact: Boolean,
     ): Long
+
+    external fun createAccelerationCopy(source: Long, compact: Boolean): Long
+
+    external fun copyAcceleration(command: Long, source: Long, destination: Long)
+
+    external fun serializeAcceleration(structure: Long): ByteArray
+
+    external fun accelerationArchiveAddresses(bytes: ByteArray): LongArray
+
+    external fun restoreAcceleration(device: Long, bytes: ByteArray, replacements: LongArray): Long
+
+    external fun accelerationStorageSize(id: Long): Long
 
     external fun buildAcceleration(command: Long, structure: Long, update: Boolean)
 

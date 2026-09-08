@@ -209,6 +209,8 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                     packLayout(descriptor.bindings),
                     descriptor.pushConstantBytes,
                     descriptor.meshShader,
+                    descriptor.subpassLayout?.pack() ?: intArrayOf(),
+                    descriptor.subpassIndex,
                 )
             RenderPipelineState(this, id, Native.pipelineLocalSize(id)[3])
         }
@@ -353,6 +355,8 @@ internal constructor(
         levelCount: Int = descriptor.mipLevels - level,
         slice: Int = 0,
         sliceCount: Int = descriptor.arrayLength - slice,
+        usage: Set<TextureUsage> = descriptor.usage,
+        swizzle: TextureSwizzle = TextureSwizzle(),
     ): Texture = access {
         val size = sizeAtLevel(level)
         val view =
@@ -364,6 +368,7 @@ internal constructor(
                 textureType = textureType,
                 mipLevels = levelCount,
                 arrayLength = sliceCount,
+                usage = usage,
             )
         Texture(
             device,
@@ -375,6 +380,8 @@ internal constructor(
                 levelCount,
                 slice,
                 sliceCount,
+                usage.fold(0) { bits, use -> bits or use.bit },
+                swizzle.pack(),
             ),
             view,
             isLazilyAllocated,

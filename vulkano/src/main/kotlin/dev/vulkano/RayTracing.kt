@@ -40,7 +40,26 @@ data class BoundingBoxGeometry(
     }
 }
 
-class AccelerationStructure internal constructor(device: Device, id: Long) : Resource(device, id)
+class AccelerationStructure internal constructor(device: Device, id: Long) : Resource(device, id) {
+    /**
+     * Serializes after prior commands complete; the archive is specific to compatible Vulkan
+     * drivers.
+     */
+    fun serialize(): AccelerationStructureArchive = access {
+        AccelerationStructureArchive(Native.serializeAcceleration(it))
+    }
+
+    val allocatedSize: Long
+        get() = access { Native.accelerationStorageSize(it) }
+
+    /**
+     * Source must be built. Compact sizing waits for a GPU query and requires prior commands to be
+     * complete.
+     */
+    fun makeCopyDestination(compact: Boolean = false): AccelerationStructure = access {
+        AccelerationStructure(device, Native.createAccelerationCopy(it, compact))
+    }
+}
 
 class AccelerationStructureInstance(
     val structure: AccelerationStructure,
@@ -66,6 +85,7 @@ class AccelerationStructureInstance(
 fun Device.makePrimitiveAccelerationStructure(
     geometries: List<AccelerationGeometry>,
     allowRefit: Boolean = false,
+    allowCompaction: Boolean = false,
 ): AccelerationStructure = access {
     require(geometries.isNotEmpty())
     val packed =
@@ -110,13 +130,14 @@ fun Device.makePrimitiveAccelerationStructure(
             .toLongArray()
     AccelerationStructure(
         this,
-        Native.createPrimitiveAcceleration(nativeHandle, packed, allowRefit),
+        Native.createPrimitiveAcceleration(nativeHandle, packed, allowRefit, allowCompaction),
     )
 }
 
 fun Device.makeInstanceAccelerationStructure(
     instances: List<AccelerationStructureInstance>,
     allowRefit: Boolean = false,
+    allowCompaction: Boolean = false,
 ): AccelerationStructure = access {
     require(instances.isNotEmpty() && instances.all { it.structure.device === this })
     AccelerationStructure(
@@ -136,12 +157,20 @@ fun Device.makeInstanceAccelerationStructure(
                 .toLongArray(),
             instances.flatMap { it.matrix.toList() }.toFloatArray(),
             allowRefit,
+            allowCompaction,
         ),
     )
 }
 
 class AccelerationStructureCommandEncoder internal constructor(command: CommandBuffer) :
     CommandEncoder(command) {
+    fun copy(source: AccelerationStructure, destination: AccelerationStructure): Unit = encode {
+        require(
+            source.device === commandBuffer.device && destination.device === commandBuffer.device
+        )
+        Native.copyAcceleration(it, source.handle(), destination.handle())
+    }
+
     fun build(structure: AccelerationStructure): Unit = encode {
         require(structure.device === commandBuffer.device)
         Native.buildAcceleration(it, structure.handle(), false)
@@ -237,4 +266,36 @@ class RayTracingCommandEncoder internal constructor(command: CommandBuffer) :
             size.array(),
         )
     }
+}
+
+/** Persist only archives created by Vulkano; driver compatibility is checked when restoring. */
+class AccelerationStructureArchive internal constructor(bytes: ByteArray) {
+    internal val data = bytes.copyOf()
+    val bottomLevelAddresses: List<Long> = Native.accelerationArchiveAddresses(data).toList()
+
+    fun toByteArray(): ByteArray = data.copyOf()
+
+    companion object {
+        fun fromByteArray(bytes: ByteArray): AccelerationStructureArchive =
+            AccelerationStructureArchive(bytes)
+    }
+}
+
+/**
+ * Restores and waits for GPU completion. For TLAS archives map every saved BLAS address to its
+ * restored BLAS with equivalent geometry. Restored structures are immutable.
+ */
+fun Device.restoreAccelerationStructure(
+    archive: AccelerationStructureArchive,
+    bottomLevelStructures: Map<Long, AccelerationStructure> = emptyMap(),
+): AccelerationStructure = access {
+    require(bottomLevelStructures.values.all { it.device === this })
+    val replacements =
+        bottomLevelStructures
+            .flatMap { (address, structure) -> listOf(address, structure.handle()) }
+            .toLongArray()
+    AccelerationStructure(
+        this,
+        Native.restoreAcceleration(nativeHandle, archive.data, replacements),
+    )
 }

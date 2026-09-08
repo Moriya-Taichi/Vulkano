@@ -3,7 +3,7 @@ project(vulkano LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(vulkano_core STATIC engine.cpp resources.cpp extensions.cpp ray.cpp synchronization.cpp heaps.cpp allocator.cpp third_party/spirv-reflect/spirv_reflect.c)
+add_library(vulkano_core STATIC engine.cpp matrices.cpp subpasses.cpp resources.cpp extensions.cpp ray.cpp ray_archive.cpp synchronization.cpp heaps.cpp allocator.cpp third_party/spirv-reflect/spirv_reflect.c)
 set_target_properties(vulkano_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(vulkano_core PUBLIC .)
 target_include_directories(vulkano_core SYSTEM PRIVATE third_party)

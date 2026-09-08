@@ -59,14 +59,23 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
         recording()
         val colors = pass.colorAttachments
         val d = pass.depthAttachment
+        val rate = pass.rasterizationRateMap
         require(
             colors.all {
                 it.texture.device === device &&
                     (it.resolveTexture == null || it.resolveTexture.device === device)
-            } && (d == null || d.texture.device === device)
+            } &&
+                (d == null ||
+                    (d.texture.device === device &&
+                        (d.resolveTexture == null || d.resolveTexture.device === device))) &&
+                (rate == null || rate.texture.device === device)
         )
         val handles =
-            (listOf(d?.texture?.handle() ?: 0L) +
+            (listOf(
+                    d?.texture?.handle() ?: 0L,
+                    d?.resolveTexture?.handle() ?: 0L,
+                    rate?.texture?.handle() ?: 0L,
+                ) +
                     colors.flatMap {
                         listOf(it.texture.handle(), it.resolveTexture?.handle() ?: 0L)
                     })
@@ -80,6 +89,14 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
                     d?.clearStencil ?: 0,
                     pass.viewMask,
                     pass.renderTargetArrayLength,
+                    d?.depthResolveMode?.vk ?: 1,
+                    d?.stencilResolveMode?.vk ?: 1,
+                    d?.resolveLevel ?: 0,
+                    d?.resolveSlice ?: 0,
+                    rate?.texelSize?.width ?: 0,
+                    rate?.texelSize?.height ?: 0,
+                    rate?.level ?: 0,
+                    rate?.slice ?: 0,
                 ) +
                     colors.flatMap {
                         listOf(
@@ -95,17 +112,32 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
         val clear =
             (listOf(d?.clearDepth ?: 1f) +
                     colors.flatMap {
-                        listOf(
-                            it.clearColor.red,
-                            it.clearColor.green,
-                            it.clearColor.blue,
-                            it.clearColor.alpha,
-                        )
+                        if (
+                            it.texture.descriptor.pixelFormat.name.endsWith("_UINT") ||
+                                it.texture.descriptor.pixelFormat.name.endsWith("_SINT")
+                        ) {
+                            val c = it.clearIntegerColor ?: ClearIntegerColor()
+                            listOf(c.red, c.green, c.blue, c.alpha).map { Float.fromBits(it) }
+                        } else
+                            listOf(
+                                it.clearColor.red,
+                                it.clearColor.green,
+                                it.clearColor.blue,
+                                it.clearColor.alpha,
+                            )
                     })
                 .toFloatArray()
-        RenderCommandEncoder(this, Native.beginRenderAdvanced(it, handles, actions, clear)).also {
-            encoder = it
-        }
+        RenderCommandEncoder(
+                this,
+                Native.beginRenderAdvanced(
+                    it,
+                    handles,
+                    actions,
+                    clear,
+                    pass.subpassLayout?.pack() ?: intArrayOf(),
+                ),
+            )
+            .also { encoder = it }
     }
 
     fun compute(block: ComputeCommandEncoder.() -> Unit) = scope(makeComputeCommandEncoder(), block)
@@ -245,6 +277,11 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         )
     private var constants = byteArrayOf()
 
+    fun resetBindings(): Unit = encode {
+        bindings.clear()
+        constants = byteArrayOf()
+    }
+
     fun setBuffer(
         buffer: Buffer,
         index: Int,
@@ -372,6 +409,15 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
         require(state.device === commandBuffer.device)
         state.handle()
         pipeline = state
+    }
+
+    /** Advance within the same render pass. Binding and pipeline state must be set again. */
+    fun nextSubpass(): Unit = encode {
+        Native.nextSubpass(nativeEncoder)
+        pipeline = null
+        resetBindings()
+        vertexBuffers.clear()
+        visibility = null
     }
 
     private val vertexBuffers = sortedMapOf<Int, Pair<Buffer, Long>>()

@@ -15,7 +15,7 @@ android {
     defaultConfig {
         minSdk = 29
         consumerProguardFiles("consumer-rules.pro")
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "dev.vulkano.GpuTestRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
     }
@@ -28,6 +28,7 @@ android {
     sourceSets {
         getByName("test").resources.srcDir("../tests/shaders")
         getByName("androidTest").assets.srcDir("../tests/shaders")
+        getByName("androidTest").java.srcDir("src/test/kotlin")
     }
     testOptions.unitTests.all {
         providers.gradleProperty("vulkano.hostLibraryPath").orNull?.let { path ->

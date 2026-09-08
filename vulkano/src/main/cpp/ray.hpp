@@ -21,10 +21,17 @@ struct AccelerationStructure : Resource {
     std::vector<std::shared_ptr<AccelerationStructure>> children;
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<uint32_t> primitiveCounts;
-    bool built = false;
-    AccelerationStructure(std::shared_ptr<Device>, const std::vector<Geometry> &, bool update);
-    AccelerationStructure(std::shared_ptr<Device>, const std::vector<AccelerationInstance> &, bool update);
-    void allocate();
+    bool built = false, copyDestination = false;
+    uint64_t generation = 0, copyGeneration = 0;
+    std::weak_ptr<AccelerationStructure> copySource;
+    VkCopyAccelerationStructureModeKHR copyMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR;
+    AccelerationStructure(std::shared_ptr<Device>, const std::vector<Geometry> &, bool update, bool compact = false);
+    AccelerationStructure(std::shared_ptr<Device>, const std::vector<AccelerationInstance> &, bool update,
+                          bool compact = false);
+    AccelerationStructure(std::shared_ptr<AccelerationStructure> source, bool compact);
+    AccelerationStructure(std::shared_ptr<Device>, VkAccelerationStructureTypeKHR, VkDeviceSize,
+                          VkBuildAccelerationStructureFlagsKHR);
+    void allocate(bool querySizes = true);
     VkDeviceAddress address() const;
     ~AccelerationStructure() override;
 };
@@ -35,6 +42,11 @@ struct AccelerationInstance {
     VkGeometryInstanceFlagsKHR flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 };
 VkDeviceAddress bufferAddress(const Buffer &);
+std::vector<uint8_t> serializeAccelerationStructure(std::shared_ptr<AccelerationStructure>);
+std::vector<uint64_t> accelerationArchiveAddresses(const std::vector<uint8_t> &);
+std::shared_ptr<AccelerationStructure>
+restoreAccelerationStructure(std::shared_ptr<Device>, const std::vector<uint8_t> &,
+                             const std::map<uint64_t, std::shared_ptr<AccelerationStructure>> &);
 struct RayTracingPipeline : Pipeline {
     std::shared_ptr<Buffer> table;
     VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{}, callable{};

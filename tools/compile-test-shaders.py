@@ -16,4 +16,4 @@ output = root / "tests/shaders"
 for folder in [root / "sample/src/main/shaders", output]:
     for source in sorted(folder.iterdir()):
         if source.suffix in {".comp", ".vert", ".frag", ".tesc", ".tese", ".mesh", ".task", ".rgen", ".rmiss", ".rchit"}:
-            subprocess.run([args.glslc, "--target-env=vulkan1.2" if source.name in {"query.comp"} or source.suffix in {".mesh", ".task", ".rgen", ".rmiss", ".rchit"} else "--target-env=vulkan1.1", str(source), "-o", str(output / (source.name + ".spv"))], check=True)
+            subprocess.run([args.glslc, "--target-env=vulkan1.2" if source.name in {"query.comp", "cooperative.comp"} or source.suffix in {".mesh", ".task", ".rgen", ".rmiss", ".rchit"} else "--target-env=vulkan1.1", str(source), "-o", str(output / (source.name + ".spv"))], check=True)

@@ -32,6 +32,24 @@ class CounterSampleBuffer
 internal constructor(device: Device, id: Long, val count: Int, val isTimestamp: Boolean) :
     Resource(device, id) {
     fun read(): LongArray? = access { Native.readCounters(it).takeIf { it.isNotEmpty() } }
+
+    val timestampValidBits: Int
+        get() = access { Native.counterInfo(it)[0].toInt() }
+
+    val timestampPeriodNanos: Double
+        get() = access {
+            require(isTimestamp)
+            Float.fromBits(Native.counterInfo(it)[1].toInt()).toDouble()
+        }
+
+    fun elapsedNanos(startIndex: Int, endIndex: Int): Double? {
+        require(isTimestamp && startIndex in 0 until count && endIndex in 0 until count)
+        val values = read() ?: return null
+        val bits = timestampValidBits
+        val mask = if (bits == 64) -1L else (1L shl bits) - 1
+        return ((values[endIndex] - values[startIndex]) and mask).toULong().toDouble() *
+            timestampPeriodNanos
+    }
 }
 
 fun Device.makeCounterSampleBuffer(count: Int, timestamp: Boolean = true): CounterSampleBuffer =
@@ -50,4 +68,15 @@ fun Device.serializePipelineCache(): ByteArray = access { Native.pipelineCacheDa
 
 fun Device.loadPipelineCache(data: ByteArray): Unit = access {
     Native.loadPipelineCache(nativeHandle, data)
+}
+
+data class CounterCapabilities(
+    val timestampValidBits: Int,
+    val timestampPeriodNanos: Double,
+    val preciseOcclusionAvailable: Boolean,
+)
+
+fun Device.counterCapabilities(): CounterCapabilities = access {
+    val data = Native.counterCapabilities(nativeHandle)
+    CounterCapabilities(data[0].toInt(), Float.fromBits(data[1].toInt()).toDouble(), data[2] != 0L)
 }

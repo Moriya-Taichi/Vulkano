@@ -229,8 +229,17 @@ data class RenderPipelineDescriptor(
     val depthBoundsEnabled: Boolean = false,
     val minDepthBounds: Float = 0f,
     val maxDepthBounds: Float = 1f,
+    val fragmentSize: Size = Size(1),
+    val rateMapTexelSize: Size? = null,
+    val subpassLayout: RenderPassLayout? = null,
+    val subpassIndex: Int = 0,
+    val rateMapCombiner: ShadingRateCombiner = ShadingRateCombiner.REPLACE,
+    val primitiveShadingRateCombiner: ShadingRateCombiner = ShadingRateCombiner.KEEP,
 ) {
     internal fun pack(): IntArray {
+        require(
+            fragmentSize.depth == 1 && (rateMapTexelSize == null || rateMapTexelSize.depth == 1)
+        )
         val ds = depthStencil
         return (listOf(
                 depthFormat?.vk ?: 0,
@@ -266,6 +275,13 @@ data class RenderPipelineDescriptor(
                     if (depthBoundsEnabled) 1 else 0,
                     minDepthBounds.toRawBits(),
                     maxDepthBounds.toRawBits(),
+                    fragmentSize.width,
+                    fragmentSize.height,
+                    primitiveShadingRateCombiner.ordinal,
+                    rateMapTexelSize?.width ?: 0,
+                    rateMapTexelSize?.height ?: 0,
+                    if (rateMapTexelSize != null) rateMapCombiner.ordinal
+                    else ShadingRateCombiner.KEEP.ordinal,
                 ) +
                 colorAttachments.flatMap { it.pack() } +
                 vertexBuffers.flatMap { listOf(it.index, it.stride, it.stepFunction.ordinal) } +
@@ -336,4 +352,78 @@ class FunctionConstants {
     fun setBoolean(index: Int, value: Boolean) = setInt(index, if (value) 1 else 0)
 
     internal fun pack() = values.flatMap { listOf(it.key, it.value) }.toIntArray()
+}
+
+fun Device.depthStencilResolveSupport(): DepthStencilResolveSupport = access {
+    val p = dev.vulkano.internal.Native.depthResolveSupport(nativeHandle)
+    return@access DepthStencilResolveSupport(
+        ResolveMode.entries.filter { p[0] and it.vk != 0 }.toSet(),
+        ResolveMode.entries.filter { p[1] and it.vk != 0 }.toSet(),
+        p[2] != 0,
+    )
+}
+
+enum class ShadingRateCombiner {
+    KEEP,
+    REPLACE,
+    MIN,
+    MAX,
+    MUL,
+}
+
+data class FragmentShadingRate(val fragmentSize: Size, val sampleCounts: Set<Int>)
+
+fun Device.fragmentShadingRates(): List<FragmentShadingRate> = access {
+    dev.vulkano.internal.Native.fragmentShadingRates(nativeHandle).toList().chunked(3).map { values
+        ->
+        FragmentShadingRate(
+            Size(values[0], values[1]),
+            listOf(1, 2, 4, 8, 16, 32, 64).filter { values[2] and it != 0 }.toSet(),
+        )
+    }
+}
+
+/** Each R8_UINT texel selects a fragment size over texelSize framebuffer pixels. */
+data class RasterizationRateMap(
+    val texture: Texture,
+    val texelSize: Size,
+    val level: Int = 0,
+    val slice: Int = 0,
+) {
+    init {
+        require(texelSize.depth == 1 && level >= 0 && slice >= 0)
+    }
+
+    companion object {
+        /**
+         * Vulkan encoding; verify fragment size/sample counts with Device.fragmentShadingRates().
+         */
+        fun encode(fragmentSize: Size): Byte {
+            require(
+                fragmentSize.depth == 1 &&
+                    fragmentSize.width in listOf(1, 2, 4) &&
+                    fragmentSize.height in listOf(1, 2, 4)
+            )
+            return ((Integer.numberOfTrailingZeros(fragmentSize.width) shl 2) or
+                    Integer.numberOfTrailingZeros(fragmentSize.height))
+                .toByte()
+        }
+    }
+}
+
+data class RasterizationRateMapLimits(
+    val minimumTexelSize: Size,
+    val maximumTexelSize: Size,
+    val maximumAspectRatio: Int,
+    val layered: Boolean,
+)
+
+fun Device.rasterizationRateMapLimits(): RasterizationRateMapLimits = access {
+    val values = dev.vulkano.internal.Native.rateMapLimits(nativeHandle)
+    RasterizationRateMapLimits(
+        Size(values[0], values[1]),
+        Size(values[2], values[3]),
+        values[4],
+        values[5] != 0,
+    )
 }

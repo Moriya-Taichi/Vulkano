@@ -13,8 +13,14 @@ template <class T> void link(void *&head, T &item) {
 } // namespace
 void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkExtensionProperties> &e) {
     supported = e;
+    if (api >= VK_API_VERSION_1_2 ||
+        (has(e, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) && has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))
+        available |= DepthResolve;
     core12 = api >= VK_API_VERSION_1_2;
     void *head = nullptr;
+    if (has(e, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) &&
+        (core12 || has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))
+        link(head, fragmentRate);
     const bool bda = core12 || has(e, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
     if (bda)
         link(head, address);
@@ -36,8 +42,7 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         link(head, mesh);
     if (core12 || has(e, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME))
         link(head, indexing);
-    if (true)
-        link(head, multiview);
+    link(head, multiview);
     if (has(e, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME))
         link(head, interlock);
     if (core12 || has(e, VK_KHR_8BIT_STORAGE_EXTENSION_NAME))
@@ -50,6 +55,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         link(head, subgroupTypes);
     if (core12 || has(e, VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME))
         link(head, memoryModel);
+    if (has(e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME))
+        link(head, matrix);
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
@@ -57,6 +64,12 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         indexing.shaderSampledImageArrayNonUniformIndexing && indexing.shaderStorageBufferArrayNonUniformIndexing &&
         indexing.shaderStorageImageArrayNonUniformIndexing && indexing.shaderUniformBufferArrayNonUniformIndexing)
         available |= DescriptorIndexing;
+    if (fragmentRate.pipelineFragmentShadingRate)
+        available |= FragmentRate;
+    if (fragmentRate.primitiveFragmentShadingRate)
+        available |= PrimitiveRate;
+    if (fragmentRate.attachmentFragmentShadingRate)
+        available |= AttachmentRate;
     if (multiview.multiview)
         available |= Multiview;
     if (interlock.fragmentShaderPixelInterlock)
@@ -71,6 +84,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         available |= SubgroupExtended;
     if (memoryModel.vulkanMemoryModel && memoryModel.vulkanMemoryModelDeviceScope)
         available |= MemoryModel;
+    if (matrix.cooperativeMatrix && (available & MemoryModel))
+        available |= CooperativeMatrix;
     if (core12) {
         // Query 1.2 as a separate chain: do not duplicate promoted feature structs.
         VkPhysicalDeviceFeatures2 core{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -103,6 +118,12 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     }
     head = nullptr;
     link(head, multiviewProperties);
+    if (available & CooperativeMatrix)
+        link(head, matrixProperties);
+    if (available & (FragmentRate | PrimitiveRate | AttachmentRate))
+        link(head, fragmentRateProperties);
+    if (available & DepthResolve)
+        link(head, depthResolveProperties);
     if (available & Timeline)
         link(head, timelineProperties);
     if (available & (RayQuery | RayPipeline)) {
@@ -115,6 +136,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     p.pNext = head;
     vkGetPhysicalDeviceProperties2(d, &p);
+    if (!(matrixProperties.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT))
+        available &= ~CooperativeMatrix;
 }
 void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
     chain = nullptr;
@@ -123,6 +146,26 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
         if (std::none_of(names.begin(), names.end(), [&](const char *n) { return std::strcmp(n, name) == 0; }))
             names.push_back(name);
     };
+    if ((f & DepthResolve) && !core12) {
+        extension(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+        extension(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+    }
+    fragmentRate = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+    if (f & (FragmentRate | PrimitiveRate | AttachmentRate)) {
+        fragmentRate.pipelineFragmentShadingRate = bool(f & FragmentRate);
+        fragmentRate.primitiveFragmentShadingRate = bool(f & PrimitiveRate);
+        fragmentRate.attachmentFragmentShadingRate = bool(f & AttachmentRate);
+        link(chain, fragmentRate);
+        extension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+        if (!core12)
+            extension(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+    }
+    matrix = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+    if (f & CooperativeMatrix) {
+        matrix.cooperativeMatrix = VK_TRUE;
+        link(chain, matrix);
+        extension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    }
     address = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
     timeline = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
     acceleration = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
@@ -231,6 +274,8 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
     if (core12 && (f & (SamplerMinMax | ViewportLayer))) {
         // Keep only non-promoted extensions and Vulkan1.1 multiview in this chain.
         chain = nullptr;
+        if (f & CooperativeMatrix)
+            link(chain, matrix);
         if (f & (RayQuery | RayPipeline))
             link(chain, acceleration);
         if (f & RayQuery)
@@ -245,6 +290,8 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names) {
             link(chain, atomicFloat);
         if (f & Multiview)
             link(chain, multiview);
+        if (f & (FragmentRate | PrimitiveRate | AttachmentRate))
+            link(chain, fragmentRate);
         coreFeatures12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         coreFeatures12.samplerFilterMinmax = bool(f & SamplerMinMax);
         coreFeatures12.shaderOutputViewportIndex = coreFeatures12.shaderOutputLayer = bool(f & ViewportLayer);
@@ -273,6 +320,29 @@ void Extensions::load(Device &d) {
 #define GET(member, name)                                                                                              \
     member = reinterpret_cast<decltype(member)>(vkGetDeviceProcAddr(d.device, name));                                  \
     require(member, "Enabled Vulkan entry point is missing")
+    if (d.enabled & (DepthResolve | AttachmentRate)) {
+        GET(createRenderPass2, core12 ? "vkCreateRenderPass2" : "vkCreateRenderPass2KHR");
+    }
+    if (d.available & (FragmentRate | PrimitiveRate | AttachmentRate)) {
+        auto queryRates = reinterpret_cast<PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR>(
+            vkGetInstanceProcAddr(d.instance, "vkGetPhysicalDeviceFragmentShadingRatesKHR"));
+        require(queryRates, "Missing fragment shading rate query");
+        uint32_t count = 0;
+        check(queryRates(d.physical, &count, nullptr), "query shading rates");
+        fragmentRates.resize(count, {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR});
+        check(queryRates(d.physical, &count, fragmentRates.data()), "query shading rates");
+        fragmentRates.resize(count);
+    }
+    if (d.available & CooperativeMatrix) {
+        auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
+            vkGetInstanceProcAddr(d.instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
+        require(query, "Missing cooperative matrix query");
+        uint32_t count = 0;
+        check(query(d.physical, &count, nullptr), "query cooperative matrix configurations");
+        matrixConfigurations.resize(count, {VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
+        check(query(d.physical, &count, matrixConfigurations.data()), "query cooperative matrix configurations");
+        matrixConfigurations.resize(count);
+    }
     if (d.enabled & BufferAddress) {
         GET(getBufferAddress, core12 ? "vkGetBufferDeviceAddress" : "vkGetBufferDeviceAddressKHR");
     }
@@ -287,6 +357,11 @@ void Extensions::load(Device &d) {
         GET(buildSizes, "vkGetAccelerationStructureBuildSizesKHR");
         GET(getAccelerationAddress, "vkGetAccelerationStructureDeviceAddressKHR");
         GET(buildAcceleration, "vkCmdBuildAccelerationStructuresKHR");
+        GET(copyAcceleration, "vkCmdCopyAccelerationStructureKHR");
+        GET(serializeAcceleration, "vkCmdCopyAccelerationStructureToMemoryKHR");
+        GET(deserializeAcceleration, "vkCmdCopyMemoryToAccelerationStructureKHR");
+        GET(accelerationCompatibility, "vkGetDeviceAccelerationStructureCompatibilityKHR");
+        GET(accelerationPropertiesQuery, "vkCmdWriteAccelerationStructuresPropertiesKHR");
     }
     if (d.enabled & RayPipeline) {
         GET(createRayPipelines, "vkCreateRayTracingPipelinesKHR");
