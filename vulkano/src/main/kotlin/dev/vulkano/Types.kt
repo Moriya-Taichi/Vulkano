@@ -70,6 +70,8 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     TEXTURE_COMPRESSION_PVRTC(32, 1),
     DEVICE_GENERATED_COMMANDS(64, 1),
     TILE_SHADING(128, 1),
+    INDEPENDENT_QUEUES(256, 1),
+    SYNCHRONIZATION_2(512, 1),
 }
 
 enum class StorageMode {

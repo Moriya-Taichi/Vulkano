@@ -228,7 +228,9 @@ internal object Native {
 
     external fun pipelineLocalSize(pipeline: Long): IntArray
 
-    external fun createCommand(device: Long): Long
+    external fun createCommand(device: Long, queueIndex: Int): Long
+
+    external fun queueInfo(device: Long): IntArray
 
     external fun dispatch(
         command: Long,
@@ -392,9 +394,9 @@ internal object Native {
 
     external fun signalCommandEvent(command: Long, event: Long, value: Long)
 
-    external fun createCounters(device: Long, count: Int, timestamp: Boolean): Long
+    external fun createCounters(device: Long, count: Int, timestamp: Boolean, queueIndex: Int): Long
 
-    external fun counterCapabilities(device: Long): LongArray
+    external fun counterCapabilities(device: Long, queueIndex: Int): LongArray
 
     external fun counterInfo(id: Long): LongArray
 

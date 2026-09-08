@@ -30,7 +30,54 @@ Layoutの変更はQueueへの送信が成功してから公開します。送信
 
 `compute {}`、`render {}`、`blit {}`のブロックが例外で終了した場合、そのCommand Bufferを閉じます。閉じたEncoder、別DeviceのResource、Encoderが開いたままの`commit()`は受け付けません。
 
-同じDeviceのAPI操作は直列化します。JNI内でもVulkanが求める外部同期を行います。複数のCommandQueueを作っても、同じVulkan Queueへ順に送信されます。
+同じDeviceのAPI操作は直列化します。
+JNI内でもVulkanが求める外部同期を行います。
+引数なしの`makeCommandQueue()`は、同じ順序付きのVulkan Queueを使用します。
+
+## 独立Queue
+
+`INDEPENDENT_QUEUES`を有効にすると、`Device.commandQueues`から実際に作成されたQueueを選べます。
+`makeCommandQueue(index)`の異なるIndexは異なるVulkan Queueを使い、並行実行が可能です。
+同じIndexのCommandは送信順に実行します。
+Queueの数やGraphics・Compute・Transferへの対応は端末に問い合わせます。
+独立Queueがない端末ではこのFeatureを要求せず、Index 0を使います。
+
+```kotlin
+val device = Device.create(
+    requiredFeatures = setOf(Feature.INDEPENDENT_QUEUES, Feature.TIMELINE_SEMAPHORE),
+)
+val transfer = device.commandQueues.first { it.supportsTransfer && it.index != 0 }
+val event = device.makeSharedEvent()
+val upload = device.makeCommandQueue(transfer.index).makeCommandBuffer()
+upload.blit { copy(staging, input) }
+upload.signalEventOnCompletion(event, 1)
+upload.commit()
+
+val compute = device.makeCommandQueue().makeCommandBuffer()
+compute.waitForEvent(event, 1)
+compute.compute {
+    setComputePipelineState(pipeline)
+    setBuffer(input, 0)
+    setBuffer(output, 1)
+    dispatchThreadgroups(Size(1))
+}
+compute.commit()
+compute.waitUntilCompleted()
+upload.close()
+compute.close()
+```
+
+Queueをまたぐ読み書き・Texture Layout変更・Alias切り替えにはSharedEventで依存関係を指定します。
+書き込み元のCommandを先に`commit()`してから、待機するCommandを送信してください。
+同じEventを繰り返しSignalする場合、値の増加順に完了するよう前回のSignalを待ちます。
+並行に動かしたい処理には別々のEventを用意してください。
+
+複数のQueue Familyを作成したDeviceでは、BufferとTextureをそれらのFamilyで共有できるように割り当てます。
+この共有設定は単一Familyを使う場合には適用しません。
+HardwareBufferを独立Queueと併用する場合は、外部所有権の移譲に必要な`SYNCHRONIZATION_2`も有効にします。
+転送専用QueueではTexture領域の粒度制限を検査し、Depth/StencilのBuffer転送とMip生成にはGraphics Queueを使います。
+Counterは`makeCounterSampleBuffer(queueIndex = index)`で使用先のQueueに割り当てます。
+`Device.waitUntilIdle()`はすべてのQueueの送信済みCommandを待ちます。
 
 ## Surfaceの寿命
 

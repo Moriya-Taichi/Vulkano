@@ -40,10 +40,13 @@ void SharedEvent::signal(uint64_t n) {
     check(d->extensions->signalSemaphore(d->device, &i), "signal shared event");
     lastScheduled = std::max(lastScheduled, n);
 }
-CounterPool::CounterPool(std::shared_ptr<Device> device, uint32_t n, bool time)
-    : Resource(std::move(device)), count(n), timestamp(time), issued(n, false) {
+CounterPool::CounterPool(std::shared_ptr<Device> device, uint32_t n, bool time, uint32_t queue)
+    : Resource(std::move(device)), count(n), queueIndex(queue), timestamp(time), issued(n, false) {
     require(n && n <= 65536, "Invalid counter count");
-    require(!time || d->timestampBits > 0, "Queue does not support timestamps");
+    require(queueIndex < d->queues.size(), "Unknown counter queue index");
+    const auto &q = d->queues[queueIndex].properties;
+    require(time ? q.timestampValidBits > 0 : bool(q.queueFlags & VK_QUEUE_GRAPHICS_BIT),
+            "Queue does not support this counter type");
     VkQueryPoolCreateInfo i{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     i.queryType = time ? VK_QUERY_TYPE_TIMESTAMP : VK_QUERY_TYPE_OCCLUSION;
     i.queryCount = n;
@@ -71,6 +74,7 @@ std::vector<uint64_t> CounterPool::read() {
 void Command::sample(std::shared_ptr<CounterPool> pool, uint32_t index) {
     recording();
     require(pool && pool->owner() == d.get() && pool->timestamp && index < pool->count, "Invalid timestamp sample");
+    require(pool->queueIndex == queueIndex, "Counter belongs to a different physical queue");
     counters.push_back(pool);
     counterIndices.push_back(index);
     operations.push_back([pool, index](Command &c) {

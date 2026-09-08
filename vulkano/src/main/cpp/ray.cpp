@@ -156,6 +156,7 @@ AccelerationStructure::~AccelerationStructure() {
 }
 void Command::build(std::shared_ptr<AccelerationStructure> target, bool update) {
     recording();
+    requireQueue(VK_QUEUE_COMPUTE_BIT);
     require(target && target->owner() == d.get(), "Invalid acceleration structure device");
     require(!target->copyDestination, "Copy destinations are immutable; create a geometry descriptor to build/refit");
     require(!update || (target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
@@ -249,6 +250,7 @@ AccelerationStructure::AccelerationStructure(std::shared_ptr<AccelerationStructu
 void Command::copyAccelerationStructure(std::shared_ptr<AccelerationStructure> source,
                                         std::shared_ptr<AccelerationStructure> target) {
     recording();
+    requireQueue(VK_QUEUE_COMPUTE_BIT);
     require(source && target && source->owner() == d.get() && target->owner() == d.get() && source != target,
             "Invalid acceleration copy resources");
     require(target->copySource.lock() == source && !target->built,

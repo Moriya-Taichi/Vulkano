@@ -113,7 +113,7 @@ void Command::acquireExternal(std::shared_ptr<Texture> texture, bool preserve) {
         barrier.oldLayout = preserve ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcQueueFamilyIndex = external.externalFamily;
-        barrier.dstQueueFamilyIndex = c.d->family;
+        barrier.dstQueueFamilyIndex = c.queueInfo().family;
         barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.image = texture->image;
         barrier.subresourceRange = {texture->aspects(), 0, texture->options.mipLevels, 0, texture->options.layers};
@@ -137,7 +137,7 @@ void Command::releaseExternal(std::shared_ptr<Texture> texture) {
         (void)added;
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout = barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.srcQueueFamilyIndex = c.d->family;
+        barrier.srcQueueFamilyIndex = c.queueInfo().family;
         barrier.dstQueueFamilyIndex = external.externalFamily;
         barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.image = texture->image;
@@ -314,6 +314,7 @@ std::shared_ptr<Texture> importHardwareBuffer(std::shared_ptr<Device> d, AHardwa
     external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
     external.pNext = &externalFormat;
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    d->share(info);
     info.pNext = &external;
     info.flags = imported->flags;
     info.imageType = VK_IMAGE_TYPE_2D;

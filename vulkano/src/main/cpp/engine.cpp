@@ -962,7 +962,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 8) == 0, "Unknown extended feature");
+    require((extra >> 10) == 0, "Unknown extended feature");
+    if ((extra & (IndependentQueues | HardwareBufferInterop)) == (IndependentQueues | HardwareBufferInterop))
+        extra |= Synchronization2;
     require((required >> 60) == 0, "Unknown requested feature");
     if ((required & (RayQuery | RayPipeline)) || (extra & DeviceGeneratedCommands))
         required |= BufferAddress;
@@ -1075,9 +1077,6 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         auto extended = std::make_shared<Extensions>();
         extended->inspect(physical, std::min(props.apiVersion, app.apiVersion), exts);
         available |= extended->available;
-        if ((available & required) != required || (extended->availableExtra & extra) != extra)
-            continue;
-        result->extensions = extended;
         uint32_t qc = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical, &qc, nullptr);
         std::vector<VkQueueFamilyProperties> families(qc);
@@ -1095,15 +1094,24 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
             sparseQueue = it;
         if (sparseQueue == families.end())
             available &= ~SparseResources;
-        if ((required & available) != required)
+        uint64_t availableExtra = extended->availableExtra;
+        uint64_t queueCount = 0;
+        constexpr auto commandQueues = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+        for (const auto &q : families)
+            if (q.queueFlags & commandQueues)
+                queueCount += q.queueCount;
+        if (queueCount > 1)
+            availableExtra |= IndependentQueues;
+        if ((required & available) != required || (extra & availableExtra) != extra)
             continue;
+        result->extensions = extended;
         result->sparseFamily = sparseQueue == families.end() ? 0 : uint32_t(sparseQueue - families.begin());
         result->physical = physical;
         result->properties = props;
         result->properties.apiVersion = std::min(props.apiVersion, app.apiVersion);
         result->available = available;
         result->enabled = required;
-        result->availableExtra = extended->availableExtra;
+        result->availableExtra = availableExtra;
         result->enabledExtra = extra;
         result->family = static_cast<uint32_t>(it - families.begin());
         result->timestampBits = it->timestampValidBits;
@@ -1156,25 +1164,50 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
                     !(extended->core12 && ((required & (SamplerMinMax | ViewportLayer)) || (extra & DrawIndirectCount)))
                 ? &enableF16
                 : extended->chain;
-        float priority = 1;
-        VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-        queueInfo.queueFamilyIndex = result->family;
-        queueInfo.queueCount = 1;
-        queueInfo.pQueuePriorities = &priority;
+        std::map<uint32_t, uint32_t> requestedQueues{{result->family, 1}};
+        if (extra & IndependentQueues)
+            for (uint32_t f = 0; f < families.size(); ++f)
+                if (families[f].queueCount && (families[f].queueFlags & commandQueues))
+                    requestedQueues[f] = families[f].queueCount;
+        for (const auto &[f, count] : requestedQueues) {
+            (void)count;
+            result->resourceFamilies.push_back(f);
+        }
+        if (required & SparseResources)
+            requestedQueues.emplace(result->sparseFamily, 1);
+        uint32_t maxQueues = 1;
+        for (const auto &[f, count] : requestedQueues) {
+            (void)f;
+            maxQueues = std::max(maxQueues, count);
+        }
+        std::vector<float> priorities(maxQueues, 1.0f);
+        std::vector<VkDeviceQueueCreateInfo> queueCreates;
+        for (const auto &[f, count] : requestedQueues) {
+            VkDeviceQueueCreateInfo info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+            info.queueFamilyIndex = f;
+            info.queueCount = count;
+            info.pQueuePriorities = priorities.data();
+            queueCreates.push_back(info);
+        }
         VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         deviceInfo.pNext = &enableStorage;
         deviceInfo.pEnabledFeatures = &enabledFeatures;
-        deviceInfo.queueCreateInfoCount = 1;
-        std::array<VkDeviceQueueCreateInfo, 2> queues{queueInfo, queueInfo};
-        queues[1].queueFamilyIndex = result->sparseFamily;
-        if ((required & SparseResources) && result->sparseFamily != result->family)
-            deviceInfo.queueCreateInfoCount = 2;
-        deviceInfo.pQueueCreateInfos = queues.data();
+        deviceInfo.queueCreateInfoCount = uint32_t(queueCreates.size());
+        deviceInfo.pQueueCreateInfos = queueCreates.data();
         deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
         deviceInfo.ppEnabledExtensionNames = enabledExtensions.data();
         check(vkCreateDevice(physical, &deviceInfo, nullptr, &result->device), "vkCreateDevice");
         extended->load(*result);
         vkGetDeviceQueue(result->device, result->family, 0, &result->queue);
+        result->queues.push_back({result->queue, result->family, 0, families[result->family]});
+        for (auto f : result->resourceFamilies)
+            for (uint32_t i = 0; i < requestedQueues[f]; ++i) {
+                if (f == result->family && i == 0)
+                    continue;
+                QueueInfo q{VK_NULL_HANDLE, f, i, families[f]};
+                vkGetDeviceQueue(result->device, f, i, &q.handle);
+                result->queues.push_back(q);
+            }
         if (required & SparseResources)
             vkGetDeviceQueue(result->device, result->sparseFamily, 0, &result->sparseQueue);
         vkGetPhysicalDeviceMemoryProperties(physical, &result->memory);
@@ -1231,7 +1264,7 @@ void Device::collect() {
         reclaimPresentation();
 }
 void Device::waitIdle() {
-    check(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+    check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle");
     collect();
 }
 
@@ -1255,6 +1288,7 @@ Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsag
     require(!(usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) || (d->enabled & BufferAddress),
             "Buffer device address feature was not enabled");
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    d->share(info);
     info.size = size;
     info.usage = usage;
     if (sparseResource) {
@@ -1918,6 +1952,7 @@ static void resolveSamplers(const Pipeline &p, std::vector<Binding> &bindings) {
 void Command::trace(std::shared_ptr<RayTracingPipeline> p, std::vector<Binding> bs, std::vector<uint8_t> constants,
                     std::array<uint32_t, 3> size) {
     recording();
+    requireQueue(VK_QUEUE_COMPUTE_BIT);
     require(p && p->rayTracing, "Ray pipeline required");
     resolveSamplers(*p, bs);
     validateBindings(*p, bs, constants);
@@ -1953,7 +1988,12 @@ Pipeline::~Pipeline() {
         vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
 }
 
-Command::Command(std::shared_ptr<Device> device) : Resource(std::move(device)) {}
+Command::Command(std::shared_ptr<Device> device, uint32_t index) : Resource(std::move(device)), queueIndex(index) {
+    require(index < d->queues.size(), "Command queue index is unavailable; enable INDEPENDENT_QUEUES first");
+}
+void Command::requireQueue(VkQueueFlags any) const {
+    require(queueInfo().properties.queueFlags & any, "Operation is unsupported by this command queue");
+}
 void Command::recording() const {
     require(state == State::Recording, "Command buffer is not recording (one submission only)");
 }
@@ -2210,6 +2250,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
 void Command::executeGenerated(std::shared_ptr<GeneratedExecution> g, std::vector<Binding> bs,
                                std::vector<uint8_t> constants) {
     recording();
+    requireQueue(VK_QUEUE_COMPUTE_BIT);
     auto p = g->layout->pipelines.front();
     require((p->compute || p->rayTracing) && !p->tileShader, "Generated dispatch requires a non-tile pipeline");
     resolveSamplers(*p, bs);
@@ -2232,6 +2273,7 @@ void Command::executeGenerated(std::shared_ptr<GeneratedExecution> g, std::vecto
 }
 void Command::dispatch(Dispatch op) {
     recording();
+    requireQueue(VK_QUEUE_COMPUTE_BIT);
     require(op.pipeline && op.pipeline->compute && !op.pipeline->tileShader,
             "Ordinary dispatch requires a compute pipeline without tile shading");
     resolveSamplers(*op.pipeline, op.bindings);
@@ -2264,6 +2306,7 @@ void Command::dispatch(Dispatch op) {
 }
 void Command::render(Render op) {
     recording();
+    requireQueue(VK_QUEUE_GRAPHICS_BIT);
     validateTileOptions(*d, op.tileShading, op.tileApron);
     if (op.colors.empty() && op.color)
         op.colors.push_back({op.color, {}, 0, 0, 0, 0, op.colorLoad, op.colorStore, op.clearColor});
@@ -2452,8 +2495,8 @@ void Command::render(Render op) {
         if (draw.tileAction >= 3)
             continue;
         if (draw.visibility) {
-            require(draw.visibility->owner() == d.get() && !draw.visibility->timestamp &&
-                        draw.visibilityIndex < draw.visibility->count,
+            require(draw.visibility->owner() == d.get() && draw.visibility->queueIndex == queueIndex &&
+                        !draw.visibility->timestamp && draw.visibilityIndex < draw.visibility->count,
                     "Invalid visibility counter");
             require(visibilityIndices.emplace(draw.visibility.get(), draw.visibilityIndex).second,
                     "Use distinct visibility indices within a pass");
@@ -2859,6 +2902,7 @@ void Command::render(Render op) {
 void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkDeviceSize so, VkDeviceSize to,
                    VkDeviceSize size) {
     recording();
+    requireQueue(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
     require(src && dst, "Buffers are required");
     require(!sparseMemoryOverlaps(*src, *dst), "Copies between shared sparse mappings require an intermediate buffer");
     same(*this, *src);
@@ -2882,6 +2926,7 @@ void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkD
 }
 void Command::present(std::shared_ptr<Drawable> drawable) {
     recording();
+    requireQueue(VK_QUEUE_GRAPHICS_BIT);
     require(drawable && !presentation && drawable->didAcquire && drawable->frame->active,
             "Present requires one currently acquired drawable");
     same(*this, *drawable);
@@ -2891,13 +2936,18 @@ void Command::commit() {
     recording();
     d->collect();
     try {
-        if (d->idleCommandCount) {
-            const auto cached = d->idleCommands[--d->idleCommandCount];
+        for (size_t i = 0; i < d->idleCommandCount; ++i) {
+            const auto cached = d->idleCommands[i];
+            if (cached.family != queueInfo().family)
+                continue;
             pool = cached.pool;
             command = cached.command;
-        } else {
+            d->idleCommands[i] = d->idleCommands[--d->idleCommandCount];
+            break;
+        }
+        if (!pool) {
             VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-            poolInfo.queueFamilyIndex = d->family;
+            poolInfo.queueFamilyIndex = queueInfo().family;
             poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
             check(vkCreateCommandPool(d->device, &poolInfo, nullptr, &pool), "vkCreateCommandPool");
             VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -2940,6 +2990,16 @@ void Command::commit() {
             for (const auto &wait : eventWaits)
                 if (wait.first == event)
                     require(value > wait.second, "Signal value must exceed the same submission wait");
+            if (event->lastScheduled > 0) {
+                auto previous = std::find(waits.begin(), waits.end(), event->semaphore);
+                if (previous == waits.end()) {
+                    waits.push_back(event->semaphore);
+                    waitValues.push_back(event->lastScheduled);
+                } else {
+                    auto index = size_t(previous - waits.begin());
+                    waitValues[index] = std::max(waitValues[index], event->lastScheduled);
+                }
+            }
             signals.push_back(event->semaphore);
             signalValues.push_back(value);
         }
@@ -2982,9 +3042,15 @@ void Command::commit() {
         auto self = shared_from_this();
         for (const auto &[event, value] : eventSignals) {
             (void)value;
+            event->pendingSignals.erase(std::remove_if(event->pendingSignals.begin(), event->pendingSignals.end(),
+                                                       [](const auto &pending) {
+                                                           auto c = pending.second.lock();
+                                                           return !c || c->state == State::Completed;
+                                                       }),
+                                        event->pendingSignals.end());
             event->pendingSignals.reserve(event->pendingSignals.size() + 1);
         }
-        check(vkQueueSubmit(d->queue, 1, &submit, fence), "vkQueueSubmit");
+        check(vkQueueSubmit(queueInfo().handle, 1, &submit, fence), "vkQueueSubmit");
         state = State::Submitted;
         for (const auto &event : externalWaits)
             event->state = ExternalSemaphore::State::Consumed;
@@ -3060,7 +3126,7 @@ Command::~Command() {
     // Retain one primary buffer per pool rather than allocating one each reuse.
     if (pool && completed && d->idleCommandCount < d->idleCommands.size() &&
         vkResetCommandPool(d->device, pool, 0) == VK_SUCCESS) {
-        d->idleCommands[d->idleCommandCount++] = {pool, command};
+        d->idleCommands[d->idleCommandCount++] = {pool, command, queueInfo().family};
     } else if (pool)
         vkDestroyCommandPool(d->device, pool, nullptr);
     for (auto fb : framebuffers)
@@ -3138,6 +3204,11 @@ void Surface::rebuild() {
             break;
         }
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    if (d->resourceFamilies.size() > 1) {
+        info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        info.queueFamilyIndexCount = uint32_t(d->resourceFamilies.size());
+        info.pQueueFamilyIndices = d->resourceFamilies.data();
+    }
     info.surface = surface;
     info.minImageCount = imageCount;
     info.imageFormat = selected.format;

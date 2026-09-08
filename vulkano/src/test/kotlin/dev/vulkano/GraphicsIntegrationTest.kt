@@ -36,6 +36,175 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun defaultQueueStaysOrderedAndChecksIndices(): Unit =
+        device().use { d ->
+            assertEquals(1, d.commandQueues.size)
+            val info = d.commandQueues.single()
+            assertEquals(0, info.index)
+            assertTrue(info.supportsRendering && info.supportsCompute && info.supportsTransfer)
+            assertEquals(TransferGranularity(1, 1, 1), info.imageTransferGranularity)
+            assertEquals(info.timestampValidBits, d.counterCapabilities().timestampValidBits)
+            for (index in listOf(-1, 1)) {
+                assertThrows(IllegalArgumentException::class.java) { d.makeCommandQueue(index) }
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.makeCounterSampleBuffer(1, queueIndex = index)
+                }
+                assertThrows(IllegalArgumentException::class.java) { d.counterCapabilities(index) }
+            }
+            val source = d.makeBuffer(16)
+            val output = d.makeBuffer(16)
+            val queue = d.makeCommandQueue()
+            val first = queue.makeCommandBuffer()
+            queue.close()
+            assertThrows(IllegalStateException::class.java) { queue.makeCommandBuffer() }
+            first.blit { fill(source, 29) }
+            first.commit()
+            d.submit { blit { copy(source, output) } }
+            assertArrayEquals(ByteArray(16) { 29 }, output.readBytes(16))
+            assertTrue(first.waitUntilCompleted())
+            first.close()
+        }
+
+    @Test
+    fun independentQueuesTransferWithTimelineDependenciesAndReusePools(): Unit {
+        val features = setOf(Feature.INDEPENDENT_QUEUES, Feature.TIMELINE_SEMAPHORE)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            assertTrue(d.commandQueues.size > 1)
+            assertEquals(
+                d.commandQueues.size,
+                d.commandQueues.map { it.familyIndex to it.indexInFamily }.toSet().size,
+            )
+            val event = d.makeSharedEvent()
+            val texture =
+                d.makeTexture(
+                    TextureDescriptor(
+                        16,
+                        16,
+                        usage =
+                            setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION),
+                    )
+                )
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(16, 16, usage = setOf(TextureUsage.COLOR_ATTACHMENT))
+                )
+            var value = 0L
+            repeat(3) { round ->
+                var source = d.makeBuffer(1024)
+                val expected = ByteArray(1024) { ((it + round * 17) % 251).toByte() }
+                source.write(
+                    ByteBuffer.allocateDirect(expected.size).apply {
+                        put(expected)
+                        flip()
+                    }
+                )
+                val commands = mutableListOf<CommandBuffer>()
+                for (q in d.commandQueues) {
+                    val destination = d.makeBuffer(1024)
+                    val command = d.makeCommandQueue(q.index).use { it.makeCommandBuffer() }
+                    assertEquals(q, command.queueCapabilities)
+                    if (!q.supportsCompute) {
+                        assertThrows(IllegalArgumentException::class.java) {
+                            command.makeComputeCommandEncoder()
+                        }
+                        assertThrows(IllegalArgumentException::class.java) {
+                            command.makeRayTracingCommandEncoder()
+                        }
+                        assertThrows(IllegalArgumentException::class.java) {
+                            command.makeAccelerationStructureCommandEncoder()
+                        }
+                    }
+                    if (!q.supportsRendering) {
+                        assertThrows(IllegalArgumentException::class.java) {
+                            command.makeRenderCommandEncoder(
+                                RenderPassDescriptor(ColorAttachment(target))
+                            )
+                        }
+                    }
+                    if (value > 0) command.waitForEvent(event, value)
+                    val counters =
+                        if (q.timestampValidBits > 0)
+                            d.makeCounterSampleBuffer(2, queueIndex = q.index)
+                        else null
+                    if (counters != null) command.sampleCounters(counters, 0)
+                    command.blit {
+                        copy(source, texture)
+                        copy(texture, destination)
+                    }
+                    if (counters != null) command.sampleCounters(counters, 1)
+                    command.signalEventOnCompletion(event, ++value)
+                    command.commit()
+                    source.close()
+                    counters?.close()
+                    commands.add(command)
+                    source = destination
+                }
+                assertTrue(commands.last().waitUntilCompleted())
+                assertArrayEquals(expected, source.readBytes(1024))
+                assertEquals(value, event.signaledValue)
+                commands.forEach { it.close() }
+                source.close()
+            }
+        }
+    }
+
+    @Test
+    fun aWaitingQueueDoesNotBlockAnotherQueue(): Unit {
+        val features = setOf(Feature.INDEPENDENT_QUEUES, Feature.TIMELINE_SEMAPHORE)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val gate = d.makeSharedEvent()
+            val blockedOutput = d.makeBuffer(4)
+            val freeOutput = d.makeBuffer(4)
+            val blocked = d.makeCommandQueue(0).use { it.makeCommandBuffer() }
+            val free = d.makeCommandQueue(1).use { it.makeCommandBuffer() }
+            blocked.waitForEvent(gate, 1)
+            blocked.blit { fill(blockedOutput, 31) }
+            blocked.commit()
+            try {
+                free.blit { fill(freeOutput, 67) }
+                free.commit()
+                assertTrue(free.waitUntilCompleted(5_000_000_000L))
+                assertFalse(blocked.waitUntilCompleted(0))
+                assertArrayEquals(ByteArray(4) { 67 }, freeOutput.readBytes(4))
+            } finally {
+                gate.signal(1)
+                blocked.close()
+                free.close()
+            }
+            assertArrayEquals(ByteArray(4) { 31 }, blockedOutput.readBytes(4))
+        }
+    }
+
+    @Test
+    fun independentQueueSignalsStayMonotonicWithoutHostWaiting(): Unit {
+        val features = setOf(Feature.INDEPENDENT_QUEUES, Feature.TIMELINE_SEMAPHORE)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val event = d.makeSharedEvent()
+            val source = d.makeBuffer(64)
+            val output = d.makeBuffer(64)
+            val commands = mutableListOf<CommandBuffer>()
+            repeat(8) { index ->
+                val c =
+                    d.makeCommandQueue(index % d.commandQueues.size).use { it.makeCommandBuffer() }
+                c.blit { if (index == 0) fill(source, 47) else copy(source, output) }
+                c.signalEventOnCompletion(event, index + 1L)
+                c.commit()
+                commands.add(c)
+            }
+            d.waitUntilIdle()
+            assertEquals(8L, event.signaledValue)
+            assertArrayEquals(ByteArray(64) { 47 }, output.readBytes(64))
+            commands.forEach {
+                assertTrue(it.waitUntilCompleted())
+                it.close()
+            }
+        }
+    }
+
+    @Test
     fun tileShadingRequiresExplicitFeatureAndRenderPass(): Unit =
         device().use { d ->
             assertThrows(IllegalArgumentException::class.java) { TileShadingDescriptor(-1) }

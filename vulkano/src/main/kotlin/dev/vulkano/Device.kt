@@ -50,7 +50,25 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
         )
     }
 
-    fun makeCommandQueue(): CommandQueue = access { CommandQueue(this) }
+    /** Physical queues created for this device. Index zero preserves the default ordered queue. */
+    val commandQueues: List<CommandQueueCapabilities> =
+        Native.queueInfo(nativeHandle).toList().chunked(7).mapIndexed { index, p ->
+            CommandQueueCapabilities(
+                index,
+                p[0],
+                p[1],
+                p[2] and 1 != 0,
+                p[2] and 2 != 0,
+                p[2] and 7 != 0,
+                p[3],
+                TransferGranularity(p[4], p[5], p[6]),
+            )
+        }
+
+    fun makeCommandQueue(index: Int = 0): CommandQueue = access {
+        require(index in commandQueues.indices) { "Unavailable physical queue index" }
+        CommandQueue(this, commandQueues[index])
+    }
 
     fun makeBuffer(
         length: Long,

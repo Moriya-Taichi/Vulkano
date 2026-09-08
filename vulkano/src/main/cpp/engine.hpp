@@ -107,13 +107,20 @@ enum ExtraFeature : uint64_t {
     AstcHdr = 16,
     Pvrtc = 32,
     DeviceGeneratedCommands = 64,
-    TileShading = 128
+    TileShading = 128,
+    IndependentQueues = 256,
+    Synchronization2 = 512
 };
 enum class Storage { Shared, Private, Memoryless };
 
 struct Object {
     virtual ~Object() = default;
     virtual Device *owner() const = 0;
+};
+struct QueueInfo {
+    VkQueue handle = VK_NULL_HANDLE;
+    uint32_t family = 0, index = 0;
+    VkQueueFamilyProperties properties{};
 };
 struct Device : Object, std::enable_shared_from_this<Device> {
     VkInstance instance = VK_NULL_HANDLE;
@@ -122,6 +129,15 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t family = 0, timestampBits = 0, sparseFamily = 0;
     VkQueue sparseQueue = VK_NULL_HANDLE;
+    std::vector<QueueInfo> queues;
+    std::vector<uint32_t> resourceFamilies;
+    template <class T> void share(T &info) const {
+        if (resourceFamilies.size() > 1) {
+            info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            info.queueFamilyIndexCount = uint32_t(resourceFamilies.size());
+            info.pQueueFamilyIndices = resourceFamilies.data();
+        }
+    }
     uint64_t available = 0, enabled = 0, availableExtra = 0, enabledExtra = 0;
     std::map<std::pair<uint64_t, bool>, std::weak_ptr<Texture>> importedImages;
     std::map<std::vector<uint64_t>, std::weak_ptr<Sampler>> conversionSamplers;
@@ -139,6 +155,7 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     struct CommandAllocation {
         VkCommandPool pool;
         VkCommandBuffer command;
+        uint32_t family;
     };
     std::array<CommandAllocation, 8> idleCommands{};
     size_t idleCommandCount = 0;
@@ -447,6 +464,10 @@ struct ImageRegion {
 struct Command : Resource, std::enable_shared_from_this<Command> {
     enum class State { Recording, Submitted, Completed, Failed };
     State state = State::Recording;
+    uint32_t queueIndex = 0;
+    const QueueInfo &queueInfo() const { return d->queues[queueIndex]; }
+    void requireQueue(VkQueueFlags any) const;
+    void validateTransfer(const Texture &, const ImageRegion &) const;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer command = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -465,7 +486,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     std::vector<std::shared_ptr<Buffer>> buffers;
     std::unordered_map<Texture *, std::vector<ImageState>> images;
     std::shared_ptr<Drawable> presentation;
-    explicit Command(std::shared_ptr<Device>);
+    explicit Command(std::shared_ptr<Device>, uint32_t queueIndex = 0);
     std::unordered_map<AccelerationStructure *, bool> accelerationStates;
     void build(std::shared_ptr<AccelerationStructure>, bool update = false);
     void copyAccelerationStructure(std::shared_ptr<AccelerationStructure>, std::shared_ptr<AccelerationStructure>);

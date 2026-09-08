@@ -7,6 +7,7 @@ Heap::Heap(std::shared_ptr<Device> device, VkDeviceSize size, Storage mode)
     : Resource(std::move(device)), capacity(size), storage(mode) {
     require(size > 0 && mode != Storage::Memoryless, "Heap requires positive size and shared/private storage");
     VkBufferCreateInfo b{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    d->share(b);
     b.size = size;
     b.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     VmaAllocationCreateInfo a{};

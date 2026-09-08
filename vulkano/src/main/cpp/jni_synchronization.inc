@@ -25,10 +25,10 @@ JNI_METHOD(void, signalCommandEvent)(JNIEnv *e, jobject, jlong id, jlong event, 
         get<Command>(id)->signalEvent(get<SharedEvent>(event), value);
     });
 }
-JNI_METHOD(jlong, createCounters)(JNIEnv *e, jobject, jlong device, jint count, jboolean timestamp) {
+JNI_METHOD(jlong, createCounters)(JNIEnv *e, jobject, jlong device, jint count, jboolean timestamp, jint queueIndex) {
     return guard(e, [&] {
-        require(count > 0, "Invalid counter count");
-        return put(std::make_shared<CounterPool>(get<Device>(device), count, timestamp));
+        require(count > 0 && queueIndex >= 0, "Invalid counter count/queue index");
+        return put(std::make_shared<CounterPool>(get<Device>(device), count, timestamp, uint32_t(queueIndex)));
     });
 }
 JNI_METHOD(jlongArray, readCounters)(JNIEnv *e, jobject, jlong id) {
@@ -105,15 +105,18 @@ JNI_METHOD(jlongArray, counterInfo)(JNIEnv *e, jobject, jlong id) {
         auto pool = get<CounterPool>(id);
         uint32_t bits = 0;
         std::memcpy(&bits, &pool->d->properties.limits.timestampPeriod, 4);
-        return longs(e, {pool->timestamp ? jlong(pool->d->timestampBits) : 0, jlong(bits)});
+        return longs(e, {pool->timestamp ? jlong(pool->d->queues[pool->queueIndex].properties.timestampValidBits) : 0,
+                         jlong(bits)});
     });
 }
 
-JNI_METHOD(jlongArray, counterCapabilities)(JNIEnv *e, jobject, jlong id) {
+JNI_METHOD(jlongArray, counterCapabilities)(JNIEnv *e, jobject, jlong id, jint queueIndex) {
     return guard(e, [&] {
         auto d = get<Device>(id);
+        require(queueIndex >= 0 && uint32_t(queueIndex) < d->queues.size(), "Unknown queue index");
         uint32_t period;
         std::memcpy(&period, &d->properties.limits.timestampPeriod, 4);
-        return longs(e, {jlong(d->timestampBits), jlong(period), bool(d->available & PreciseOcclusion)});
+        return longs(e, {jlong(d->queues[queueIndex].properties.timestampValidBits), jlong(period),
+                         bool(d->available & PreciseOcclusion)});
     });
 }

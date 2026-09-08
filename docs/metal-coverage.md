@@ -37,6 +37,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
 | Sparse Resource | makeSparseBuffer / makeSparseTexture | Page/Tile/Mip TailのMapping、必要なMetadataの確保、Mapping共有、CPU/Shader Residency検査 |
 | Event / 外部同期 | makeSharedEvent / makeExternalSemaphore | TimelineとBinary Semaphore、SYNC_FDのImport/Export。WaitはCommand開始前、Signalは完了時 |
+| 独立Queue | commandQueues / makeCommandQueue(index) | Graphics、Compute、Transferの実Queueを選択。複数Family間はConcurrent Sharing、依存関係はSharedEvent |
 | Android画像共有 / YCbCr | importHardwareBuffer / acquireExternalTexture / releaseExternalTexture | AHardwareBufferのMemory Import、RGB/Depth、外部Format変換、Foreign/External所有権移譲 |
 | Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
 | Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
@@ -53,7 +54,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | 機能 | 残る実装 |
 | --- | --- |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
-| 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
 
 ## 組み合わせの制約

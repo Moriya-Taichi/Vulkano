@@ -19,6 +19,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     core12 = api >= VK_API_VERSION_1_2;
     core13 = api >= VK_API_VERSION_1_3;
     void *head = nullptr;
+    if (core13 || has(e, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
+        link(head, sync2);
     const bool dgc = has(e, VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME) &&
                      has(e, VK_KHR_MAINTENANCE_5_EXTENSION_NAME) &&
                      (core13 || (has(e, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
@@ -81,6 +83,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
+    if (sync2.synchronization2)
+        availableExtra |= Synchronization2;
     if (tile.tileShading && tileQuery.tileProperties)
         availableExtra |= TileShading;
     generatedVertexInput = core13 || dynamicState.extendedDynamicState;
@@ -373,6 +377,13 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & Synchronization2) {
+        sync2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+        sync2.synchronization2 = true;
+        link(chain, sync2);
+        if (!core13)
+            extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+    }
     if (extra & TileShading) {
         // Expose the individual supported tile capabilities; image-processing descriptors have separate extensions.
         tile.tileShadingImageProcessing = false;

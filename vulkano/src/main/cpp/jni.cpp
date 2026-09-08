@@ -390,8 +390,24 @@ JNI_METHOD(jintArray, pipelineLocalSize)(JNIEnv *e, jobject, jlong id) {
                              static_cast<jint>(p->localSize[2]), static_cast<jint>(p->pushBytes)});
     });
 }
-JNI_METHOD(jlong, createCommand)(JNIEnv *e, jobject, jlong id) {
-    return guard(e, [&] { return put(std::make_shared<Command>(get<Device>(id))); });
+JNI_METHOD(jlong, createCommand)(JNIEnv *e, jobject, jlong id, jint index) {
+    return guard(e, [&] {
+        require(index >= 0, "Negative queue index");
+        return put(std::make_shared<Command>(get<Device>(id), uint32_t(index)));
+    });
+}
+JNI_METHOD(jintArray, queueInfo)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        std::vector<jint> values;
+        for (const auto &q : get<Device>(id)->queues) {
+            const auto &p = q.properties;
+            values.insert(values.end(),
+                          {jint(q.family), jint(q.index), jint(p.queueFlags), jint(p.timestampValidBits),
+                           jint(p.minImageTransferGranularity.width), jint(p.minImageTransferGranularity.height),
+                           jint(p.minImageTransferGranularity.depth)});
+        }
+        return intResult(e, values);
+    });
 }
 JNI_METHOD(void, dispatch)
 (JNIEnv *e, jobject, jlong id, jlong pipeline, jlongArray bs, jbyteArray constants, jintArray groups) {

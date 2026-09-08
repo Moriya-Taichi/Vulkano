@@ -2,20 +2,28 @@ package dev.vulkano
 
 import dev.vulkano.internal.Native
 
-class CommandQueue internal constructor(private val device: Device) : AutoCloseable {
+class CommandQueue
+internal constructor(private val device: Device, val capabilities: CommandQueueCapabilities) :
+    AutoCloseable {
     private var closed = false
 
-    /** Logical queues share one ordered Vulkan graphics/compute queue. */
+    /** Queues with the same capabilities.index share one ordered physical Vulkan queue. */
     fun makeCommandBuffer(): CommandBuffer =
         device.access {
             check(!closed) { "Command queue is closed" }
-            CommandBuffer(device, Native.createCommand(device.nativeHandle))
+            CommandBuffer(
+                device,
+                Native.createCommand(device.nativeHandle, capabilities.index),
+                capabilities,
+            )
         }
 
     override fun close() = synchronized(device) { closed = true }
 }
 
-class CommandBuffer internal constructor(device: Device, id: Long) : Resource(device, id) {
+class CommandBuffer
+internal constructor(device: Device, id: Long, val queueCapabilities: CommandQueueCapabilities) :
+    Resource(device, id) {
     private var encoder: CommandEncoder? = null
     val status: CommandBufferStatus
         get() = access { CommandBufferStatus.entries[Native.commandState(it)] }
@@ -69,26 +77,35 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
 
     fun makeComputeCommandEncoder(): ComputeCommandEncoder = access {
         recording()
+        require(queueCapabilities.supportsCompute) { "This queue cannot execute compute commands" }
         ComputeCommandEncoder(this).also { encoder = it }
     }
 
     fun makeBlitCommandEncoder(): BlitCommandEncoder = access {
         recording()
+        require(queueCapabilities.supportsTransfer) {
+            "This queue cannot execute transfer commands"
+        }
         BlitCommandEncoder(this).also { encoder = it }
     }
 
     fun makeAccelerationStructureCommandEncoder(): AccelerationStructureCommandEncoder = access {
         recording()
+        require(queueCapabilities.supportsCompute) {
+            "This queue cannot build acceleration structures"
+        }
         AccelerationStructureCommandEncoder(this).also { encoder = it }
     }
 
     fun makeRayTracingCommandEncoder(): RayTracingCommandEncoder = access {
         recording()
+        require(queueCapabilities.supportsCompute) { "This queue cannot trace rays" }
         RayTracingCommandEncoder(this).also { encoder = it }
     }
 
     fun makeRenderCommandEncoder(pass: RenderPassDescriptor): RenderCommandEncoder = access {
         recording()
+        require(queueCapabilities.supportsRendering) { "This queue cannot render" }
         val colors = pass.colorAttachments
         val d = pass.depthAttachment
         val rate = pass.rasterizationRateMap

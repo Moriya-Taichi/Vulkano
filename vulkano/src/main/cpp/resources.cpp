@@ -297,6 +297,7 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
                 (supported.sampleCounts & o.samples),
             "Texture exceeds device format limits");
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    d->share(info);
     info.flags = flags();
     info.imageType = imageType();
     info.extent = {w, h, o.depth};
@@ -562,6 +563,7 @@ void Command::markInitialized(Texture &t, bool value, uint32_t mip, uint32_t lay
 }
 void Command::fill(std::shared_ptr<Buffer> b, VkDeviceSize offset, VkDeviceSize size, uint32_t value) {
     recording();
+    requireQueue(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
     require(bool(b), "Buffer required");
     sameOwner(*this, *b);
     bounds(b->size, offset, size);
@@ -595,18 +597,34 @@ bool fullRegion(Texture &t, const ImageRegion &r) {
     return r.size.width == e.width && r.size.height == e.height && r.size.depth == e.depth;
 }
 } // namespace
+void Command::validateTransfer(const Texture &t, const ImageRegion &r) const {
+    const auto g = queueInfo().properties.minImageTransferGranularity;
+    const auto e = t.extent(r.mip);
+    auto valid = [](uint32_t origin, uint32_t size, uint32_t extent, uint64_t alignment) {
+        return alignment ? origin % alignment == 0 && (size % alignment == 0 || origin + size == extent)
+                         : origin == 0 && size == extent;
+    };
+    require(valid(uint32_t(r.origin.x), r.size.width, e.width, uint64_t(g.width) * t.blockWidth()) &&
+                valid(uint32_t(r.origin.y), r.size.height, e.height, uint64_t(g.height) * t.blockHeight()) &&
+                valid(uint32_t(r.origin.z), r.size.depth, e.depth, g.depth),
+            "Texture region does not satisfy this queue's image transfer granularity");
+}
 void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDeviceSize offset, bool toTexture) {
     copy(b, t, offset, toTexture, {});
 }
 void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDeviceSize offset, bool toTexture,
                    ImageRegion r, uint32_t row, uint32_t height) {
     recording();
+    requireQueue(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
     require(b && t, "Buffer and texture required");
     require(!memoryOverlaps(*b, *t), "Buffer/image copy aliases physical memory");
     sameOwner(*this, *b);
     sameOwner(*this, *t);
     t->usable();
     validRegion(*t, r);
+    validateTransfer(*t, r);
+    if (t->depth() || t->stencil())
+        requireQueue(VK_QUEUE_GRAPHICS_BIT);
     require(t->options.samples == 1 && !(t->depth() && t->stencil()),
             "Resolve multisampling first; packed depth/stencil copies require separate aspects");
     require((b->usage & (toTexture ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : VK_BUFFER_USAGE_TRANSFER_DST_BIT)) &&
@@ -642,11 +660,14 @@ void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDevi
 }
 void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> dest, ImageRegion a, ImageRegion b) {
     recording();
+    requireQueue(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
     require(source && dest, "Textures required");
     sameOwner(*this, *source);
     sameOwner(*this, *dest);
     validRegion(*source, a);
     validRegion(*dest, b);
+    validateTransfer(*source, a);
+    validateTransfer(*dest, b);
     const bool sameImage = source->image == dest->image;
     require(!sparseMemoryOverlaps(*source, *dest),
             "Copies between shared sparse mappings require an intermediate image");
@@ -682,6 +703,7 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
 }
 void Command::generateMipmaps(std::shared_ptr<Texture> t, VkFilter filter) {
     recording();
+    requireQueue(VK_QUEUE_GRAPHICS_BIT);
     require(bool(t), "Texture required");
     sameOwner(*this, *t);
     t->usable();

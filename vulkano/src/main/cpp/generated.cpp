@@ -290,6 +290,7 @@ GeneratedExecution::GeneratedExecution(std::shared_ptr<GeneratedLayout> l, std::
         VkBufferUsageFlags2CreateInfo usage{VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO};
         usage.usage = VK_BUFFER_USAGE_2_PREPROCESS_BUFFER_BIT_EXT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT;
         VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        d->share(ci);
         ci.pNext = &usage;
         ci.size = m.size + m.alignment - 1;
         ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;

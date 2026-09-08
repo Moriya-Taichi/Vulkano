@@ -135,3 +135,16 @@ Tile AttachmentのSPIR-V ReflectionをNativeで検査し、Tile機能の拒否�
 ローカルではNative 740項目、Kotlin/JNI 59件中41件成功・18件スキップ・失敗0件です。
 Tile Shadingに非対応のDriverなので、TileのGPU実行3件はスキップしています。
 TileのSPIR-VはCIで同じ固定版のSPIRV-Toolsを使って検証します。
+
+Commit `10c8d10`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34243153938)は成功しました。
+Native 740項目、Kotlin/JNI 59件中48件成功・11件スキップ・失敗0件です。
+Device Generated Commands、Ray Tracing、Sparseの成功経路が動作し、Gradle全体のログにもValidation ErrorとSync Hazardはありませんでした。
+3種類のTile Shaderも固定版のSPIRV-Toolsで検証に成功しました。
+TileのGPU実行は対応Driverがないためスキップしています。
+
+### 独立Queue
+
+Queue選択、単一Queueの順序維持、QueueごとのCommand Pool、複数FamilyでのResource共有とTimeline依存関係を追加しました。
+Queue間でのTexture転送、Counterの保持、Pool再利用、連続Signalの順序を検証するテストを用意しています。
+ローカルではNative 740項目、Kotlin/JNI 63件中42件成功・21件スキップ・失敗0件です。
+このDriverには独立Queueがないため、追加したQueue間実行の3件はスキップしています。

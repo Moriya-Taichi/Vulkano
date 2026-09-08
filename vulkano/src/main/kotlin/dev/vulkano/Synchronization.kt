@@ -52,16 +52,19 @@ internal constructor(device: Device, id: Long, val count: Int, val isTimestamp: 
     }
 }
 
-fun Device.makeCounterSampleBuffer(count: Int, timestamp: Boolean = true): CounterSampleBuffer =
-    access {
-        require(count > 0)
-        CounterSampleBuffer(
-            this,
-            Native.createCounters(nativeHandle, count, timestamp),
-            count,
-            timestamp,
-        )
-    }
+fun Device.makeCounterSampleBuffer(
+    count: Int,
+    timestamp: Boolean = true,
+    queueIndex: Int = 0,
+): CounterSampleBuffer = access {
+    require(count > 0)
+    CounterSampleBuffer(
+        this,
+        Native.createCounters(nativeHandle, count, timestamp, queueIndex),
+        count,
+        timestamp,
+    )
+}
 
 /** The opaque cache is specific to the driver/device. Incompatible cache headers are rejected. */
 fun Device.serializePipelineCache(): ByteArray = access { Native.pipelineCacheData(nativeHandle) }
@@ -76,7 +79,7 @@ data class CounterCapabilities(
     val preciseOcclusionAvailable: Boolean,
 )
 
-fun Device.counterCapabilities(): CounterCapabilities = access {
-    val data = Native.counterCapabilities(nativeHandle)
+fun Device.counterCapabilities(queueIndex: Int = 0): CounterCapabilities = access {
+    val data = Native.counterCapabilities(nativeHandle, queueIndex)
     CounterCapabilities(data[0].toInt(), Float.fromBits(data[1].toInt()).toDouble(), data[2] != 0L)
 }

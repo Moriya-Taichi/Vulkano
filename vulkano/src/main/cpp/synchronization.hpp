@@ -12,11 +12,11 @@ struct SharedEvent : Resource {
 };
 struct CounterPool : Resource {
     VkQueryPool pool = VK_NULL_HANDLE;
-    uint32_t count;
+    uint32_t count, queueIndex;
     bool timestamp;
     std::weak_ptr<Command> writer;
     std::vector<bool> issued;
-    CounterPool(std::shared_ptr<Device>, uint32_t count, bool timestamp);
+    CounterPool(std::shared_ptr<Device>, uint32_t count, bool timestamp, uint32_t queueIndex = 0);
     std::vector<uint64_t> read();
     ~CounterPool() override;
 };
