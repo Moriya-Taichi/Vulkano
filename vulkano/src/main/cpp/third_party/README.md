@@ -15,3 +15,8 @@ from Khronos SPIRV-Reflect tag `vulkan-sdk-1.3.296.0`, commit
 `8542f37bd9bb202e6c49dc6a9da364c58c34d2a4`. The Apache 2.0 license is included.
 
 Source: https://github.com/KhronosGroup/SPIRV-Reflect/tree/vulkan-sdk-1.3.296.0
+
+
+- **Vulkan-Headers v1.4.335**: C API headers for Android and host builds, including optional extension declarations.
+  Source and full licenses: [vulkan-headers/README.md](vulkan-headers/README.md).
+  Runtime Vulkan version and device extension support are still queried; including a header does not enable a feature.

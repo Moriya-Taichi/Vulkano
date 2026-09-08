@@ -47,6 +47,8 @@ with zipfile.ZipFile(artifacts[1]) as aar:
         assert 'META-INF/licenses/vulkano/spirv-reflect/LICENSE' in classes.namelist()
         assert classes.read('META-INF/licenses/vulkano/Vulkano-LICENSE') == (root / 'LICENSE').read_bytes()
         assert 'META-INF/licenses/vulkano/SPIRV-Headers-LICENSE.txt' in classes.namelist()
+        assert 'META-INF/licenses/vulkano/vulkan-headers/LICENSES/Apache-2.0.txt' in classes.namelist()
+        assert 'META-INF/licenses/vulkano/vulkan-headers/LICENSES/MIT.txt' in classes.namelist()
 with zipfile.ZipFile(artifacts[2]) as sources:
     assert any(n.endswith('/Device.kt') for n in sources.namelist())
     assert 'engine.cpp' in sources.namelist(), 'Native sources missing'

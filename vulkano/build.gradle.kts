@@ -71,7 +71,7 @@ if (centralRelease) {
 
 val licenseResources = tasks.register<Sync>("prepareLicenseResources") {
     from("src/main/cpp/third_party") {
-        include("README.md", "VMA-LICENSE.txt", "SPIRV-Headers-LICENSE.txt", "spirv-reflect/LICENSE")
+        include("README.md", "VMA-LICENSE.txt", "SPIRV-Headers-LICENSE.txt", "spirv-reflect/LICENSE", "vulkan-headers/README.md", "vulkan-headers/LICENSES/*.txt")
     }
     from(rootProject.file("LICENSE")) { rename { "Vulkano-LICENSE" } }
     into(layout.buildDirectory.dir("generated/licenseResources/META-INF/licenses/vulkano"))

@@ -16,7 +16,7 @@
 
 Android StudioのSDK ManagerなどでSDK・NDK・CMakeを用意し、SDKのパスを`ANDROID_HOME`または`local.properties`の`sdk.dir`で指定します。
 
-VMAとSPIRV-Reflectは固定したバージョンを同梱しています。バージョンとライセンスは[third_partyの説明](../vulkano/src/main/cpp/third_party/README.md)に記載しています。
+VMA、SPIRV-Reflect、Vulkan-HeadersのC APIは固定したバージョンを同梱しています。バージョンとライセンスは[third_partyの説明](../vulkano/src/main/cpp/third_party/README.md)に記載しています。
 
 ## AARとサンプル
 
