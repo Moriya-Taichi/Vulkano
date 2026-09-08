@@ -9,10 +9,10 @@ struct TensorOptions {
         VK_TENSOR_USAGE_SHADER_BIT_ARM | VK_TENSOR_USAGE_TRANSFER_SRC_BIT_ARM | VK_TENSOR_USAGE_TRANSFER_DST_BIT_ARM;
     std::vector<int64_t> dimensions, strides;
     VkTensorDescriptionARM description() const;
-    uint64_t validate(const Device &) const;
+    uint64_t validate(const Device &, bool resource = true) const;
 };
 uint32_t tensorElementSize(VkFormat);
-void reflectTensorBinding(Device &, const Shader &, uint32_t variable, BindingLayout &);
+void reflectTensorBinding(Device &, const Shader &, uint32_t variable, BindingLayout &, bool graph = false);
 VkFormatFeatureFlags2 tensorFormatFeatures(const Device &, VkFormat, VkTensorTilingARM);
 struct TensorResource : Resource {
     VkTensorARM tensor = VK_NULL_HANDLE;

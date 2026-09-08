@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "tensors.hpp"
+#include "graphs.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include <algorithm>
 #include <cmath>
@@ -60,6 +61,21 @@ int main() try {
             expect(binding.tensorDimensions == std::vector<int64_t>{1, 3}, "Tensor shape specialization");
         }
         spvReflectDestroyShaderModule(&module);
+        const auto graph = reflectGraph(limits, shader("graph-identity.spv"));
+        expect(graph.bindings.size() == 2 && graph.constants.empty() && !graph.specialization,
+               "Graph identity interfaces and constants");
+        for (const auto &b : graph.bindings)
+            expect(b.storageFormat == VK_FORMAT_R32_SFLOAT && b.tensorDimensions == std::vector<int64_t>{2, 3},
+                   "Graph tensor type and shape reflection");
+        const auto constantGraph = reflectGraph(limits, shader("graph-constant.spv"));
+        expect(constantGraph.bindings.size() == 1 && constantGraph.bindings[0].binding == 1 && constantGraph.constants.count(7),
+               "Graph weights use graph constant identifiers");
+        auto malformed = shader("graph-identity.spv"); malformed.entry = "missing";
+        rejects([&] { reflectGraph(limits, malformed); }, "Missing graph entry point must fail");
+        malformed = shader("graph-identity.spv"); malformed.code.back() = malformed.code[3] + 1;
+        rejects([&] { reflectGraph(limits, malformed); }, "Invalid graph interface ID must fail");
+        malformed = shader("graph-identity.spv"); malformed.code[5] = 0;
+        rejects([&] { reflectGraph(limits, malformed); }, "Zero-word graph instruction must fail");
     }
     for (const char* name : {"tile-loop.comp.spv", "tile-area.comp.spv", "tile-read.frag.spv"}) {
         const auto code = shader(name).code;
@@ -77,6 +93,33 @@ int main() try {
         spvReflectDestroyShaderModule(&module);
     }
     auto d = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
+    if (d->available & Timeline) {
+        // Exercise the actual graph submission/semaphore machinery with transfers
+        // on a normal Vulkan queue. This verifies ordering, not graph GPU support.
+        auto ordered = Device::create(Timeline, std::getenv("VULKANO_VALIDATION") != nullptr, true);
+        ordered->enabledExtra |= DataGraph;
+        ordered->queues[0].properties.queueFlags = VK_QUEUE_DATA_GRAPH_BIT_ARM;
+        auto source = buffer(ordered, 16), middle = buffer(ordered, 16), output = buffer(ordered, 16);
+        auto first = std::make_shared<Command>(ordered);
+        first->buffers = {source, middle};
+        first->operations.push_back([source](Command &c) { vkCmdFillBuffer(c.command, source->buffer, 0, 16, 0x13572468); });
+        first->operations.push_back([source, middle](Command &c) {
+            VkBufferCopy copy{0, 0, 16}; vkCmdCopyBuffer(c.command, source->buffer, middle->buffer, 1, &copy);
+        });
+        first->commit();
+        auto second = std::make_shared<Command>(ordered);
+        second->buffers = {middle, output};
+        second->operations.push_back([middle, output](Command &c) {
+            VkBufferCopy copy{0, 0, 16}; vkCmdCopyBuffer(c.command, middle->buffer, output->buffer, 1, &copy);
+        });
+        second->commit(); second->wait();
+        uint32_t actual[4]{}; output->read(0, actual, sizeof(actual));
+        expect(std::all_of(actual, actual + 4, [](auto n) { return n == 0x13572468; }),
+               "Graph segment and cross-submission timeline memory visibility");
+        expect(first->graphSegments.size() == 2 && second->graphSegments.size() == 1 && ordered->graphOrder[0].value == 3,
+               "Graph dispatches split into ordered timeline submissions");
+        first->wait();
+    }
     std::cout << "Device: " << d->properties.deviceName << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
     rejects([&] { Device::create(1ull << 63, false, true); }, "Unknown feature must fail");

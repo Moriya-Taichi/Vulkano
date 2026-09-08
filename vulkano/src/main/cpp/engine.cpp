@@ -997,6 +997,10 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
     require((extra >> 12) == 0, "Unknown extended feature");
+    if (extra & DataGraph) {
+        extra |= TensorResources;
+        required |= Timeline;
+    }
     if (extra & (TensorResources | DataGraph))
         extra |= Synchronization2;
     if ((extra & (IndependentQueues | HardwareBufferInterop)) == (IndependentQueues | HardwareBufferInterop))
@@ -1117,6 +1121,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         vkGetPhysicalDeviceQueueFamilyProperties(physical, &qc, nullptr);
         std::vector<VkQueueFamilyProperties> families(qc);
         vkGetPhysicalDeviceQueueFamilyProperties(physical, &qc, families.data());
+        extended->inspectGraphQueues(result->instance, physical, families);
         auto it = std::find_if(families.begin(), families.end(), [](const auto &q) {
             return q.queueCount > 0 && (q.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
                                            (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
@@ -1205,6 +1210,11 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
             for (uint32_t f = 0; f < families.size(); ++f)
                 if (families[f].queueCount && (families[f].queueFlags & commandQueues))
                     requestedQueues[f] = families[f].queueCount;
+        if (extra & DataGraph)
+            for (const auto &[f, operations] : extended->graphQueues) {
+                (void)operations;
+                requestedQueues.emplace(f, 1);
+            }
         for (const auto &[f, count] : requestedQueues) {
             (void)count;
             result->resourceFamilies.push_back(f);
@@ -1280,6 +1290,11 @@ Device::~Device() {
     }
     if (pipelineCache)
         vkDestroyPipelineCache(device, pipelineCache, nullptr);
+    for (const auto &[index, order] : graphOrder) {
+        (void)index;
+        if (order.semaphore)
+            vkDestroySemaphore(device, order.semaphore, nullptr);
+    }
     for (size_t i = 0; i < idleCommandCount; ++i)
         vkDestroyCommandPool(device, idleCommands[i].pool, nullptr);
     if (allocator)
@@ -2038,6 +2053,10 @@ void Command::recording() const {
     require(state == State::Recording, "Command buffer is not recording (one submission only)");
 }
 void Command::barrier() {
+    // Graph-only families do not support vkCmdPipelineBarrier2. Their operations
+    // are split into semaphore-ordered submissions at commit time instead.
+    if (graphOnly())
+        return;
     if (d->enabledExtra & Synchronization2) {
         VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         memory.srcStageMask = memory.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -3032,8 +3051,24 @@ void Command::commit() {
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(command, &begin), "vkBeginCommandBuffer");
-        for (const auto &op : operations)
+        if (graphOnly())
+            graphSegments.push_back(command);
+        bool firstOperation = true;
+        for (const auto &op : operations) {
+            if (graphOnly() && !firstOperation) {
+                check(vkEndCommandBuffer(command), "end graph segment");
+                VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                allocation.commandPool = pool;
+                allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                allocation.commandBufferCount = 1;
+                graphSegments.reserve(graphSegments.size() + 1);
+                check(vkAllocateCommandBuffers(d->device, &allocation, &command), "allocate graph segment");
+                graphSegments.push_back(command);
+                check(vkBeginCommandBuffer(command, &begin), "begin graph segment");
+            }
             op(*this);
+            firstOperation = false;
+        }
         if (presentation)
             transition(*presentation->texture, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, true);
         barrier();
@@ -3123,7 +3158,10 @@ void Command::commit() {
                                         event->pendingSignals.end());
             event->pendingSignals.reserve(event->pendingSignals.size() + 1);
         }
-        check(vkQueueSubmit(queueInfo().handle, 1, &submit, fence), "vkQueueSubmit");
+        if (graphOnly())
+            submitGraphSegments(submit);
+        else
+            check(vkQueueSubmit(queueInfo().handle, 1, &submit, fence), "vkQueueSubmit");
         state = State::Submitted;
         for (const auto &event : externalWaits)
             event->state = ExternalSemaphore::State::Consumed;
@@ -3203,7 +3241,7 @@ Command::~Command() {
     }
     // Reset only after GPU completion, before releasing recorded resources.
     // Retain one primary buffer per pool rather than allocating one each reuse.
-    if (pool && completed && d->idleCommandCount < d->idleCommands.size() &&
+    if (pool && completed && graphSegments.size() <= 1 && d->idleCommandCount < d->idleCommands.size() &&
         vkResetCommandPool(d->device, pool, 0) == VK_SUCCESS) {
         d->idleCommands[d->idleCommandCount++] = {pool, command, queueInfo().family};
     } else if (pool)

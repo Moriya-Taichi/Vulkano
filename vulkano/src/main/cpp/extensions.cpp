@@ -23,6 +23,13 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         link(head, tensor);
     if (core13 || has(e, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
         link(head, sync2);
+    const bool dg = core13 && has(e, VK_ARM_DATA_GRAPH_EXTENSION_NAME) && has(e, VK_ARM_TENSORS_EXTENSION_NAME) &&
+                    has(e, VK_KHR_MAINTENANCE_5_EXTENSION_NAME) &&
+                    has(e, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    if (dg) {
+        link(head, graph);
+        link(head, cacheControl);
+    }
     const bool dgc = has(e, VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME) &&
                      has(e, VK_KHR_MAINTENANCE_5_EXTENSION_NAME) &&
                      (core13 || (has(e, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
@@ -31,9 +38,10 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
                                              has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))));
     if (dgc) {
         link(head, generated);
-        link(head, maintenance5);
         link(head, dynamicRendering);
     }
+    if (dgc || dg)
+        link(head, maintenance5);
     if (!core13 && has(e, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME))
         link(head, dynamicState);
     if (has(e, VK_QCOM_TILE_SHADING_EXTENSION_NAME) && has(e, VK_QCOM_TILE_PROPERTIES_EXTENSION_NAME)) {
@@ -89,6 +97,9 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         availableExtra |= Synchronization2;
     if (tensor.tensors && sync2.synchronization2)
         availableExtra |= TensorResources;
+    if (graph.dataGraph && tensor.tensors && sync2.synchronization2 && timeline.timelineSemaphore &&
+        maintenance5.maintenance5)
+        availableExtra |= DataGraph;
     if (tile.tileShading && tileQuery.tileProperties)
         availableExtra |= TileShading;
     generatedVertexInput = core13 || dynamicState.extendedDynamicState;
@@ -383,6 +394,19 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & DataGraph) {
+        graph.dataGraphUpdateAfterBind = graph.dataGraphDescriptorBuffer = false;
+        link(chain, graph);
+        link(chain, cacheControl);
+        extensions.push_back(VK_ARM_DATA_GRAPH_EXTENSION_NAME);
+        extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
+    if (extra & (DataGraph | DeviceGeneratedCommands)) {
+        extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+        maintenance5 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES};
+        maintenance5.maintenance5 = true;
+        link(chain, maintenance5);
+    }
     if (extra & TensorResources) {
         tensor.pNext = nullptr;
         tensor.descriptorBindingStorageTensorUpdateAfterBind = false;
@@ -411,10 +435,6 @@ void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensio
         generated.deviceGeneratedCommands = true;
         link(chain, generated);
         extensions.push_back(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
-        extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
-        maintenance5 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES};
-        maintenance5.maintenance5 = true;
-        link(chain, maintenance5);
         dynamicRendering = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
         dynamicRendering.dynamicRendering = true;
         link(chain, dynamicRendering);
@@ -487,6 +507,17 @@ void Extensions::load(Device &d) {
         GET(deviceTensorMemoryRequirements, "vkGetDeviceTensorMemoryRequirementsARM");
         GET(bindTensorMemory, "vkBindTensorMemoryARM");
         GET(copyTensor, "vkCmdCopyTensorARM");
+    }
+    if (d.enabledExtra & DataGraph) {
+        GET(createGraphPipelines, "vkCreateDataGraphPipelinesARM");
+        GET(createGraphSession, "vkCreateDataGraphPipelineSessionARM");
+        GET(destroyGraphSession, "vkDestroyDataGraphPipelineSessionARM");
+        GET(graphBindRequirements, "vkGetDataGraphPipelineSessionBindPointRequirementsARM");
+        GET(graphMemoryRequirements, "vkGetDataGraphPipelineSessionMemoryRequirementsARM");
+        GET(bindGraphMemory, "vkBindDataGraphPipelineSessionMemoryARM");
+        GET(dispatchGraph, "vkCmdDispatchDataGraphARM");
+        GET(graphAvailableProperties, "vkGetDataGraphPipelineAvailablePropertiesARM");
+        GET(graphProperties, "vkGetDataGraphPipelinePropertiesARM");
     }
     if (d.enabledExtra & TileShading) {
         GET(beginTile, "vkCmdBeginPerTileExecutionQCOM");

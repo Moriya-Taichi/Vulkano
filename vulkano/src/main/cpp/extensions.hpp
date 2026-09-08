@@ -14,6 +14,20 @@ struct Extensions {
     PFN_vkGetDeviceTensorMemoryRequirementsARM deviceTensorMemoryRequirements = nullptr;
     PFN_vkBindTensorMemoryARM bindTensorMemory = nullptr;
     PFN_vkCmdCopyTensorARM copyTensor = nullptr;
+    VkPhysicalDeviceDataGraphFeaturesARM graph{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DATA_GRAPH_FEATURES_ARM};
+    VkPhysicalDevicePipelineCreationCacheControlFeatures cacheControl{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES};
+    std::map<uint32_t, std::vector<VkQueueFamilyDataGraphPropertiesARM>> graphQueues;
+    PFN_vkCreateDataGraphPipelinesARM createGraphPipelines = nullptr;
+    PFN_vkCreateDataGraphPipelineSessionARM createGraphSession = nullptr;
+    PFN_vkDestroyDataGraphPipelineSessionARM destroyGraphSession = nullptr;
+    PFN_vkGetDataGraphPipelineSessionBindPointRequirementsARM graphBindRequirements = nullptr;
+    PFN_vkGetDataGraphPipelineSessionMemoryRequirementsARM graphMemoryRequirements = nullptr;
+    PFN_vkBindDataGraphPipelineSessionMemoryARM bindGraphMemory = nullptr;
+    PFN_vkCmdDispatchDataGraphARM dispatchGraph = nullptr;
+    PFN_vkGetDataGraphPipelineAvailablePropertiesARM graphAvailableProperties = nullptr;
+    PFN_vkGetDataGraphPipelinePropertiesARM graphProperties = nullptr;
+    void inspectGraphQueues(VkInstance, VkPhysicalDevice, const std::vector<VkQueueFamilyProperties> &);
     VkPhysicalDeviceBufferDeviceAddressFeatures address{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};

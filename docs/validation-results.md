@@ -1,5 +1,20 @@
 # 検証結果 — 2026-09-07
 
+## 最新の追加検証（2026-09-08）
+
+Tensorを追加したCommit `1a7e8252f774800c235051ad68776bb74cd1c571`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34253108051)が成功しました。
+Nativeは748件、Kotlin/JNIは68件中52件成功・16件スキップ・失敗0件です。
+Tensor ShaderのSPIR-V検証、AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物の検証を含みます。
+専用TensorのGPU実行2件と独立QueueのGPU実行3件は、CIのGPUが非対応のためスキップしています。
+
+その後のML Graph追加では、ローカルでNative 757件、Kotlin/JNI 73件中47件成功・26件スキップ・失敗0件を確認しました。
+Validation ErrorとSynchronization Hazardは検出されていません。
+Graphの入力・出力・WeightsのReflection、型とShape、壊れたSPIR-Vの拒否を検査しています。
+ML専用Queue向けのコマンド分割とTimeline Semaphoreの処理は、通常のVulkan Queue上でBuffer転送を使って実行し、複数のSubmissionをまたぐ読み戻しが一致しました。
+これは同期処理の検証であり、ML演算をGPUで実行した結果ではありません。
+ML Graphの連続実行、Weights、Cache復元のGPUテスト3件は、ローカルGPUが非対応のためスキップしています。
+Android CIでのML Graph追加分の検証は次のCommitを対象とします。
+
 この変更では次を確認しました。
 
 | 検証 | 結果 |

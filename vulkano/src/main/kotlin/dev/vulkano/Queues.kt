@@ -18,4 +18,5 @@ data class CommandQueueCapabilities(
     val supportsTransfer: Boolean,
     val timestampValidBits: Int,
     val imageTransferGranularity: TransferGranularity,
+    val supportsMachineLearning: Boolean = false,
 )

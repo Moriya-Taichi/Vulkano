@@ -29,6 +29,7 @@ struct Sampler;
 struct TextureBuffer;
 struct TensorResource;
 struct TensorView;
+struct GraphPipeline;
 struct SharedEvent;
 struct CounterPool;
 struct AccelerationStructure;
@@ -134,6 +135,11 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     uint32_t family = 0, timestampBits = 0, sparseFamily = 0;
     VkQueue sparseQueue = VK_NULL_HANDLE;
     std::vector<QueueInfo> queues;
+    struct GraphQueueOrder {
+        VkSemaphore semaphore = VK_NULL_HANDLE;
+        uint64_t value = 0;
+    };
+    std::map<uint32_t, GraphQueueOrder> graphOrder;
     std::vector<uint32_t> resourceFamilies;
     template <class T> void share(T &info) const {
         if (resourceFamilies.size() > 1) {
@@ -493,6 +499,13 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     std::vector<std::shared_ptr<Buffer>> buffers;
     std::vector<std::shared_ptr<TensorResource>> tensors;
     void copyTensor(std::shared_ptr<TensorResource>, std::shared_ptr<TensorResource>);
+    std::vector<VkCommandBuffer> graphSegments;
+    bool graphOnly() const {
+        return !(queueInfo().properties.queueFlags &
+                 (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT));
+    }
+    void submitGraphSegments(const VkSubmitInfo &);
+    void dispatchGraph(std::shared_ptr<GraphPipeline>, std::vector<Binding>);
     std::unordered_map<Texture *, std::vector<ImageState>> images;
     std::shared_ptr<Drawable> presentation;
     explicit Command(std::shared_ptr<Device>, uint32_t queueIndex = 0);

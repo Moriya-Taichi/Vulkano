@@ -3,6 +3,72 @@
 以下は、作成済みのDeviceとShader Functionを使う例です。
 完全なシェーダーとGPU出力の確認は[GraphicsIntegrationTest](../vulkano/src/test/kotlin/dev/vulkano/GraphicsIntegrationTest.kt)を参照してください。
 
+## ML Graphの実行
+
+`MACHINE_LEARNING_GRAPH`を有効にすると、対応GPUで`VK_ARM_data_graph`のGraphを実行できます。
+必要なTensor、Synchronization2、Timeline Semaphoreも同時に有効にします。
+`machineLearningCapabilities`でSPIR-Vのコンパイル、Function Constants、Cacheの対応を確認します。
+`machineLearningOperationSets(queueIndex)`は、そのQueueが対応する演算セットの名前とVersionを返します。
+GraphのSPIR-Vは使用する演算セットに対応するコンパイラで事前に生成してください。
+
+```kotlin
+val device = Device.create(setOf(Feature.MACHINE_LEARNING_GRAPH))
+val graphQueue = device.commandQueues.first { it.supportsMachineLearning }.index
+val descriptor = TensorResourceDescriptor(
+    listOf(2, 3),
+    usage = setOf(TensorUsage.MACHINE_LEARNING,
+        TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION),
+)
+val input = device.makeTensorResource(descriptor)
+val output = device.makeTensorResource(descriptor)
+val inputView = input.makeView()
+val outputView = output.makeView()
+val pipeline = device.makeMachineLearningPipelineState(
+    device.makeLibrary(graphSpirv).makeFunction(),
+    listOf(MachineLearningTensorBinding(0, descriptor),
+        MachineLearningTensorBinding(1, descriptor)),
+)
+val uploaded = device.makeSharedEvent()
+val finished = device.makeSharedEvent()
+// uploadはLinear / SHARED Tensor。CPUから入力値を書き込んでおく。
+val transfer = device.makeCommandQueue().makeCommandBuffer()
+transfer.blit { copy(upload, input) }
+transfer.signalEventOnCompletion(uploaded, 1)
+transfer.commit()
+val command = device.makeCommandQueue(graphQueue).makeCommandBuffer()
+command.waitForEvent(uploaded, 1)
+command.machineLearning {
+    setMachineLearningPipelineState(pipeline)
+    setTensor(inputView, 0)
+    setTensor(outputView, 1)
+    dispatch()
+}
+command.signalEventOnCompletion(finished, 1)
+command.commit()
+// 読み戻し用Commandはfinishedを待ち、outputをLinear / SHARED TensorへCopyする。
+```
+
+Tensorの型、Shape、配置、Usageはコンパイル時のDescriptorと一致させます。
+各Dispatchは独立したSessionと一時メモリを持ち、記録済みのTensor、View、PipelineをGPU完了まで保持します。
+同じQueueの後続Dispatchは、それ以前の書き込み結果を参照できます。
+ML専用Queueではコマンドを内部で分割し、Timeline Semaphoreで処理間の依存関係を作ります。
+異なるQueue間は、例のようにSharedEventで同期してください。
+
+学習済みのWeightsは、Linear配置のDescriptorとByteArrayを`MachineLearningConstant(id, descriptor, bytes)`に渡します。
+`id`はShaderの`GraphConstantID`に対応します。
+Weightsのデータは作成時にコピーされ、後から呼び出し側のByteArrayを変更しても内容は変わりません。
+Graphに必要な定数をすべて`makeMachineLearningPipelineState`の`constants`へ指定します。
+Function Constantsには既存の`makeFunction(constants = ...)`を使用します。
+
+`pipeline.availableProperties`に`IDENTIFIER`がある場合は、`pipeline.identifier`と`serializePipelineCache()`を保存できます。
+復元時はCacheを`loadPipelineCache()`に渡してから、同じBinding定義で`restoreMachineLearningPipelineState()`を呼びます。
+DriverがCacheから作成できない場合は`null`が返るため、元のGraphを再コンパイルしてください。
+識別子とCacheはDriver固有で、異なる端末やDriver Versionとの互換性を保証しません。
+
+このAPIはGPUのProcessing Engineを対象にしています。
+Foreign NPUやVendor組み込みModelを自動的に選択することはありません。
+Vulkan側の実行条件は[Data Graph仕様](https://github.com/KhronosGroup/Vulkan-Docs/blob/v1.4.335/chapters/VK_ARM_data_graph/graphs.adoc)に基づきます。
+
 ## 専用Tensor
 
 `TENSOR_RESOURCES`を有効にすると、専用のTensorを作成できます。

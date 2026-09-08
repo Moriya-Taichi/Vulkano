@@ -44,7 +44,7 @@ VkFormatFeatureFlags2 tensorFormatFeatures(const Device &d, VkFormat format, VkT
     return tiling == VK_TENSOR_TILING_LINEAR_ARM ? tensor.linearTilingTensorFeatures
                                                  : tensor.optimalTilingTensorFeatures;
 }
-uint64_t TensorOptions::validate(const Device &d) const {
+uint64_t TensorOptions::validate(const Device &d, bool resource) const {
     require(d.enabledExtra & TensorResources, "Tensor resources feature was not enabled");
     const auto &limits = d.extensions->tensorProperties;
     const auto element = tensorElementSize(format);
@@ -89,6 +89,8 @@ uint64_t TensorOptions::validate(const Device &d) const {
         for (size_t i = 0; i < dimensions.size(); ++i)
             size += uint64_t(dimensions[i] - 1) * uint64_t(strides[i]);
     }
+    if (!resource)
+        return size;
     const auto features = tensorFormatFeatures(d, format, tiling);
     VkFormatFeatureFlags2 required = 0;
     if (usage & VK_TENSOR_USAGE_SHADER_BIT_ARM)

@@ -81,6 +81,14 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
         ComputeCommandEncoder(this).also { encoder = it }
     }
 
+    fun makeMachineLearningCommandEncoder(): MachineLearningCommandEncoder = access {
+        recording()
+        require(queueCapabilities.supportsMachineLearning) {
+            "This queue cannot execute machine learning graphs"
+        }
+        MachineLearningCommandEncoder(this).also { encoder = it }
+    }
+
     fun makeBlitCommandEncoder(): BlitCommandEncoder = access {
         recording()
         require(queueCapabilities.supportsTransfer) {
@@ -191,6 +199,9 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
     }
 
     fun compute(block: ComputeCommandEncoder.() -> Unit) = scope(makeComputeCommandEncoder(), block)
+
+    fun machineLearning(block: MachineLearningCommandEncoder.() -> Unit) =
+        scope(makeMachineLearningCommandEncoder(), block)
 
     fun blit(block: BlitCommandEncoder.() -> Unit) = scope(makeBlitCommandEncoder(), block)
 

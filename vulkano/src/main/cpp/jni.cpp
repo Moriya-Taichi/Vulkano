@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "generated.hpp"
+#include "graphs.hpp"
 #include "heaps.hpp"
 #include "interop.hpp"
 #include "ray.hpp"
@@ -402,10 +403,16 @@ JNI_METHOD(jlong, createCommand)(JNIEnv *e, jobject, jlong id, jint index) {
 JNI_METHOD(jintArray, queueInfo)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] {
         std::vector<jint> values;
-        for (const auto &q : get<Device>(id)->queues) {
+        const auto d = get<Device>(id);
+        for (const auto &q : d->queues) {
             const auto &p = q.properties;
+            auto flags = p.queueFlags;
+            if (!(d->enabledExtra & DataGraph) || !d->extensions->graphQueues.count(q.family))
+                flags &= ~VK_QUEUE_DATA_GRAPH_BIT_ARM;
+            const auto timestampBits = flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)
+                ? p.timestampValidBits : 0;
             values.insert(values.end(),
-                          {jint(q.family), jint(q.index), jint(p.queueFlags), jint(p.timestampValidBits),
+                          {jint(q.family), jint(q.index), jint(flags), jint(timestampBits),
                            jint(p.minImageTransferGranularity.width), jint(p.minImageTransferGranularity.height),
                            jint(p.minImageTransferGranularity.depth)});
         }
@@ -553,6 +560,7 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
 
 #include "jni_generated.inc"
 #include "jni_graphics.inc"
+#include "jni_graphs.inc"
 #include "jni_tensors.inc"
 #include "jni_tiles.inc"
 

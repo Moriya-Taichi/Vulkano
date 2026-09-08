@@ -62,6 +62,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                 p[2] and 7 != 0,
                 p[3],
                 TransferGranularity(p[4], p[5], p[6]),
+                p[2] and 1024 != 0 && Feature.MACHINE_LEARNING_GRAPH in capabilities.enabledFeatures,
             )
         }
 

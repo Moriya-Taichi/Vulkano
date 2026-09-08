@@ -45,6 +45,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Raster Order Groupに相当する排他 | Fragment ShaderのPixel Interlock | VK_EXT_fragment_shader_interlock。Fragment Storage Featureも必要 |
 | Tensor / 行列演算 | TensorDescriptor / setTensor | Bufferを使うShape/Stride/View、端末依存のVK_KHR_cooperative_matrix |
 | 専用Tensor / Tensor Shader | TensorResource / TensorView / setTensor | VK_ARM_tensors。Linear/Optimal、Strides、CPUアクセス、全体Copy、型・Rank・ShapeのReflectionとFunction Constants |
+| ML Graph | MachineLearningPipelineState / MachineLearningCommandEncoder | VK_ARM_data_graph。GPU演算セット照会、SPIR-V Graph、Weights、Function Constants、Session Memory、Queue同期、Cacheからの復元 |
 | メモリモデル | StorageMode / Vulkan Memory Model | AndroidのShared Memory、Flush/Invalidate、任意のVulkan Memory Model Feature |
 
 ## Vulkanに手段があるものの残っている機能
@@ -55,7 +56,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | 機能 | 残る実装 |
 | --- | --- |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
-| ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
 
 ## 組み合わせの制約
 
@@ -93,6 +93,11 @@ Android 29/30では同じメモリを別のHardwareBuffer Handleから重複し�
 Android 31以降はBuffer IDによる重複検査も行います。
 
 Cooperative MatrixはSubgroup ScopeのCompute Shaderに対応し、Shape、数値型、Saturationを端末の組み合わせと照合します。
+
+ML GraphはGPUの既定Processing Engineを使用します。
+Foreign NPU、Vendor組み込みModel、Runtime Tensor Array、疎なWeightsのCompiler Hintは公開していません。
+固定Tensor Arrayの要素には同一のShapeと配置を指定します。
+TensorやML Graphの実行可否はメーカー名から決めず、Extension、Feature、Queue、Formatを照合します。
 
 ## APIの直接の対応先がないもの
 

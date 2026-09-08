@@ -45,7 +45,9 @@ CounterPool::CounterPool(std::shared_ptr<Device> device, uint32_t n, bool time, 
     require(n && n <= 65536, "Invalid counter count");
     require(queueIndex < d->queues.size(), "Unknown counter queue index");
     const auto &q = d->queues[queueIndex].properties;
-    require(time ? q.timestampValidBits > 0 : bool(q.queueFlags & VK_QUEUE_GRAPHICS_BIT),
+    require(time ? q.timestampValidBits > 0 &&
+                       (q.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))
+                 : bool(q.queueFlags & VK_QUEUE_GRAPHICS_BIT),
             "Queue does not support this counter type");
     VkQueryPoolCreateInfo i{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     i.queryType = time ? VK_QUERY_TYPE_TIMESTAMP : VK_QUERY_TYPE_OCCLUSION;

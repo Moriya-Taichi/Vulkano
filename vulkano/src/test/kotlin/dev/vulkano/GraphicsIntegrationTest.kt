@@ -36,6 +36,135 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun machineLearningEncoderRequiresEnabledGraphQueue(): Unit = device().use { d ->
+        d.makeCommandQueue().use { q -> q.makeCommandBuffer().use { c ->
+            assertThrows(IllegalArgumentException::class.java) { c.makeMachineLearningCommandEncoder() }
+        } }
+        assertThrows(IllegalStateException::class.java) { d.machineLearningOperationSets() }
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("graph-identity.spv"))
+        }
+    }
+
+    @Test
+    fun machineLearningGraphsChainDispatchesAndRetainTensorViews(): Unit {
+        assumeTrue(device().use { Feature.MACHINE_LEARNING_GRAPH in it.capabilities.availableFeatures })
+        device(setOf(Feature.MACHINE_LEARNING_GRAPH)).use { d ->
+            assumeTrue(checkNotNull(d.machineLearningCapabilities).supportsShaderCompilation)
+            assertTrue(Feature.TENSOR_RESOURCES in d.capabilities.enabledFeatures)
+            assertTrue(Feature.TIMELINE_SEMAPHORE in d.capabilities.enabledFeatures)
+            val graphQueue = d.commandQueues.first { it.supportsMachineLearning }.index
+            d.machineLearningOperationSets(graphQueue)
+            val usage = setOf(TensorUsage.MACHINE_LEARNING, TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION)
+            val gpu = TensorResourceDescriptor(listOf(2, 3), usage = usage)
+            val host = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR,
+                usage = setOf(TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION))
+            assumeTrue(d.supportsTensor(gpu) && d.supportsTensor(host, StorageMode.SHARED))
+            val source = d.makeTensorResource(host, StorageMode.SHARED)
+            val input = d.makeTensorResource(gpu)
+            val intermediate = d.makeTensorResource(gpu)
+            val output = d.makeTensorResource(gpu)
+            val readback = d.makeTensorResource(host, StorageMode.SHARED)
+            val inputView = input.makeView()
+            val middleView = intermediate.makeView()
+            val outputView = output.makeView()
+            val values = floats(1f, 2f, 4f, 8f, 16f, 32f)
+            source.write(values)
+            val pipeline = d.makeMachineLearningPipelineState(d.function("graph-identity.spv"),
+                listOf(MachineLearningTensorBinding(0, gpu), MachineLearningTensorBinding(1, gpu)))
+            val event = d.makeSharedEvent()
+            val upload = d.makeCommandQueue().use { it.makeCommandBuffer() }
+            upload.blit { copy(source, input) }
+            upload.signalEventOnCompletion(event, 1)
+            upload.commit()
+            val command = d.makeCommandQueue(graphQueue).use { it.makeCommandBuffer() }
+            command.waitForEvent(event, 1)
+            command.makeMachineLearningCommandEncoder().use { encoder ->
+                encoder.setMachineLearningPipelineState(pipeline)
+                encoder.setTensor(inputView, 0)
+                assertThrows(IllegalArgumentException::class.java) { encoder.dispatch() }
+                encoder.setTensor(middleView, 1)
+                encoder.dispatch()
+                encoder.setTensor(middleView, 0)
+                encoder.setTensor(outputView, 1)
+                encoder.dispatch()
+            }
+            command.signalEventOnCompletion(event, 2)
+            input.close(); intermediate.close(); inputView.close(); middleView.close(); outputView.close(); pipeline.close()
+            command.commit()
+            val download = d.makeCommandQueue().use { it.makeCommandBuffer() }
+            download.waitForEvent(event, 2)
+            download.blit { copy(output, readback) }
+            download.commit()
+            assertTrue(download.waitUntilCompleted())
+            val actual = ByteBuffer.wrap(readback.readBytes(24)).order(ByteOrder.nativeOrder())
+            for (i in 0..5) assertEquals(values.getFloat(i * 4), actual.getFloat(i * 4), 0f)
+            command.close(); upload.close(); download.close()
+        }
+    }
+
+    @Test
+    fun machineLearningGraphUsesImmutableWeights(): Unit = checkConstantGraph(false)
+
+    @Test
+    fun machineLearningGraphRestoresPipelineCache(): Unit = checkConstantGraph(true)
+
+    private fun checkConstantGraph(restoreCache: Boolean) {
+        assumeTrue(device().use { Feature.MACHINE_LEARNING_GRAPH in it.capabilities.availableFeatures })
+        device(setOf(Feature.MACHINE_LEARNING_GRAPH)).use { d ->
+            assumeTrue(checkNotNull(d.machineLearningCapabilities).supportsShaderCompilation)
+            val usage = setOf(TensorUsage.MACHINE_LEARNING, TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION)
+            val gpu = TensorResourceDescriptor(listOf(2, 3), usage = usage)
+            val weights = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR,
+                usage = setOf(TensorUsage.MACHINE_LEARNING))
+            val host = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR,
+                usage = setOf(TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION))
+            assumeTrue(d.supportsTensor(gpu) && d.supportsTensor(host, StorageMode.SHARED))
+            val data = ByteArray(24)
+            floats(3f, 5f, 7f, 11f, 13f, 17f).get(data)
+            val constants = listOf(MachineLearningConstant(7, weights, data))
+            var pipeline = d.makeMachineLearningPipelineState(d.function("graph-constant.spv"),
+                listOf(MachineLearningTensorBinding(1, gpu)), constants)
+            if (restoreCache) {
+                assumeTrue(checkNotNull(d.machineLearningCapabilities).supportsCachedPipelines &&
+                    MachineLearningPipelineProperty.IDENTIFIER in pipeline.availableProperties)
+                val identifier = pipeline.identifier
+                val cache = d.serializePipelineCache()
+                pipeline.close()
+                d.loadPipelineCache(cache)
+                val restored = d.restoreMachineLearningPipelineState(identifier, listOf(MachineLearningTensorBinding(1, gpu)))
+                assumeTrue("Driver reported a graph pipeline cache miss", restored != null)
+                pipeline = checkNotNull(restored)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeMachineLearningPipelineState(d.function("graph-constant.spv"),
+                    listOf(MachineLearningTensorBinding(1, gpu)))
+            }
+            val output = d.makeTensorResource(gpu)
+            val view = output.makeView()
+            val readback = d.makeTensorResource(host, StorageMode.SHARED)
+            val event = d.makeSharedEvent()
+            val queue = d.commandQueues.first { it.supportsMachineLearning }.index
+            val command = d.makeCommandQueue(queue).use { it.makeCommandBuffer() }
+            command.makeMachineLearningCommandEncoder().use {
+                it.setMachineLearningPipelineState(pipeline)
+                it.setTensor(view, 1)
+                it.dispatch()
+            }
+            command.signalEventOnCompletion(event, 1)
+            view.close(); pipeline.close()
+            command.commit()
+            val download = d.makeCommandQueue().use { it.makeCommandBuffer() }
+            download.waitForEvent(event, 1)
+            download.blit { copy(output, readback) }
+            download.commit()
+            assertTrue(download.waitUntilCompleted())
+            assertArrayEquals(data, readback.readBytes(24))
+            command.close(); download.close()
+        }
+    }
+
+    @Test
     fun tensorResourcesRequireFeatureAndSharedLinearStorage(): Unit =
         device().use { d ->
             val tensor = TensorResourceDescriptor(listOf(2, 3))

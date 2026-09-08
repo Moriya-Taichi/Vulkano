@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
+    @Test fun graphConstantsOwnTheirDataAndValidateLayouts() {
+        val descriptor = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR,
+            usage = setOf(TensorUsage.MACHINE_LEARNING))
+        val bytes = ByteArray(24) { it.toByte() }
+        val constant = MachineLearningConstant(7, descriptor, bytes)
+        bytes.fill(0)
+        assertEquals(23, constant.bytes.last().toInt())
+        assertThrows(IllegalArgumentException::class.java) { MachineLearningConstant(7, descriptor, ByteArray(23)) }
+        assertThrows(IllegalArgumentException::class.java) { MachineLearningConstant(-1, descriptor, bytes) }
+        assertThrows(IllegalArgumentException::class.java) { MachineLearningTensorBinding(0, TensorResourceDescriptor(listOf(2, 3))) }
+        assertThrows(IllegalArgumentException::class.java) { MachineLearningTensorBinding(0, descriptor, 0) }
+    }
     @Test fun tensorLayoutsCheckStridesAndOverflow() {
         val strided = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR, byteStrides = listOf(16, 4))
         assertEquals(6L, strided.elementCount)

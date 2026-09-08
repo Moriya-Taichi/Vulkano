@@ -7,6 +7,32 @@ internal object Native {
         System.loadLibrary("vulkano")
     }
 
+    external fun graphCapabilities(device: Long): IntArray
+
+    external fun graphOperations(device: Long, queue: Int): Array<String>
+
+    external fun createGraphPipeline(
+        device: Long,
+        queue: Int,
+        code: ByteArray,
+        entry: String,
+        specialization: IntArray,
+        keys: IntArray,
+        descriptions: Array<LongArray>,
+        constantIds: IntArray,
+        constantDescriptions: Array<LongArray>,
+        constantData: Array<ByteArray>,
+        compilerOptions: String,
+        optimize: Boolean,
+        identifier: ByteArray,
+    ): Long
+
+    external fun graphProperty(pipeline: Long, property: Int): ByteArray
+
+    external fun graphAvailableProperties(pipeline: Long): IntArray
+
+    external fun dispatchGraph(command: Long, pipeline: Long, tensors: LongArray)
+
     external fun createDevice(
         features: Long,
         validation: Boolean,

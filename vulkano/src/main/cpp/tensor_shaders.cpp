@@ -5,9 +5,9 @@
 #include <unordered_map>
 
 namespace vulkano {
-void reflectTensorBinding(Device &d, const Shader &shader, uint32_t variable, BindingLayout &binding) {
-    require((d.enabledExtra & TensorResources) && d.extensions->tensor.shaderTensorAccess &&
-                (binding.stages & d.extensions->tensorProperties.shaderTensorSupportedStages) == binding.stages,
+void reflectTensorBinding(Device &d, const Shader &shader, uint32_t variable, BindingLayout &binding, bool graph) {
+    require(graph || ((d.enabledExtra & TensorResources) && d.extensions->tensor.shaderTensorAccess &&
+                      (binding.stages & d.extensions->tensorProperties.shaderTensorSupportedStages) == binding.stages),
             "Tensor shader access is unavailable for this stage");
     const auto &code = shader.code;
     std::unordered_map<uint32_t, const uint32_t *> nodes;
@@ -25,6 +25,26 @@ void reflectTensorBinding(Device &d, const Shader &shader, uint32_t variable, Bi
     auto node = [&](uint32_t id) {
         const auto it = nodes.find(id);
         require(it != nodes.end(), "Tensor SPIR-V references an unknown ID");
+        uint32_t minimum = 2;
+        switch (it->second[0] & 0xffff) {
+        case SpvOpTypeInt:
+        case SpvOpTypePointer:
+        case SpvOpTypeArray:
+        case SpvOpVariable:
+        case SpvOpConstant:
+        case SpvOpSpecConstant:
+        case SpvOpGraphConstantARM:
+            minimum = 4;
+            break;
+        case SpvOpTypeFloat:
+        case SpvOpTypeTensorARM:
+        case SpvOpTypeRuntimeArray:
+        case SpvOpConstantComposite:
+        case SpvOpSpecConstantComposite:
+            minimum = 3;
+            break;
+        }
+        require((it->second[0] >> 16) >= minimum, "Malformed tensor SPIR-V declaration");
         return it->second;
     };
     // Resolve literal and directly specialized dimensions. More complex SPIR-V
@@ -48,7 +68,8 @@ void reflectTensorBinding(Device &d, const Shader &shader, uint32_t variable, Bi
         return value;
     };
     auto declaration = node(variable);
-    require((declaration[0] & 0xffff) == SpvOpVariable, "Tensor descriptor must be a variable");
+    require((declaration[0] & 0xffff) == SpvOpVariable || (graph && (declaration[0] & 0xffff) == SpvOpGraphConstantARM),
+            "Tensor descriptor must be a variable or graph constant");
     auto type = node(declaration[1]);
     for (size_t i = 0; i < nodes.size(); ++i) {
         auto op = SpvOp(type[0] & 0xffff);
