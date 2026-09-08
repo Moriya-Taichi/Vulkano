@@ -36,6 +36,106 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun additionalCompressionRequiresFeature(): Unit =
+        device().use { d ->
+            for (format in listOf(PixelFormat.ASTC_4x4_FLOAT, PixelFormat.PVRTC1_2BPP_UNORM)) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.makeTexture(TextureDescriptor(16, 8, format))
+                }
+            }
+        }
+
+    @Test
+    fun astcHdrSamplingPreservesValuesAboveOne(): Unit {
+        assumeTrue(
+            device().use {
+                Feature.TEXTURE_COMPRESSION_ASTC_HDR in it.capabilities.availableFeatures
+            }
+        )
+        device(setOf(Feature.TEXTURE_COMPRESSION_ASTC_HDR)).use { d ->
+            val texture = d.makeTexture(TextureDescriptor(4, 4, PixelFormat.ASTC_4x4_FLOAT))
+            // ASTC HDR void-extent block: half-float RGBA = (2, 0.5, 0.25, 1).
+            val block =
+                ByteBuffer.allocate(16)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .put(0xfc.toByte())
+                    .apply { repeat(7) { put(0xff.toByte()) } }
+                    .putShort(0x4000)
+                    .putShort(0x3800)
+                    .putShort(0x3400)
+                    .putShort(0x3c00)
+                    .array()
+            val upload = d.makeBuffer(16).apply { write(block) }
+            val output = d.makeBuffer(16)
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        1,
+                        1,
+                        PixelFormat.RGBA32_FLOAT,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val sampler = d.makeSampler()
+            val pipeline =
+                d.makeRenderPipelineState(
+                    d.function("fullscreen.vert.spv"),
+                    d.function("sample.frag.spv"),
+                    colorFormat = PixelFormat.RGBA32_FLOAT,
+                )
+            d.submit {
+                blit { copy(upload, texture) }
+                render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                    setRenderPipelineState(pipeline)
+                    setTexture(texture, 0, sampler)
+                    drawPrimitives(3)
+                }
+                blit { copy(target, output) }
+            }
+            val actual = ByteBuffer.wrap(output.readBytes(16)).order(ByteOrder.nativeOrder())
+            for (value in listOf(2f, 0.5f, 0.25f, 1f)) assertEquals(value, actual.float, 0.001f)
+        }
+    }
+
+    @Test
+    fun pvrtcTransfersCompressedBlocksAndChecksPowerOfTwo(): Unit {
+        assumeTrue(
+            device().use { Feature.TEXTURE_COMPRESSION_PVRTC in it.capabilities.availableFeatures }
+        )
+        device(setOf(Feature.TEXTURE_COMPRESSION_PVRTC)).use { d ->
+            for (format in PixelFormat.entries.filter { it.name.startsWith("PVRTC") }) {
+                val descriptor =
+                    TextureDescriptor(
+                        format.blockWidth * 2,
+                        8,
+                        format,
+                        usage =
+                            setOf(
+                                TextureUsage.SAMPLED,
+                                TextureUsage.TRANSFER_SOURCE,
+                                TextureUsage.TRANSFER_DESTINATION,
+                            ),
+                    )
+                if (!d.supportsTexture(descriptor)) continue
+                val texture = d.makeTexture(descriptor)
+                val data = ByteArray(32) { -1 }
+                val upload = d.makeBuffer(32).apply { write(data) }
+                val output = d.makeBuffer(32)
+                d.submit {
+                    blit {
+                        copy(upload, texture)
+                        copy(texture, output)
+                    }
+                }
+                assertArrayEquals(data, output.readBytes(32))
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeTexture(TextureDescriptor(15, 8, PixelFormat.PVRTC1_2BPP_UNORM))
+            }
+        }
+    }
+
+    @Test
     fun indirectCountRequiresFeature(): Unit =
         device().use { d ->
             val args = d.makeBuffer(16, usage = setOf(BufferUsage.INDIRECT))

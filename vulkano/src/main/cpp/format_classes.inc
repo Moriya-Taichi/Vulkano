@@ -318,6 +318,18 @@ int formatCompatibilityClass(VkFormat format) {
         return 77; // ETC2_RGBA
     case VK_FORMAT_S8_UINT:
         return 78; // S8
+    case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG:
+    case VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG:
+        return 79; // PVRTC1_2BPP
+    case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG:
+    case VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG:
+        return 80; // PVRTC1_4BPP
+    case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG:
+    case VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG:
+        return 81; // PVRTC2_2BPP
+    case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG:
+    case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG:
+        return 82; // PVRTC2_4BPP
     default:
         return 0;
     }

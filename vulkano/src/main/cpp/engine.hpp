@@ -97,7 +97,14 @@ enum Feature : uint64_t {
     CooperativeMatrix = 1ull << 58,
     SparseResources = 1ull << 59
 };
-enum ExtraFeature : uint64_t { HardwareBufferInterop = 1, ExternalSyncFd = 2, SamplerYcbcr = 4, DrawIndirectCount = 8 };
+enum ExtraFeature : uint64_t {
+    HardwareBufferInterop = 1,
+    ExternalSyncFd = 2,
+    SamplerYcbcr = 4,
+    DrawIndirectCount = 8,
+    AstcHdr = 16,
+    Pvrtc = 32
+};
 enum class Storage { Shared, Private, Memoryless };
 
 struct Object {

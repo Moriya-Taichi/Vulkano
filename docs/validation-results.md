@@ -103,3 +103,12 @@ GPUがPrivate Bufferへ書いた引数・描画数を使い、通常・Indexed�
 0件、上限でのClamp、Count Offset、Stride、Buffer範囲とFeature拒否を確認しています。
 ローカルではNative 725項目、Kotlin/JNI 49件中38件成功・11件スキップ・失敗0件です。
 Validation LayerのエラーとSync Hazardは検出されませんでした。
+
+
+### ASTC HDRとPVRTC
+
+GPU側Count Bufferまでを含むCommit `b78e7c66326a8c18d24034ad0badd87398abb165`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34232325538)が成功しました。
+ASTC HDRとPVRTCのFeature拒否、HDR Sampling、PVRTC Block転送のテストを追加しました。
+ASTC HDRのFixtureはFloat16の定数色Blockで、赤成分2.0をFloat Render Targetへ保持できるかを検証します。
+ローカルDriverは両方の圧縮Featureに非対応で、成功経路の2件はスキップしています。
+Kotlin/JNIは52件中39件成功・13件スキップ・失敗0件です。

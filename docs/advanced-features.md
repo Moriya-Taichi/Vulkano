@@ -448,3 +448,18 @@ Indexed DrawのStrideは20バイト、通常Drawは16バイト、Meshは12バイ
 個数Bufferに書く値は、端末の`maxDrawIndirectCount`以内にしてください。
 これらの呼び出しは`MULTI_DRAW_INDIRECT`とは別のFeatureで、同じPipelineとBindingを使います。
 PipelineやBindingそのものをGPUで選択するDevice Generated Commandsは、別の機能です。
+
+
+## ASTC HDRとPVRTC
+
+`TEXTURE_COMPRESSION_ASTC_HDR`を有効化すると、`ASTC_4x4_FLOAT`から`ASTC_12x12_FLOAT`までの14種類を使えます。
+HDRの16バイトBlockをBlitで転送し、ShaderからFloatの色として読み取ります。
+圧縮画像のMip生成はBlit対応を問い合わせ、非対応の場合は事前に圧縮したMipを転送します。
+
+`TEXTURE_COMPRESSION_PVRTC`は`VK_IMG_format_pvrtc`がある端末で利用できます。
+PVRTC1/2、2/4bpp、UNORM/SRGBの8種類に対応し、PVRTC1の幅と高さは2の累乗に制限します。
+Buffer転送ではVulkanの8バイトBlock配置を使い、PVRなどのファイルHeaderは含めません。
+各FormatとUsageの組み合わせは`supportsTexture`で確認します。
+PVRTC拡張は非推奨で、既存Assetとの互換用途に使えます。
+新規のPowerVR向けTextureには、対応状況に応じてASTCやETC2を選択してください。
+この扱いは[KhronosのPVRTC拡張説明](https://docs.vulkan.org/refpages/latest/refpages/source/VK_IMG_format_pvrtc.html)に基づきます。

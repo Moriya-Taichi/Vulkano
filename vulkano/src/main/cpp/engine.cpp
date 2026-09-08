@@ -867,7 +867,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 4) == 0, "Unknown extended feature");
+    require((extra >> 6) == 0, "Unknown extended feature");
     require((required >> 60) == 0, "Unknown requested feature");
     if (required & (RayQuery | RayPipeline))
         required |= BufferAddress;

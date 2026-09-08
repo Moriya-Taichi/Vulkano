@@ -39,6 +39,19 @@ void sameOwner(const Resource &a, const Resource &b) {
     require(a.owner() == b.owner(), "Resources belong to different devices");
 }
 bool powerOfTwo(uint32_t n) { return n && !(n & (n - 1)) && n <= 64; }
+void requireCompressionFeature(const Device &d, VkFormat format) {
+    if (format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && format <= VK_FORMAT_BC7_SRGB_BLOCK)
+        require(d.enabled & Bc, "BC compression feature was not enabled");
+    if (format >= VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK && format <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK)
+        require(d.enabled & Etc2, "ETC2 compression feature was not enabled");
+    if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
+        require(d.enabled & Astc, "ASTC compression feature was not enabled");
+    if (format >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && format <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK)
+        require(d.enabledExtra & AstcHdr, "ASTC HDR compression feature was not enabled");
+    if (format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG)
+        require(d.enabledExtra & Pvrtc, "PVRTC compression feature was not enabled");
+}
+
 } // namespace
 int numericClass(VkFormat f) {
     switch (f) {
@@ -178,6 +191,10 @@ uint32_t Texture::pixelSize() const {
                    : 16;
     if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
         return 16;
+    if (format >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && format <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK)
+        return 16;
+    if (format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG)
+        return 8;
     throw std::invalid_argument("Unsupported pixel format");
 }
 uint32_t Texture::blockWidth() const {
@@ -186,6 +203,10 @@ uint32_t Texture::blockWidth() const {
     const uint32_t widths[] = {4, 5, 5, 6, 6, 8, 8, 8, 10, 10, 10, 10, 12, 12};
     if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
         return widths[(format - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2];
+    if (format >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && format <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK)
+        return widths[format - VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK];
+    if (format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG)
+        return (format - VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG) % 2 == 0 ? 8 : 4;
     return 1;
 }
 uint32_t Texture::blockHeight() const {
@@ -194,6 +215,10 @@ uint32_t Texture::blockHeight() const {
     const uint32_t heights[] = {4, 4, 5, 5, 6, 5, 6, 8, 5, 6, 8, 10, 10, 12};
     if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
         return heights[(format - VK_FORMAT_ASTC_4x4_UNORM_BLOCK) / 2];
+    if (format >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && format <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK)
+        return heights[format - VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK];
+    if (format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG)
+        return 4;
     return 1;
 }
 uint64_t Texture::byteSize(uint32_t mip) const {
@@ -240,12 +265,12 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
     require(!(usage & VK_IMAGE_USAGE_STORAGE_BIT) || o.samples == 1 || (d->enabled & StorageMs),
             "Multisample storage feature was not enabled");
     pixelSize();
-    if (format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && format <= VK_FORMAT_BC7_SRGB_BLOCK)
-        require(d->enabled & Bc, "BC compression feature was not enabled");
-    if (format >= VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK && format <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK)
-        require(d->enabled & Etc2, "ETC2 compression feature was not enabled");
-    if (format >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
-        require(d->enabled & Astc, "ASTC compression feature was not enabled");
+    requireCompressionFeature(*d, format);
+    if (format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG) {
+        require(d->enabledExtra & Pvrtc, "PVRTC compression feature was not enabled");
+        const bool pvrtc1 = ((format - VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG) % 4) < 2;
+        require(!pvrtc1 || (!(w & (w - 1)) && !(h & (h - 1))), "PVRTC1 dimensions must be powers of two");
+    }
     require(usage && !(usage & ~(63u | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
                                  VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)),
             "Unsupported image usage");
@@ -356,6 +381,7 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
             "Incompatible Vulkan format class");
     if (format != VK_FORMAT_UNDEFINED)
         pixelSize();
+    requireCompressionFeature(*d, format);
     require(!external || f == p->root().format || (external->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT),
             "Imported image does not allow mutable formats");
     if (viewUsage) {

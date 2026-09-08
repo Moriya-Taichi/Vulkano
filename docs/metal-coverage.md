@@ -22,7 +22,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | 可変Shading Rate | fragmentSize / fragmentShadingRates | Pipeline、Primitive、Rate Map Attachment。サイズとSample Countを照合 |
 | Subpass / Input Attachment | RenderPassLayout / nextSubpass | Color/Depth/MSAA入力、Color Resolve、Attachment保持、BY_REGION依存関係 |
 | Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
-| Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer/圧縮Format |
+| Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer、ASTC LDR/HDR、ETC/EAC、BC、PVRTC |
 | Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Swizzle、Usage制限、VkBufferView |
 | Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color、Immutable Sampler |
 | 転送 | Blit Encoder | Buffer、Texture領域、Mip、Slice、Fill |

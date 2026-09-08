@@ -17,8 +17,11 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         (has(e, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) && has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))
         available |= DepthResolve;
     core12 = api >= VK_API_VERSION_1_2;
+    core13 = api >= VK_API_VERSION_1_3;
     void *head = nullptr;
     link(head, ycbcr);
+    if (core13 || has(e, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME))
+        link(head, astcHdr);
     if (has(e, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) &&
         (core12 || has(e, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)))
         link(head, fragmentRate);
@@ -61,6 +64,10 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
+    if (astcHdr.textureCompressionASTC_HDR)
+        availableExtra |= AstcHdr;
+    if (has(e, VK_IMG_FORMAT_PVRTC_EXTENSION_NAME))
+        availableExtra |= Pvrtc;
     if (ycbcr.samplerYcbcrConversion)
         availableExtra |= SamplerYcbcr;
     if (has(e, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)) {
@@ -339,6 +346,15 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & AstcHdr) {
+        astcHdr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXTURE_COMPRESSION_ASTC_HDR_FEATURES};
+        astcHdr.textureCompressionASTC_HDR = true;
+        link(chain, astcHdr);
+        if (!core13)
+            extensions.push_back(VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME);
+    }
+    if (extra & Pvrtc)
+        extensions.push_back(VK_IMG_FORMAT_PVRTC_EXTENSION_NAME);
     if ((extra & DrawIndirectCount) && !core12)
         extensions.push_back(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
     if (extra & SamplerYcbcr) {

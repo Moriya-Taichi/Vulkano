@@ -77,7 +77,9 @@ struct Extensions {
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID hardwareBufferProperties = nullptr;
 #endif
     uint64_t available = 0, availableExtra = 0;
-    bool core12 = false;
+    VkPhysicalDeviceTextureCompressionASTCHDRFeatures astcHdr{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXTURE_COMPRESSION_ASTC_HDR_FEATURES};
+    bool core12 = false, core13 = false;
     void *chain = nullptr;
     std::vector<VkExtensionProperties> supported;
     void inspect(VkPhysicalDevice, uint32_t api, const std::vector<VkExtensionProperties> &);
