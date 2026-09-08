@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "tensors.hpp"
 #include "graphs.hpp"
+#include "ray.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include <algorithm>
 #include <cmath>
@@ -32,6 +33,36 @@ std::shared_ptr<Texture> texture(const std::shared_ptr<Device>& d, VkImageUsageF
 }
 }
 int main() try {
+    {
+        AccelerationInstance instance;
+        instance.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
+        instance.transformEnd = instance.transform;
+        instance.transformEnd.matrix[0][3] = 4;
+        instance.customIndex = 0x123456; instance.mask = 0x89; instance.recordOffset = 0xabcdef;
+        const uint64_t address = 0x123456789abcdef0ull;
+        const auto staticInstance = packMotionInstance(instance, address);
+        expect(staticInstance.type == VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_STATIC_NV &&
+                   staticInstance.flags == 0 && staticInstance.data.staticInstance.accelerationStructureReference == address,
+               "Static motion instance ABI and address");
+        instance.motionType = VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_MATRIX_MOTION_NV;
+        const auto matrix = packMotionInstance(instance, address).data.matrixMotionInstance;
+        expect(matrix.transformT0.matrix[0][3] == 0 && matrix.transformT1.matrix[0][3] == 4 &&
+                   matrix.instanceCustomIndex == 0x123456 && matrix.mask == 0x89 &&
+                   matrix.instanceShaderBindingTableRecordOffset == 0xabcdef && matrix.accelerationStructureReference == address,
+               "Matrix motion endpoints and bit fields");
+        instance.transformEnd.matrix[0][0] = 0;
+        rejects([&] { packMotionInstance(instance, address); }, "Singular motion matrix must fail");
+        instance.motionType = VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_SRT_MOTION_NV;
+        instance.srtStart.sx = instance.srtStart.sy = instance.srtStart.sz = instance.srtStart.qw = 1;
+        instance.srtEnd = instance.srtStart; instance.srtEnd.tx = 4;
+        const auto srt = packMotionInstance(instance, address).data.srtMotionInstance;
+        expect(srt.transformT0.tx == 0 && srt.transformT1.tx == 4 && srt.transformT1.qw == 1 &&
+                   srt.accelerationStructureReference == address, "SRT motion ABI and endpoints");
+        instance.srtEnd.qw = 2;
+        rejects([&] { packMotionInstance(instance, address); }, "Non-unit motion quaternion must fail");
+        instance.srtEnd.qw = 1; instance.mask = 256;
+        rejects([&] { packMotionInstance(instance, address); }, "Motion instance bit-field overflow must fail");
+    }
     {
         auto tensorShader = shader("tensor-double.comp.spv");
         SpvReflectShaderModule module{};

@@ -15,6 +15,8 @@ data class TriangleGeometry(
     val indexType: IndexType = IndexType.UINT32,
     val indexOffset: Long = 0,
     val opaque: Boolean = true,
+    val motionVertexBuffer: Buffer? = null,
+    val motionVertexOffset: Long = vertexOffset,
 ) : AccelerationGeometry {
     init {
         require(
@@ -22,7 +24,8 @@ data class TriangleGeometry(
                 triangleCount > 0 &&
                 vertexStride >= 12 &&
                 vertexOffset >= 0 &&
-                indexOffset >= 0
+                indexOffset >= 0 &&
+                motionVertexOffset >= 0
         )
     }
 }
@@ -68,8 +71,10 @@ class AccelerationStructureInstance(
     val mask: Int = 255,
     val hitGroupOffset: Int = 0,
     val triangleCullingDisabled: Boolean = true,
+    val motionTransform: AccelerationMotionTransform? = null,
 ) {
     internal val matrix = transform.copyOf()
+    internal val transforms = motionTransform?.packed?.copyOf() ?: matrix.copyOf(32)
 
     init {
         require(
@@ -79,14 +84,16 @@ class AccelerationStructureInstance(
                 mask in 0..255 &&
                 hitGroupOffset in 0..0xffffff
         )
+        require(
+            motionTransform == null ||
+                matrix.contentEquals(floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f))
+        ) {
+            "Specify the complete transform in motionTransform when using motion"
+        }
     }
 }
 
-fun Device.makePrimitiveAccelerationStructure(
-    geometries: List<AccelerationGeometry>,
-    allowRefit: Boolean = false,
-    allowCompaction: Boolean = false,
-): AccelerationStructure = access {
+private fun Device.packAccelerationGeometry(geometries: List<AccelerationGeometry>): LongArray {
     require(geometries.isNotEmpty())
     val packed =
         geometries
@@ -95,7 +102,9 @@ fun Device.makePrimitiveAccelerationStructure(
                     is TriangleGeometry -> {
                         require(
                             it.vertexBuffer.device === this &&
-                                (it.indexBuffer == null || it.indexBuffer.device === this)
+                                (it.indexBuffer == null || it.indexBuffer.device === this) &&
+                                (it.motionVertexBuffer == null ||
+                                    it.motionVertexBuffer.device === this)
                         )
                         listOf(
                             0L,
@@ -108,6 +117,8 @@ fun Device.makePrimitiveAccelerationStructure(
                             if (it.indexBuffer == null) 1000165000L else it.indexType.vk.toLong(),
                             it.indexOffset,
                             if (it.opaque) 1L else 0L,
+                            it.motionVertexBuffer?.handle() ?: 0L,
+                            it.motionVertexOffset,
                         )
                     }
                     is BoundingBoxGeometry -> {
@@ -123,15 +134,44 @@ fun Device.makePrimitiveAccelerationStructure(
                             1000165000L,
                             0L,
                             if (it.opaque) 1L else 0L,
+                            0L,
+                            0L,
                         )
                     }
                 }
             }
             .toLongArray()
+    return packed
+}
+
+fun Device.makePrimitiveAccelerationStructure(
+    geometries: List<AccelerationGeometry>,
+    allowRefit: Boolean = false,
+    allowCompaction: Boolean = false,
+): AccelerationStructure = access {
+    val packed = packAccelerationGeometry(geometries)
     AccelerationStructure(
         this,
         Native.createPrimitiveAcceleration(nativeHandle, packed, allowRefit, allowCompaction),
     )
+}
+
+private fun Device.packAccelerationInstances(
+    instances: List<AccelerationStructureInstance>
+): Pair<LongArray, FloatArray> {
+    require(instances.isNotEmpty() && instances.all { it.structure.device === this })
+    return (instances
+        .flatMap {
+            listOf(
+                it.structure.handle(),
+                it.customIndex.toLong(),
+                it.mask.toLong(),
+                it.hitGroupOffset.toLong(),
+                if (it.triangleCullingDisabled) 1L else 0L,
+                (it.motionTransform?.type ?: 0).toLong(),
+            )
+        }
+        .toLongArray()) to instances.flatMap { it.transforms.toList() }.toFloatArray()
 }
 
 fun Device.makeInstanceAccelerationStructure(
@@ -139,23 +179,13 @@ fun Device.makeInstanceAccelerationStructure(
     allowRefit: Boolean = false,
     allowCompaction: Boolean = false,
 ): AccelerationStructure = access {
-    require(instances.isNotEmpty() && instances.all { it.structure.device === this })
+    val packed = packAccelerationInstances(instances)
     AccelerationStructure(
         this,
         Native.createInstanceAcceleration(
             nativeHandle,
-            instances
-                .flatMap {
-                    listOf(
-                        it.structure.handle(),
-                        it.customIndex.toLong(),
-                        it.mask.toLong(),
-                        it.hitGroupOffset.toLong(),
-                        if (it.triangleCullingDisabled) 1L else 0L,
-                    )
-                }
-                .toLongArray(),
-            instances.flatMap { it.matrix.toList() }.toFloatArray(),
+            packed.first,
+            packed.second,
             allowRefit,
             allowCompaction,
         ),
@@ -169,6 +199,34 @@ class AccelerationStructureCommandEncoder internal constructor(command: CommandB
             source.device === commandBuffer.device && destination.device === commandBuffer.device
         )
         Native.copyAcceleration(it, source.handle(), destination.handle())
+    }
+
+    /**
+     * Updates vertex/AABB positions; counts, formats, indices, and active primitives must stay
+     * unchanged.
+     */
+    fun refitPrimitives(
+        structure: AccelerationStructure,
+        geometries: List<AccelerationGeometry>,
+    ): Unit = encode {
+        require(structure.device === commandBuffer.device)
+        Native.refitPrimitiveAcceleration(
+            it,
+            structure.handle(),
+            commandBuffer.device.packAccelerationGeometry(geometries),
+        )
+    }
+
+    /**
+     * Updates instance transforms and references with the original instance count and motion mode.
+     */
+    fun refitInstances(
+        structure: AccelerationStructure,
+        instances: List<AccelerationStructureInstance>,
+    ): Unit = encode {
+        require(structure.device === commandBuffer.device)
+        val packed = commandBuffer.device.packAccelerationInstances(instances)
+        Native.refitInstanceAcceleration(it, structure.handle(), packed.first, packed.second)
     }
 
     fun build(structure: AccelerationStructure): Unit = encode {
@@ -220,6 +278,7 @@ data class RayTracingPipelineDescriptor(
     val bindings: List<BindingLayout> = emptyList(),
     val pushConstantBytes: Int = 0,
     val supportsIndirectCommands: Boolean = false,
+    val supportsMotionBlur: Boolean = false,
 )
 
 class RayTracingPipelineState
@@ -246,6 +305,7 @@ fun Device.makeRayTracingPipelineState(
             packLayout(descriptor.bindings),
             descriptor.pushConstantBytes,
             descriptor.supportsIndirectCommands,
+            descriptor.supportsMotionBlur,
         )
     RayTracingPipelineState(this, id, Native.pipelineLocalSize(id)[3])
 }

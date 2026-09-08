@@ -10,6 +10,9 @@ void validateIndirectPipeline(const Pipeline &p) {
     require((p.stages & ~p.d->extensions->generatedProperties.supportedIndirectCommandsShaderStagesPipelineBinding) ==
                 0,
             "Device cannot select pipelines for these shader stages");
+    if (const auto *ray = dynamic_cast<const RayTracingPipeline *>(&p))
+        require(!ray->supportsMotion || p.d->extensions->motion.rayTracingMotionBlurPipelineTraceRaysIndirect,
+                "Device does not support indirect motion ray tracing");
 }
 std::vector<uint64_t> generatedGraphicsKey(const Pipeline &p) {
     const auto &g = p.graphics;
@@ -131,6 +134,9 @@ GeneratedLayout::GeneratedLayout(std::shared_ptr<Device> device, std::vector<std
     for (const auto &pipeline : pipelines) {
         require(bool(pipeline), "Missing generated pipeline");
         compatible(base, *pipeline);
+        if (const auto *ray = dynamic_cast<const RayTracingPipeline *>(pipeline.get()))
+            require(!ray->supportsMotion || d->extensions->motion.rayTracingMotionBlurPipelineTraceRaysIndirect,
+                    "Device does not support generated motion ray tracing");
         if (executionToken) {
             require(pipeline->indirectBindable, "Create pipelines with supportsIndirectCommands=true");
             validateIndirectPipeline(*pipeline);

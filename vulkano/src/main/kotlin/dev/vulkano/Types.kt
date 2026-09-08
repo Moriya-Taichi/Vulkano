@@ -74,6 +74,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     SYNCHRONIZATION_2(512, 1),
     TENSOR_RESOURCES(1024, 1),
     MACHINE_LEARNING_GRAPH(2048, 1),
+    RAY_TRACING_MOTION_BLUR(4096, 1),
 }
 
 enum class StorageMode {

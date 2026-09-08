@@ -643,6 +643,9 @@ struct Module {
             case SpvCapabilityRayTracingKHR:
                 requiredFeature = RayPipeline;
                 break;
+            case SpvCapabilityRayTracingMotionBlurNV:
+                require(d.enabledExtra & RayMotionBlur, "Ray tracing motion blur was not enabled");
+                break;
             case SpvCapabilityMeshShadingEXT:
                 requiredFeature = MeshShader;
                 break;
@@ -996,7 +999,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 12) == 0, "Unknown extended feature");
+    require((extra >> 13) == 0, "Unknown extended feature");
+    if (extra & RayMotionBlur)
+        required |= RayPipeline;
     if (extra & DataGraph) {
         extra |= TensorResources;
         required |= Timeline;
@@ -1873,20 +1878,30 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
                                        const std::vector<Shader> &shaders,
                                        const std::vector<VkShaderStageFlagBits> &stageFlags,
                                        const std::vector<VkRayTracingShaderGroupCreateInfoKHR> &groups,
-                                       uint32_t recursion, bool indirect)
-    : Pipeline(std::move(device), std::move(b), push) {
+                                       uint32_t recursion, bool indirect, bool motion)
+    : Pipeline(std::move(device), std::move(b), push), supportsMotion(motion) {
     require(d->enabled & RayPipeline, "Ray-tracing pipeline feature was not enabled");
+    require(!motion || (d->enabledExtra & RayMotionBlur), "Ray tracing motion blur was not enabled");
     require(!shaders.empty() && shaders.size() == stageFlags.size() && !groups.empty(),
             "Invalid ray pipeline shader groups");
     require(recursion > 0 && recursion <= d->extensions->rayProperties.maxRayRecursionDepth,
             "Ray recursion exceeds device limit");
     rayTracing = true;
     indirectBindable = indirect;
-    generatedStateKey = {recursion};
+    generatedStateKey = {recursion, uint32_t(motion)};
     std::vector<std::unique_ptr<Module>> modules;
     std::vector<const Module *> reflection;
     std::vector<VkPipelineShaderStageCreateInfo> vkStages;
     for (size_t n = 0; n < shaders.size(); ++n) {
+        const auto &code = shaders[n].code;
+        for (size_t i = 5; i < code.size();) {
+            const auto words = code[i] >> 16;
+            require(words && words <= code.size() - i, "Malformed ray SPIR-V instruction");
+            if ((code[i] & 0xffff) == SpvOpCapability && words == 2 &&
+                code[i + 1] == SpvCapabilityRayTracingMotionBlurNV)
+                require(motion, "The pipeline must enable supportsMotionBlur for motion shaders");
+            i += words;
+        }
         uint32_t model = 0;
         switch (stageFlags[n]) {
         case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
@@ -1953,8 +1968,10 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
     resolveLayout(*this, reflection);
     makeLayout();
     VkRayTracingPipelineCreateInfoKHR i{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+    if (motion)
+        i.flags |= VK_PIPELINE_CREATE_RAY_TRACING_ALLOW_MOTION_BIT_NV;
     VkPipelineCreateFlags2CreateInfo flags{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
-    flags.flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT;
+    flags.flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT | i.flags;
     if (indirectBindable) {
         validateIndirectPipeline(*this);
         i.pNext = &flags;
@@ -2153,6 +2170,10 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                         b.acceleration->type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
                     "Binding requires instance acceleration structure");
             same(*this, *b.acceleration);
+            if (b.acceleration->flags & VK_BUILD_ACCELERATION_STRUCTURE_MOTION_BIT_NV) {
+                const auto *ray = dynamic_cast<const RayTracingPipeline *>(&p);
+                require(ray && ray->supportsMotion, "Motion structures require a motion-enabled ray tracing pipeline");
+            }
         } else {
             require(b.texture && !b.buffer, "Binding requires a texture");
             same(*this, *b.texture);
@@ -3183,6 +3204,8 @@ void Command::commit() {
             a->built = built;
             ++a->generation;
         }
+        for (const auto &[a, inputs] : accelerationInputStates)
+            a->refitInputs = inputs;
         for (const auto &[external, owned] : externalOwnership)
             external->gpuOwned = owned;
         for (const auto &[texture, current] : images) {

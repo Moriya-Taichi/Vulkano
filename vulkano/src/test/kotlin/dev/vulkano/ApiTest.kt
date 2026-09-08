@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
+    @Test fun motionTransformsOwnTheirEndpointsAndValidateSrt() {
+        val translation = floatArrayOf(4f, 5f, 6f)
+        val srt = SrtTransform(translation = translation)
+        translation.fill(0f)
+        assertArrayEquals(floatArrayOf(4f, 5f, 6f), srt.packed.copyOfRange(13, 16), 0f)
+        val start = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f)
+        val end = start.copyOf().apply { this[3] = 4f }
+        val matrix = AccelerationMotionTransform.Matrix(start, end)
+        start.fill(0f); end.fill(0f)
+        assertEquals(1f, matrix.packed[0], 0f)
+        assertEquals(4f, matrix.packed[15], 0f)
+        assertEquals(4f, AccelerationMotionTransform.Srt(SrtTransform(), srt).packed[29], 0f)
+        assertThrows(IllegalArgumentException::class.java) { SrtTransform(scale = floatArrayOf(0f, 1f, 1f)) }
+        assertThrows(IllegalArgumentException::class.java) { SrtTransform(rotationQuaternion = floatArrayOf(0f, 0f, 0f, 2f)) }
+        assertThrows(IllegalArgumentException::class.java) { SrtTransform(translation = floatArrayOf(Float.NaN, 0f, 0f)) }
+        assertThrows(IllegalArgumentException::class.java) { AccelerationMotionTransform.Matrix(FloatArray(11), FloatArray(12)) }
+    }
     @Test fun graphConstantsOwnTheirDataAndValidateLayouts() {
         val descriptor = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR,
             usage = setOf(TensorUsage.MACHINE_LEARNING))

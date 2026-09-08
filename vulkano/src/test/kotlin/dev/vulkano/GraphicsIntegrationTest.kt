@@ -3152,6 +3152,175 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun accelerationRefitsCopiedCompactedAndRestoredInputs(): Unit {
+        assumeTrue(device().use { Feature.RAY_QUERY in it.capabilities.availableFeatures })
+        device(setOf(Feature.RAY_QUERY)).use { d ->
+            fun vertices(x: Float) = d.makeBuffer(36, usage = setOf(
+                BufferUsage.ACCELERATION_STRUCTURE_INPUT, BufferUsage.SHADER_DEVICE_ADDRESS)).apply {
+                write(floats(x - 1, -1f, 0f, x + 1, -1f, 0f, x, 1f, 0f))
+            }
+            fun transform(x: Float) = floatArrayOf(1f, 0f, 0f, x, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f)
+            val originalVertices = vertices(0f)
+            val source = d.makePrimitiveAccelerationStructure(listOf(TriangleGeometry(originalVertices, 3)),
+                allowRefit = true, allowCompaction = true)
+            d.submit { accelerationStructure { build(source) } }
+            val clone = source.makeCopyDestination()
+            val compact = source.makeCopyDestination(compact = true)
+            d.submit { accelerationStructure { copy(source, clone); copy(source, compact) } }
+            val restored = d.restoreAccelerationStructure(source.serialize())
+            source.close(); originalVertices.close()
+            val pipeline = d.makeComputePipelineState(d.function("query.comp.spv"))
+            val result = d.makeBuffer(4)
+            fun checkHit(scene: AccelerationStructure, expected: Int) {
+                d.submit { compute {
+                    setComputePipelineState(pipeline); setAccelerationStructure(scene, 0)
+                    setBuffer(result, 1); dispatchThreads(Size(1))
+                } }
+                assertEquals(expected, ByteBuffer.wrap(result.readBytes(4)).order(ByteOrder.nativeOrder()).int)
+            }
+            for (primitive in listOf(clone, compact, restored)) {
+                val scene = d.makeInstanceAccelerationStructure(listOf(AccelerationStructureInstance(primitive)), allowRefit = true)
+                d.submit { accelerationStructure { build(scene) } }
+                checkHit(scene, 1)
+                val moved = vertices(4f)
+                val geometry = listOf(TriangleGeometry(moved, 3))
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.submit { accelerationStructure { refitPrimitives(primitive, listOf(TriangleGeometry(moved, 3, opaque = false))) } }
+                }
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.submit { accelerationStructure { refitInstances(scene, listOf(
+                        AccelerationStructureInstance(primitive), AccelerationStructureInstance(primitive))) } }
+                }
+                if (primitive !== restored) {
+                    val unbuilt = d.makePrimitiveAccelerationStructure(geometry)
+                    val invalidScene = d.makeInstanceAccelerationStructure(listOf(AccelerationStructureInstance(unbuilt)))
+                    assertThrows(IllegalArgumentException::class.java) {
+                        d.submit { accelerationStructure { refitPrimitives(primitive, geometry); build(invalidScene) } }
+                    }
+                    // The failed submission must not replace the last successful refit inputs.
+                    d.submit { accelerationStructure { refit(primitive); refit(scene) } }
+                    checkHit(scene, 1)
+                    invalidScene.close(); unbuilt.close()
+                } else {
+                    assertThrows(IllegalArgumentException::class.java) {
+                        d.submit { accelerationStructure { refit(primitive) } }
+                    }
+                }
+                d.makeCommandQueue().use { q -> q.makeCommandBuffer().use { command ->
+                    command.accelerationStructure {
+                        refitPrimitives(primitive, geometry)
+                        refit(primitive) // Uses the replacement recorded earlier in this command.
+                        refitInstances(scene, listOf(AccelerationStructureInstance(primitive)))
+                    }
+                    moved.close()
+                    command.commit(); assertTrue(command.waitUntilCompleted())
+                } }
+                checkHit(scene, 0)
+                d.submit { accelerationStructure {
+                    refit(primitive) // Closed replacement buffer remains retained after submission.
+                    refitInstances(scene, listOf(AccelerationStructureInstance(primitive, transform(-4f))))
+                } }
+                checkHit(scene, 1)
+                val archive = scene.serialize()
+                val restoredScene = d.restoreAccelerationStructure(archive,
+                    archive.bottomLevelAddresses.associateWith { primitive })
+                checkHit(restoredScene, 1)
+                d.submit { accelerationStructure {
+                    refitInstances(restoredScene, listOf(AccelerationStructureInstance(primitive)))
+                } }
+                checkHit(restoredScene, 0)
+                restoredScene.close(); scene.close(); primitive.close()
+            }
+        }
+    }
+
+    @Test
+    fun motionBlurFeatureMustBeEnabled(): Unit = device().use { d ->
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("motion.rgen.spv"))
+        }
+        if (Feature.RAY_TRACING_MOTION_BLUR !in d.capabilities.availableFeatures) {
+            assertThrows(IllegalStateException::class.java) { device(setOf(Feature.RAY_TRACING_MOTION_BLUR)) }
+        }
+    }
+
+    @Test fun motionVerticesTraceRefitAndRestore(): Unit = checkMotionBlur(0)
+    @Test fun motionMatricesTraceRefitAndRestore(): Unit = checkMotionBlur(1)
+    @Test fun motionSrtTraceRefitAndRestore(): Unit = checkMotionBlur(2)
+
+    private fun checkMotionBlur(mode: Int) {
+        assumeTrue(device().use { Feature.RAY_TRACING_MOTION_BLUR in it.capabilities.availableFeatures })
+        device(setOf(Feature.RAY_TRACING_MOTION_BLUR)).use { d ->
+            fun vertices(x: Float) = d.makeBuffer(36, usage = setOf(
+                BufferUsage.ACCELERATION_STRUCTURE_INPUT, BufferUsage.SHADER_DEVICE_ADDRESS)).apply {
+                write(floats(x - 1, -1f, 0f, x + 1, -1f, 0f, x, 1f, 0f))
+            }
+            fun transform(x: Float) = floatArrayOf(1f, 0f, 0f, x, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f)
+            val start = vertices(0f); val end = vertices(4f)
+            fun geometry(reverse: Boolean) = listOf(TriangleGeometry(
+                if (mode == 0 && reverse) end else start, 3,
+                motionVertexBuffer = if (mode != 0) null else if (reverse) start else end))
+            val primitive = d.makePrimitiveAccelerationStructure(geometry(false), allowRefit = true, allowCompaction = true)
+            fun instance(structure: AccelerationStructure, reverse: Boolean): AccelerationStructureInstance {
+                val a = if (reverse) 4f else 0f; val b = if (reverse) 0f else 4f
+                val motion = when (mode) {
+                    1 -> AccelerationMotionTransform.Matrix(transform(a), transform(b))
+                    2 -> AccelerationMotionTransform.Srt(
+                        SrtTransform(translation = floatArrayOf(a, 0f, 0f)),
+                        SrtTransform(translation = floatArrayOf(b, 0f, 0f)))
+                    else -> null
+                }
+                return AccelerationStructureInstance(structure, motionTransform = motion)
+            }
+            val scene = d.makeInstanceAccelerationStructure(listOf(instance(primitive, false)), allowRefit = true)
+            val descriptor = RayTracingPipelineDescriptor(listOf(
+                RayShader(d.function("motion.rgen.spv"), RayShaderStage.RAY_GENERATION),
+                RayShader(d.function("hit.rmiss.spv"), RayShaderStage.MISS),
+                RayShader(d.function("hit.rchit.spv"), RayShaderStage.CLOSEST_HIT)),
+                listOf(RayShaderGroup(general = 0), RayShaderGroup(general = 1), RayShaderGroup(closestHit = 2)),
+                supportsMotionBlur = true)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeRayTracingPipelineState(descriptor.copy(supportsMotionBlur = false))
+            }
+            val pipeline = d.makeRayTracingPipelineState(descriptor)
+            val output = d.makeBuffer(12)
+            fun trace(target: AccelerationStructure, expected: IntArray) {
+                d.submit { rayTracing {
+                    setRayTracingPipelineState(pipeline); setAccelerationStructure(target, 0)
+                    setBuffer(output, 1); traceRays(Size(3))
+                } }
+                val data = ByteBuffer.wrap(output.readBytes(12)).order(ByteOrder.nativeOrder())
+                assertArrayEquals(expected, IntArray(3) { data.int })
+            }
+            d.submit { accelerationStructure { build(primitive); build(scene) } }
+            trace(scene, intArrayOf(1, 0, 0))
+            d.submit { accelerationStructure {
+                if (mode == 0) refitPrimitives(primitive, geometry(true))
+                refitInstances(scene, listOf(instance(primitive, true)))
+            } }
+            trace(scene, intArrayOf(0, 0, 1))
+            val compact = primitive.makeCopyDestination(compact = true)
+            d.submit { accelerationStructure {
+                copy(primitive, compact)
+                refitInstances(scene, listOf(instance(compact, true)))
+            } }
+            trace(scene, intArrayOf(0, 0, 1))
+            val restoredPrimitive = d.restoreAccelerationStructure(compact.serialize())
+            val archive = scene.serialize()
+            val restoredScene = d.restoreAccelerationStructure(archive,
+                archive.bottomLevelAddresses.associateWith { restoredPrimitive })
+            primitive.close(); compact.close(); scene.close()
+            trace(restoredScene, intArrayOf(0, 0, 1))
+            d.submit { accelerationStructure {
+                refitPrimitives(restoredPrimitive, geometry(false))
+                refitInstances(restoredScene, listOf(instance(restoredPrimitive, false)))
+            } }
+            start.close(); end.close(); restoredPrimitive.close()
+            trace(restoredScene, intArrayOf(1, 0, 0))
+        }
+    }
+
+    @Test
     fun accelerationArchivesRejectMalformedData(): Unit {
         for (data in listOf(byteArrayOf(), ByteArray(87), ByteArray(128))) {
             assertThrows(IllegalArgumentException::class.java) {

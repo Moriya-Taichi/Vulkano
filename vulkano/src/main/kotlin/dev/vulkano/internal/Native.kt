@@ -502,6 +502,15 @@ internal object Native {
 
     external fun buildAcceleration(command: Long, structure: Long, update: Boolean)
 
+    external fun refitPrimitiveAcceleration(command: Long, structure: Long, values: LongArray)
+
+    external fun refitInstanceAcceleration(
+        command: Long,
+        structure: Long,
+        values: LongArray,
+        transforms: FloatArray,
+    )
+
     external fun createRayPipeline(
         device: Long,
         code: Array<ByteArray>,
@@ -513,6 +522,7 @@ internal object Native {
         bindings: IntArray,
         pushBytes: Int,
         indirect: Boolean,
+        motion: Boolean,
     ): Long
 
     external fun traceRays(

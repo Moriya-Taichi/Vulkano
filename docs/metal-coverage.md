@@ -34,6 +34,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Object / Mesh Shader | objectFunction / meshShader | VK_EXT_mesh_shader。Task Shaderは別Feature |
 | Ray Query | AccelerationStructureとCompute/Graphics Shader | VK_KHR_ray_query、BLAS/TLAS、Triangle/AABB、Build/Refit、Copy/Compaction、SerializationとBLASアドレス再配置 |
 | Ray Tracing Pipeline | RayTracingPipelineState / traceRays | Raygen、Miss、Hit、Intersection、Callable、SBT。端末依存 |
+| Acceleration StructureのMotion Blur | motionVertexBuffer / AccelerationMotionTransform | VK_NV_ray_tracing_motion_blur。頂点、Matrix、SRT、Motion用Pipeline、Refit、Copy/Compaction、Archive |
 | Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
 | Sparse Resource | makeSparseBuffer / makeSparseTexture | Page/Tile/Mip TailのMapping、必要なMetadataの確保、Mapping共有、CPU/Shader Residency検査 |
 | Event / 外部同期 | makeSharedEvent / makeExternalSemaphore | TimelineとBinary Semaphore、SYNC_FDのImport/Export。WaitはCommand開始前、Signalは完了時 |
@@ -55,7 +56,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 
 | 機能 | 残る実装 |
 | --- | --- |
-| Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
+| Subpassの追加構成 | 明示的なSubpass LayoutとDepth/Stencil Resolve・Rate Mapの組み合わせ |
 
 ## 組み合わせの制約
 
@@ -81,6 +82,11 @@ Input Attachmentには描画先と同じImage、Mip、Layer、FormatのViewを�
 
 Acceleration Structure Archiveは互換Driver向けの不透明なデータです。
 TLASの復元には、保存時のBLASアドレスから復元済みBLASへの対応表が必要です。
+Refitはコピー・圧縮・復元したStructureにも対応します。
+復元後は`refitPrimitives()`または`refitInstances()`で入力を渡します。
+Geometryの数・型・Flag、頂点数、Indexの型と値、Primitiveの有効・無効は維持します。
+Motion Blurは対応Featureを有効にしたRay Tracing Pipelineで使用します。
+時刻0と1の間を補間し、Ray QueryにはMotion Structureを渡せません。
 Sparse TextureはSingle Sampleの2D/3D Color ImageとそのArray/Cubeに対応します。
 Sparse MappingはDeviceの先行Command完了を待ち、Sparse QueueへのBind完了後に戻ります。
 未割り当て領域の値は端末のResidency規則に従い、新規に割り当てた領域は使用前に初期化します。

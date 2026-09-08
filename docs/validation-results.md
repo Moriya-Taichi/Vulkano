@@ -13,7 +13,16 @@ Graphの入力・出力・WeightsのReflection、型とShape、壊れたSPIR-V�
 ML専用Queue向けのコマンド分割とTimeline Semaphoreの処理は、通常のVulkan Queue上でBuffer転送を使って実行し、複数のSubmissionをまたぐ読み戻しが一致しました。
 これは同期処理の検証であり、ML演算をGPUで実行した結果ではありません。
 ML Graphの連続実行、Weights、Cache復元のGPUテスト3件は、ローカルGPUが非対応のためスキップしています。
-Android CIでのML Graph追加分の検証は次のCommitを対象とします。
+ML Graphを含むCommit `c09bb43086960be71ecfa930771837136c7b3ff4`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34255853251)も成功しました。
+Native 757件、Kotlin/JNI 73件中54件成功・19件スキップ・失敗0件です。
+GraphのIdentity・Constantの2種類のSPIR-V、AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物を検証しました。
+ML GraphのGPU実行3件はCIでも非対応によるスキップで、Validation ErrorとSynchronization Hazardは検出されていません。
+
+Motion BlurとRefit入力差し替えの追加後は、ローカルNative 763件、Kotlin/JNI 79件中49件成功・30件スキップ・失敗0件です。
+Motion ShaderはコンパイルとSPIR-V検証に成功し、Matrix/SRTの配置・数値検査を実行しました。
+Motionの頂点・Matrix・SRTのGPUテスト3件と、コピー・圧縮・復元した加速構造のRefitテスト1件は、ローカルGPUが非対応のためスキップしています。
+Refitのテストには、入力差し替え、同一Command内の再更新、閉じた入力Bufferの保持、送信失敗時の状態保全を含みます。
+Validation ErrorとSynchronization Hazardは検出されていません。
 
 この変更では次を確認しました。
 

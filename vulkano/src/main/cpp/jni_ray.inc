@@ -1,53 +1,96 @@
+namespace {
+std::vector<Geometry> readAccelerationGeometries(JNIEnv *e, jlongArray values) {
+    auto v = longValues(e, values);
+    require(!v.empty() && v.size() % 12 == 0, "Invalid geometry descriptor");
+    std::vector<Geometry> geometries;
+    for (size_t i = 0; i < v.size(); i += 12) {
+        Geometry g;
+        g.boxes = v[i];
+        g.vertices = get<Buffer>(v[i + 1]);
+        for (int n : {2, 3, 4, 5, 8, 11})
+            require(v[i + n] >= 0, "Invalid geometry range");
+        require(v[i + 4] <= UINT32_MAX && v[i + 5] <= UINT32_MAX, "Geometry count overflow");
+        g.vertexOffset = v[i + 2];
+        g.stride = v[i + 3];
+        g.vertexCount = v[i + 4];
+        g.primitiveCount = v[i + 5];
+        if (v[i + 6])
+            g.indices = get<Buffer>(v[i + 6]);
+        g.indexType = static_cast<VkIndexType>(v[i + 7]);
+        g.indexOffset = v[i + 8];
+        g.flags = v[i + 9];
+        if (v[i + 10])
+            g.motionVertices = get<Buffer>(v[i + 10]);
+        g.motionVertexOffset = v[i + 11];
+        geometries.push_back(g);
+    }
+    return geometries;
+}
+std::vector<AccelerationInstance> readAccelerationInstances(JNIEnv *e, jlongArray values, jfloatArray matrices) {
+    auto v = longValues(e, values);
+    auto m = floatValues(e, matrices);
+    require(!v.empty() && v.size() % 6 == 0 && m.size() == v.size() / 6 * 32, "Invalid instances");
+    std::vector<AccelerationInstance> instances;
+    for (size_t i = 0; i < v.size(); i += 6) {
+        AccelerationInstance a;
+        a.structure = get<AccelerationStructure>(v[i]);
+        for (int n = 1; n < 5; ++n)
+            require(v[i + n] >= 0 && v[i + n] <= 0xffffff, "Invalid instance value");
+        require(v[i + 5] >= 0 && v[i + 5] <= 2, "Invalid instance motion type");
+        a.motionType = VkAccelerationStructureMotionInstanceTypeNV(v[i + 5]);
+        const auto *transforms = m.data() + i / 6 * 32;
+        if (a.motionType == VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_SRT_MOTION_NV) {
+            std::memcpy(&a.srtStart, transforms, 64);
+            std::memcpy(&a.srtEnd, transforms + 16, 64);
+        } else {
+            std::memcpy(a.transform.matrix, transforms, 48);
+            std::memcpy(a.transformEnd.matrix, transforms + 12, 48);
+        }
+        a.customIndex = v[i + 1];
+        a.mask = v[i + 2];
+        a.recordOffset = v[i + 3];
+        a.flags = v[i + 4];
+        instances.push_back(a);
+    }
+    return instances;
+}
+} // namespace
 JNI_METHOD(jlong, bufferAddress)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] { return jlong(bufferAddress(*get<Buffer>(id))); });
 }
 JNI_METHOD(jlong, createPrimitiveAcceleration)
 (JNIEnv *e, jobject, jlong device, jlongArray values, jboolean update, jboolean compact) {
     return guard(e, [&] {
-        auto v = longValues(e, values);
-        require(!v.empty() && v.size() % 10 == 0, "Invalid geometry descriptor");
-        std::vector<Geometry> geometries;
-        for (size_t i = 0; i < v.size(); i += 10) {
-            Geometry g;
-            g.boxes = v[i];
-            g.vertices = get<Buffer>(v[i + 1]);
-            for (int n : {2, 3, 4, 5, 8})
-                require(v[i + n] >= 0, "Invalid geometry range");
-            require(v[i + 4] <= UINT32_MAX && v[i + 5] <= UINT32_MAX, "Geometry count overflow");
-            g.vertexOffset = v[i + 2];
-            g.stride = v[i + 3];
-            g.vertexCount = v[i + 4];
-            g.primitiveCount = v[i + 5];
-            if (v[i + 6])
-                g.indices = get<Buffer>(v[i + 6]);
-            g.indexType = static_cast<VkIndexType>(v[i + 7]);
-            g.indexOffset = v[i + 8];
-            g.flags = v[i + 9];
-            geometries.push_back(g);
-        }
-        return put(std::make_shared<AccelerationStructure>(get<Device>(device), geometries, update, compact));
+        return put(std::make_shared<AccelerationStructure>(get<Device>(device), readAccelerationGeometries(e, values),
+                                                           update, compact));
     });
 }
 JNI_METHOD(jlong, createInstanceAcceleration)
 (JNIEnv *e, jobject, jlong device, jlongArray values, jfloatArray matrices, jboolean update, jboolean compact) {
     return guard(e, [&] {
-        auto v = longValues(e, values);
-        auto m = floatValues(e, matrices);
-        require(!v.empty() && v.size() % 5 == 0 && m.size() == v.size() / 5 * 12, "Invalid instances");
-        std::vector<AccelerationInstance> instances;
-        for (size_t i = 0; i < v.size(); i += 5) {
-            AccelerationInstance a;
-            a.structure = get<AccelerationStructure>(v[i]);
-            for (int n = 1; n < 5; ++n)
-                require(v[i + n] >= 0 && v[i + n] <= 0xffffff, "Invalid instance value");
-            std::memcpy(a.transform.matrix, m.data() + i / 5 * 12, 48);
-            a.customIndex = v[i + 1];
-            a.mask = v[i + 2];
-            a.recordOffset = v[i + 3];
-            a.flags = v[i + 4];
-            instances.push_back(a);
-        }
-        return put(std::make_shared<AccelerationStructure>(get<Device>(device), instances, update, compact));
+        return put(std::make_shared<AccelerationStructure>(
+            get<Device>(device), readAccelerationInstances(e, values, matrices), update, compact));
+    });
+}
+JNI_METHOD(void, refitPrimitiveAcceleration)(JNIEnv *e, jobject, jlong command, jlong structure, jlongArray values) {
+    return guard(e, [&] {
+        auto target = get<AccelerationStructure>(structure);
+        auto inputs = std::make_shared<AccelerationStructure>(
+            target->d, readAccelerationGeometries(e, values),
+            bool(target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
+            bool(target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR), false);
+        get<Command>(command)->build(target, true, inputs);
+    });
+}
+JNI_METHOD(void, refitInstanceAcceleration)
+(JNIEnv *e, jobject, jlong command, jlong structure, jlongArray values, jfloatArray transforms) {
+    return guard(e, [&] {
+        auto target = get<AccelerationStructure>(structure);
+        auto inputs = std::make_shared<AccelerationStructure>(
+            target->d, readAccelerationInstances(e, values, transforms),
+            bool(target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
+            bool(target->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR), false);
+        get<Command>(command)->build(target, true, inputs);
     });
 }
 JNI_METHOD(void, buildAcceleration)(JNIEnv *e, jobject, jlong command, jlong structure, jboolean update) {
@@ -55,7 +98,7 @@ JNI_METHOD(void, buildAcceleration)(JNIEnv *e, jobject, jlong command, jlong str
 }
 JNI_METHOD(jlong, createRayPipeline)
 (JNIEnv *e, jobject, jlong device, jobjectArray codes, jobjectArray entries, jobjectArray constants, jintArray stages,
- jintArray groupArray, jint recursion, jintArray schema, jint push, jboolean indirect) {
+ jintArray groupArray, jint recursion, jintArray schema, jint push, jboolean indirect, jboolean motion) {
     return guard(e, [&] {
         auto flags = ints(e, stages);
         auto gs = ints(e, groupArray);
@@ -89,7 +132,7 @@ JNI_METHOD(jlong, createRayPipeline)
             groups.push_back(g);
         }
         return put(std::make_shared<RayTracingPipeline>(get<Device>(device), layout(e, schema), push, shaders, sf,
-                                                        groups, recursion, indirect));
+                                                        groups, recursion, indirect, motion));
     });
 }
 JNI_METHOD(void, traceRays)

@@ -114,7 +114,8 @@ enum ExtraFeature : uint64_t {
     IndependentQueues = 256,
     Synchronization2 = 512,
     TensorResources = 1024,
-    DataGraph = 2048
+    DataGraph = 2048,
+    RayMotionBlur = 4096
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -510,7 +511,10 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     std::shared_ptr<Drawable> presentation;
     explicit Command(std::shared_ptr<Device>, uint32_t queueIndex = 0);
     std::unordered_map<AccelerationStructure *, bool> accelerationStates;
-    void build(std::shared_ptr<AccelerationStructure>, bool update = false);
+    std::unordered_map<AccelerationStructure *, std::shared_ptr<AccelerationStructure>> accelerationInputStates;
+    std::unordered_map<AccelerationStructure *, std::shared_ptr<AccelerationStructure>> recordedAccelerationInputs;
+    void build(std::shared_ptr<AccelerationStructure>, bool update = false,
+               std::shared_ptr<AccelerationStructure> replacementInputs = {});
     void copyAccelerationStructure(std::shared_ptr<AccelerationStructure>, std::shared_ptr<AccelerationStructure>);
     void trace(std::shared_ptr<RayTracingPipeline>, std::vector<Binding>, std::vector<uint8_t>,
                std::array<uint32_t, 3>);

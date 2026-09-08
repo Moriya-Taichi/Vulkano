@@ -694,3 +694,45 @@ Storage UsageとMemorylessは組み合わせられません。
 Apronへの書き込みはできず、幅を増やすとTile処理の負担も増えるため、必要な範囲だけを指定します。
 
 [KhronosのTile Shading仕様](https://docs.vulkan.org/features/latest/features/proposals/VK_QCOM_tile_shading.html)に従います。
+
+
+## Acceleration StructureのMotion Blurと入力差し替え
+
+`RAY_TRACING_MOTION_BLUR`は`VK_NV_ray_tracing_motion_blur`を使用し、Ray Tracing Pipelineを併せて有効にします。
+GPU名から対応を判断せず、`availableFeatures`を確認します。
+`TriangleGeometry.motionVertexBuffer`には時刻1の頂点位置を渡し、`vertexBuffer`の時刻0の位置と同じ頂点数・Strideで対応させます。
+Instanceの移動は`AccelerationMotionTransform.Matrix`または`AccelerationMotionTransform.Srt`を指定します。
+`SrtTransform`はScale、Shear、Pivot、単位Quaternion、Translationを保持します。
+行列はRow-majorの3×4要素で、時刻0と1の行列を指定します。
+Ray Tracing Pipelineには`supportsMotionBlur = true`を指定し、シェーダーの`traceRayMotionNV()`へ0〜1の時刻を渡します。
+Motion StructureをRay Queryへ渡すことはできません。
+間接Motion TraceにはDriverの`rayTracingMotionBlurPipelineTraceRaysIndirect`も必要です。
+
+```kotlin
+val geometry = TriangleGeometry(verticesAtStart, vertexCount,
+    motionVertexBuffer = verticesAtEnd)
+val primitive = device.makePrimitiveAccelerationStructure(listOf(geometry), allowRefit = true)
+val motion = AccelerationMotionTransform.Srt(
+    SrtTransform(),
+    SrtTransform(translation = floatArrayOf(2f, 0f, 0f)),
+)
+val scene = device.makeInstanceAccelerationStructure(
+    listOf(AccelerationStructureInstance(primitive, motionTransform = motion)),
+    allowRefit = true,
+)
+command.accelerationStructure {
+    build(primitive)
+    build(scene)
+}
+```
+
+`refitPrimitives(structure, geometries)`で頂点またはAABBの入力を差し替えます。
+`refitInstances(structure, instances)`ではTransformとBLASへの参照を更新します。
+更新後もGeometryの数・型・Flag、頂点数、Indexの型と値、Primitiveの有効・無効を維持します。
+BLASの境界が変わる場合は、その後で参照するTLASも更新します。
+`refit(structure)`は最後に送信が成功した入力を再利用し、同じCommandに先行する明示的な入力差し替えも反映します。
+差し替えたBufferはNative側が保持し、送信に失敗した場合は以前の入力を維持します。
+Copy・Compaction後も、元が`allowRefit = true`で作成されていれば更新できます。
+新しいArchive形式には入力の構成を保存し、復元後は`refitPrimitives()`または`refitInstances()`で入力を渡せます。
+旧形式のArchiveは復元できますが、更新条件の情報がないためRefitできません。
+ArchiveのDriver互換性とTLASのBLASアドレス対応表は引き続き必要です。

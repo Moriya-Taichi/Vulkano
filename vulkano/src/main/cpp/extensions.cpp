@@ -68,8 +68,11 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         link(head, acceleration);
         if (spirv14 && has(e, VK_KHR_RAY_QUERY_EXTENSION_NAME))
             link(head, query);
-        if (spirv14 && has(e, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME))
+        if (spirv14 && has(e, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)) {
             link(head, ray);
+            if (has(e, VK_NV_RAY_TRACING_MOTION_BLUR_EXTENSION_NAME))
+                link(head, motion);
+        }
     }
     if (spirv14 && has(e, VK_EXT_MESH_SHADER_EXTENSION_NAME))
         link(head, mesh);
@@ -180,6 +183,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
             available |= RayQuery;
         if (ray.rayTracingPipeline)
             available |= RayPipeline;
+        if (ray.rayTracingPipeline && motion.rayTracingMotionBlur)
+            availableExtra |= RayMotionBlur;
     }
     if (mesh.meshShader) {
         available |= MeshShader;
@@ -394,6 +399,10 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & RayMotionBlur) {
+        link(chain, motion);
+        extensions.push_back(VK_NV_RAY_TRACING_MOTION_BLUR_EXTENSION_NAME);
+    }
     if (extra & DataGraph) {
         graph.dataGraphUpdateAfterBind = graph.dataGraphDescriptorBuffer = false;
         link(chain, graph);
