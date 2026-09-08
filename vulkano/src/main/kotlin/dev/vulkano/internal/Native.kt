@@ -232,6 +232,41 @@ internal object Native {
 
     external fun queueInfo(device: Long): IntArray
 
+    external fun tensorCapabilities(device: Long): LongArray
+
+    external fun createTensor(
+        device: Long,
+        format: Int,
+        tiling: Int,
+        usage: Long,
+        dimensions: LongArray,
+        strides: LongArray,
+        storage: Int,
+    ): Long
+
+    external fun supportsTensor(
+        device: Long,
+        format: Int,
+        tiling: Int,
+        usage: Long,
+        dimensions: LongArray,
+        strides: LongArray,
+        storage: Int,
+    ): Boolean
+
+    external fun tensorInfo(tensor: Long): LongArray
+
+    external fun createTensorView(tensor: Long, format: Int): Long
+
+    external fun accessTensorBytes(
+        tensor: Long,
+        offset: Long,
+        bytes: java.nio.ByteBuffer,
+        write: Boolean,
+    )
+
+    external fun copyTensor(command: Long, source: Long, destination: Long)
+
     external fun dispatch(
         command: Long,
         pipeline: Long,

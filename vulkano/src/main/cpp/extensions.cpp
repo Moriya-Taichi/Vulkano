@@ -19,6 +19,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     core12 = api >= VK_API_VERSION_1_2;
     core13 = api >= VK_API_VERSION_1_3;
     void *head = nullptr;
+    if (core13 && has(e, VK_ARM_TENSORS_EXTENSION_NAME))
+        link(head, tensor);
     if (core13 || has(e, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
         link(head, sync2);
     const bool dgc = has(e, VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME) &&
@@ -85,6 +87,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     vkGetPhysicalDeviceFeatures2(d, &f);
     if (sync2.synchronization2)
         availableExtra |= Synchronization2;
+    if (tensor.tensors && sync2.synchronization2)
+        availableExtra |= TensorResources;
     if (tile.tileShading && tileQuery.tileProperties)
         availableExtra |= TileShading;
     generatedVertexInput = core13 || dynamicState.extendedDynamicState;
@@ -174,6 +178,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     head = nullptr;
     if (availableExtra & TileShading)
         link(head, tileProperties);
+    if (availableExtra & TensorResources)
+        link(head, tensorProperties);
     if (availableExtra & DeviceGeneratedCommands)
         link(head, generatedProperties);
     link(head, multiviewProperties);
@@ -377,6 +383,12 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & TensorResources) {
+        tensor.pNext = nullptr;
+        tensor.descriptorBindingStorageTensorUpdateAfterBind = false;
+        link(chain, tensor);
+        extensions.push_back(VK_ARM_TENSORS_EXTENSION_NAME);
+    }
     if (extra & Synchronization2) {
         sync2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
         sync2.synchronization2 = true;
@@ -463,6 +475,19 @@ void Extensions::load(Device &d) {
 #define GET(member, name)                                                                                              \
     member = reinterpret_cast<decltype(member)>(vkGetDeviceProcAddr(d.device, name));                                  \
     require(member, "Enabled Vulkan entry point is missing")
+    if (d.enabledExtra & Synchronization2) {
+        GET(pipelineBarrier2, core13 ? "vkCmdPipelineBarrier2" : "vkCmdPipelineBarrier2KHR");
+    }
+    if (d.enabledExtra & TensorResources) {
+        GET(createTensor, "vkCreateTensorARM");
+        GET(destroyTensor, "vkDestroyTensorARM");
+        GET(createTensorView, "vkCreateTensorViewARM");
+        GET(destroyTensorView, "vkDestroyTensorViewARM");
+        GET(tensorMemoryRequirements, "vkGetTensorMemoryRequirementsARM");
+        GET(deviceTensorMemoryRequirements, "vkGetDeviceTensorMemoryRequirementsARM");
+        GET(bindTensorMemory, "vkBindTensorMemoryARM");
+        GET(copyTensor, "vkCmdCopyTensorARM");
+    }
     if (d.enabledExtra & TileShading) {
         GET(beginTile, "vkCmdBeginPerTileExecutionQCOM");
         GET(endTile, "vkCmdEndPerTileExecutionQCOM");

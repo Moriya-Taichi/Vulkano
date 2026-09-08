@@ -24,6 +24,7 @@ Source: https://github.com/KhronosGroup/SPIRV-Reflect/tree/vulkan-sdk-1.3.296.0
 
 SPIR-V enum declarations in SPIRV-Reflect's `include/spirv/unified1/spirv.h` are updated from
 Khronos SPIRV-Headers commit `f2e4bd213104fe323a01e935df56557328d37ac8`, the version used by Vulkan-ValidationLayers v1.4.335.
-The bundled SPIRV-Reflect C implementation has a two-site local change: `TileAttachmentQCOM` is accepted as a descriptor storage class alongside `UniformConstant`.
+The bundled SPIRV-Reflect C implementation accepts `TileAttachmentQCOM` as a descriptor storage class alongside `UniformConstant`.
+It also recognizes `OpTypeTensorARM`, retains its scalar traits, and exposes `VK_DESCRIPTOR_TYPE_TENSOR_ARM` through matching local type and descriptor enum additions.
 The SPIR-V header retains its MIT notice; the SPIRV-Reflect C implementation retains its Apache 2.0 notice.
 The full license texts are included in this directory and the AAR.

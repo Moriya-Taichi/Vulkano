@@ -3,6 +3,54 @@
 以下は、作成済みのDeviceとShader Functionを使う例です。
 完全なシェーダーとGPU出力の確認は[GraphicsIntegrationTest](../vulkano/src/test/kotlin/dev/vulkano/GraphicsIntegrationTest.kt)を参照してください。
 
+## 専用Tensor
+
+`TENSOR_RESOURCES`を有効にすると、専用のTensorを作成できます。
+端末には`VK_ARM_tensors`とVulkan 1.3が必要です。
+`tensorCapabilities`でRank、要素数、Stride、Shader Stageの上限と対応を確認し、`supportsTensor(descriptor, storageMode)`で配置とメモリ種別を照合します。
+既存の`TensorDescriptor`と`makeTensor`は、通常のStorage Bufferを使う演算で利用できます。
+
+```kotlin
+val descriptor = TensorResourceDescriptor(listOf(2, 3))
+val hostDescriptor = TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR)
+val upload = device.makeTensorResource(hostDescriptor, StorageMode.SHARED)
+val input = device.makeTensorResource(descriptor)
+val output = device.makeTensorResource(descriptor)
+val readback = device.makeTensorResource(hostDescriptor, StorageMode.SHARED)
+val inputView = input.makeView()
+val outputView = output.makeView()
+upload.write(floatBytes) // Native byte orderでエンコードした6個のFloat32
+
+command.blit { copy(upload, input) }
+command.compute {
+    setComputePipelineState(tensorPipeline)
+    setTensor(inputView, 0)
+    setTensor(outputView, 1)
+    dispatchThreadgroups(Size(3, 2))
+}
+command.blit { copy(output, readback) }
+command.commit()
+command.waitUntilCompleted()
+val result = readback.readBytes(24)
+```
+
+Tensor Shaderは`SPV_ARM_tensors`の`OpTensorReadARM`と`OpTensorWriteARM`を使用します。
+Shaderで指定した数値型、Rank、ShapeをDescriptorと照合し、直接のFunction Constantsを使うShapeも反映します。
+複雑なSPIR-V定数式やShader内部の座標計算については、使用側でもTensorのShapeとアクセス範囲を一致させてください。
+Descriptor ArrayのDynamic/Non-uniform Indexingは、端末が返す個別の対応状況に従います。
+Graphics Stageからの書き込みには、対応するStore Featureも有効にします。
+
+Shared TensorにはLinear配置を使います。
+`byteStrides`の単位はByteで、最内周のStrideは要素のByte数、それ以外は内側の領域と重ならない値にします。
+GPUに送信済みのTensorは完了までCPUから読み書きできません。
+CPUの読み書きでは必要なFlush/Invalidateを行います。
+Viewと記録済みCommandはTensorのNative参照を保持します。
+
+TensorのBlitは同じDimensionsを持つ全体のCopyに対応し、LinearとOptimalの間も転送できます。
+数値型が異なる場合は要素のByte数を合わせます。
+Copyは型変換を行わず、Bit Patternを保持します。
+VulkanのTensor Copyは部分領域に対応しないため、部分的な更新や型変換にはShaderのTensor演算を使用します。
+
 ## MSAAとIndexed Draw
 
 ```kotlin

@@ -72,6 +72,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     TILE_SHADING(128, 1),
     INDEPENDENT_QUEUES(256, 1),
     SYNCHRONIZATION_2(512, 1),
+    TENSOR_RESOURCES(1024, 1),
 }
 
 enum class StorageMode {
@@ -262,6 +263,7 @@ enum class BindingType(internal val vk: Int) {
     UNIFORM_BUFFER(6),
     STORAGE_BUFFER(7),
     ACCELERATION_STRUCTURE(1000150000),
+    TENSOR(1000460000),
     SAMPLER(0),
     SAMPLED_IMAGE(2),
     UNIFORM_TEXEL_BUFFER(4),

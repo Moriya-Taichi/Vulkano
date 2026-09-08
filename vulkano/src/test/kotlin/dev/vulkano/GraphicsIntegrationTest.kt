@@ -36,6 +36,169 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun tensorResourcesRequireFeatureAndSharedLinearStorage(): Unit =
+        device().use { d ->
+            val tensor = TensorResourceDescriptor(listOf(2, 3))
+            assertFalse(d.supportsTensor(tensor))
+            assertThrows(IllegalArgumentException::class.java) { d.makeTensorResource(tensor) }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeTensorResource(tensor, StorageMode.SHARED)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeTensorResource(tensor, StorageMode.MEMORYLESS)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeComputePipelineState(d.function("tensor-double.comp.spv"))
+            }
+        }
+
+    @Test
+    fun synchronization2PreservesTransferVisibility(): Unit {
+        assumeTrue(device().use { Feature.SYNCHRONIZATION_2 in it.capabilities.availableFeatures })
+        device(setOf(Feature.SYNCHRONIZATION_2)).use { d ->
+            val source = d.makeBuffer(32, StorageMode.PRIVATE)
+            val output = d.makeBuffer(32)
+            d.submit {
+                blit {
+                    fill(source, 79)
+                    copy(source, output)
+                }
+            }
+            assertArrayEquals(ByteArray(32) { 79 }, output.readBytes(32))
+        }
+    }
+
+    @Test
+    fun tensorCopiesConvertLayoutsAndRetainResources(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        assumeTrue(Feature.TENSOR_RESOURCES in available)
+        val features =
+            setOf(Feature.TENSOR_RESOURCES) +
+                if (Feature.TIMELINE_SEMAPHORE in available) setOf(Feature.TIMELINE_SEMAPHORE)
+                else emptySet()
+        device(features).use { d ->
+            val usage = setOf(TensorUsage.TRANSFER_SOURCE, TensorUsage.TRANSFER_DESTINATION)
+            val host =
+                TensorResourceDescriptor(listOf(2, 3), layout = TensorLayout.LINEAR, usage = usage)
+            val gpu = TensorResourceDescriptor(listOf(2, 3), usage = usage)
+            assumeTrue(d.supportsTensor(host, StorageMode.SHARED) && d.supportsTensor(gpu))
+            val source = d.makeTensorResource(host, StorageMode.SHARED)
+            val intermediate = d.makeTensorResource(gpu)
+            val output = d.makeTensorResource(host, StorageMode.SHARED)
+            val values = ByteArray(24) { (it * 7).toByte() }
+            source.write(values)
+            assertArrayEquals(values, source.readBytes(24))
+            assertTrue(source.allocatedBytes >= host.byteLength)
+            assertThrows(IllegalArgumentException::class.java) { intermediate.readBytes(4) }
+            assertThrows(IllegalArgumentException::class.java) { source.readBytes(8, 20) }
+            assertThrows(IllegalArgumentException::class.java) { source.makeView() }
+            val command = d.makeCommandQueue().use { it.makeCommandBuffer() }
+            val gate = if (Feature.TIMELINE_SEMAPHORE in features) d.makeSharedEvent() else null
+            if (gate != null) command.waitForEvent(gate, 1)
+            command.blit {
+                copy(source, intermediate)
+                copy(intermediate, output)
+            }
+            source.close()
+            intermediate.close()
+            command.commit()
+            try {
+                if (gate != null) {
+                    assertThrows(IllegalArgumentException::class.java) { output.readBytes(4) }
+                    assertThrows(IllegalArgumentException::class.java) {
+                        output.write(byteArrayOf(0))
+                    }
+                }
+            } finally {
+                gate?.signal(1)
+            }
+            assertTrue(command.waitUntilCompleted())
+            assertArrayEquals(values, output.readBytes(24))
+            command.close()
+        }
+    }
+
+    @Test
+    fun tensorShaderChecksShapeAndDoublesElements(): Unit {
+        assumeTrue(device().use { Feature.TENSOR_RESOURCES in it.capabilities.availableFeatures })
+        device(setOf(Feature.TENSOR_RESOURCES)).use { d ->
+            val capabilities = checkNotNull(d.tensorCapabilities)
+            assumeTrue(
+                capabilities.supportsShaderAccess &&
+                    TensorShaderStage.COMPUTE in capabilities.shaderStages
+            )
+            val descriptor = TensorResourceDescriptor(listOf(2, 3))
+            val hostDescriptor =
+                TensorResourceDescriptor(
+                    listOf(2, 3),
+                    layout = TensorLayout.LINEAR,
+                    byteStrides = if (capabilities.supportsNonPackedLayout) listOf(16, 4) else null,
+                )
+            assumeTrue(
+                d.supportsTensor(hostDescriptor, StorageMode.SHARED) && d.supportsTensor(descriptor)
+            )
+            val upload = d.makeTensorResource(hostDescriptor, StorageMode.SHARED)
+            val input = d.makeTensorResource(descriptor)
+            val output = d.makeTensorResource(descriptor)
+            val readback = d.makeTensorResource(hostDescriptor, StorageMode.SHARED)
+            val data =
+                ByteBuffer.allocateDirect(hostDescriptor.byteLength.toInt())
+                    .order(ByteOrder.nativeOrder())
+            for (row in 0..1) for (col in 0..2) data.putFloat(
+                hostDescriptor.byteOffset(listOf(row.toLong(), col.toLong())).toInt(),
+                (row * 3 + col + 1).toFloat(),
+            )
+            upload.write(data)
+            val sourceView = input.makeView()
+            val destinationView = output.makeView()
+            val pipeline = d.makeComputePipelineState(d.function("tensor-double.comp.spv"))
+            val mismatch =
+                d.makeComputePipelineState(
+                    d.function("tensor-double.comp.spv", FunctionConstants().setInt(0, 1))
+                )
+            d.makeCommandQueue().use { q ->
+                val wrong = q.makeCommandBuffer()
+                assertThrows(IllegalArgumentException::class.java) {
+                    wrong.compute {
+                        setComputePipelineState(mismatch)
+                        setTensor(sourceView, 0)
+                        setTensor(destinationView, 1)
+                        dispatchThreadgroups(Size(3, 2))
+                    }
+                }
+            }
+            val command = d.makeCommandQueue().use { it.makeCommandBuffer() }
+            command.blit { copy(upload, input) }
+            command.compute {
+                setComputePipelineState(pipeline)
+                setTensor(sourceView, 0)
+                setTensor(destinationView, 1)
+                dispatchThreadgroups(Size(3, 2))
+            }
+            command.blit { copy(output, readback) }
+            upload.close()
+            input.close()
+            output.close()
+            sourceView.close()
+            destinationView.close()
+            pipeline.close()
+            command.commit()
+            assertTrue(command.waitUntilCompleted())
+            val result =
+                ByteBuffer.wrap(readback.readBytes(hostDescriptor.byteLength.toInt()))
+                    .order(ByteOrder.nativeOrder())
+            for (row in 0..1) for (col in 0..2) assertEquals(
+                (row * 3 + col + 1) * 2f,
+                result.getFloat(
+                    hostDescriptor.byteOffset(listOf(row.toLong(), col.toLong())).toInt()
+                ),
+                0f,
+            )
+            command.close()
+        }
+    }
+
+    @Test
     fun defaultQueueStaysOrderedAndChecksIndices(): Unit =
         device().use { d ->
             assertEquals(1, d.commandQueues.size)

@@ -5,6 +5,7 @@
 #include "ray.hpp"
 #include "sparse.hpp"
 #include "synchronization.hpp"
+#include "tensors.hpp"
 #include "tiles.hpp"
 #include <cstring>
 #include <jni.h>
@@ -134,12 +135,12 @@ std::vector<BindingLayout> layout(JNIEnv *env, jintArray source) {
 std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
     require(source != nullptr, "Bindings are required");
     std::vector<jlong> data(env->GetArrayLength(source));
-    require(data.size() % 9 == 0, "Invalid binding data");
+    require(data.size() % 10 == 0, "Invalid binding data");
     env->GetLongArrayRegion(source, 0, static_cast<jsize>(data.size()), data.data());
     if (env->ExceptionCheck())
         throw std::runtime_error("Cannot read JNI bindings");
     std::vector<Binding> result;
-    for (size_t i = 0; i < data.size(); i += 9) {
+    for (size_t i = 0; i < data.size(); i += 10) {
         require(data[i] >= 0 && data[i] <= UINT32_MAX && data[i + 2] >= 0 && data[i + 3] >= 0, "Invalid binding range");
         Binding b{};
         b.index = static_cast<uint32_t>(data[i]);
@@ -153,6 +154,8 @@ std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
             b.sampler = get<Sampler>(data[i + 5]);
         require(data[i + 6] >= 0 && data[i + 6] <= UINT32_MAX, "Invalid descriptor array element");
         b.element = data[i + 6];
+        if (data[i + 9])
+            b.tensor = get<TensorView>(data[i + 9]);
         if (data[i + 8])
             b.texel = get<TextureBuffer>(data[i + 8]);
         if (data[i + 7])
@@ -550,6 +553,7 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
 
 #include "jni_generated.inc"
 #include "jni_graphics.inc"
+#include "jni_tensors.inc"
 #include "jni_tiles.inc"
 
 #include "jni_ray.inc"

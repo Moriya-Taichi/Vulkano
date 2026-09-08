@@ -44,6 +44,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | SIMD / 数値型 / Atomic | SPIR-V Shader | Subgroup、8/16/64ビット型、64ビット整数Buffer Atomic、32ビットFloat Buffer Atomicは個別Feature |
 | Raster Order Groupに相当する排他 | Fragment ShaderのPixel Interlock | VK_EXT_fragment_shader_interlock。Fragment Storage Featureも必要 |
 | Tensor / 行列演算 | TensorDescriptor / setTensor | Bufferを使うShape/Stride/View、端末依存のVK_KHR_cooperative_matrix |
+| 専用Tensor / Tensor Shader | TensorResource / TensorView / setTensor | VK_ARM_tensors。Linear/Optimal、Strides、CPUアクセス、全体Copy、型・Rank・ShapeのReflectionとFunction Constants |
 | メモリモデル | StorageMode / Vulkan Memory Model | AndroidのShared Memory、Flush/Invalidate、任意のVulkan Memory Model Feature |
 
 ## Vulkanに手段があるものの残っている機能

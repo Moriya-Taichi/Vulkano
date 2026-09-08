@@ -27,6 +27,8 @@ struct ExternalImage;
 struct Texture;
 struct Sampler;
 struct TextureBuffer;
+struct TensorResource;
+struct TensorView;
 struct SharedEvent;
 struct CounterPool;
 struct AccelerationStructure;
@@ -109,7 +111,9 @@ enum ExtraFeature : uint64_t {
     DeviceGeneratedCommands = 64,
     TileShading = 128,
     IndependentQueues = 256,
-    Synchronization2 = 512
+    Synchronization2 = 512,
+    TensorResources = 1024,
+    DataGraph = 2048
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -294,6 +298,8 @@ struct BindingLayout {
     int numericType = -1;
     bool tile = false, readonly = false;
     std::shared_ptr<Sampler> immutableSampler;
+    uint32_t tensorRank = 0;
+    std::vector<int64_t> tensorDimensions;
     uint64_t descriptorCost() const {
         return uint64_t(count) * (immutableSampler ? immutableSampler->descriptorCost : 1);
     }
@@ -387,6 +393,7 @@ struct Binding {
     uint32_t element = 0;
     std::shared_ptr<AccelerationStructure> acceleration;
     std::shared_ptr<TextureBuffer> texel;
+    std::shared_ptr<TensorView> tensor;
 };
 struct Dispatch {
     std::shared_ptr<Pipeline> pipeline;
@@ -484,6 +491,8 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     std::array<VkPipeline, 3> boundPipelines{};
     std::vector<std::function<void(Command &)>> operations;
     std::vector<std::shared_ptr<Buffer>> buffers;
+    std::vector<std::shared_ptr<TensorResource>> tensors;
+    void copyTensor(std::shared_ptr<TensorResource>, std::shared_ptr<TensorResource>);
     std::unordered_map<Texture *, std::vector<ImageState>> images;
     std::shared_ptr<Drawable> presentation;
     explicit Command(std::shared_ptr<Device>, uint32_t queueIndex = 0);

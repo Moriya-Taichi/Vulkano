@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "tensors.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,36 @@ std::shared_ptr<Texture> texture(const std::shared_ptr<Device>& d, VkImageUsageF
 }
 }
 int main() try {
+    {
+        auto tensorShader = shader("tensor-double.comp.spv");
+        SpvReflectShaderModule module{};
+        expect(spvReflectCreateShaderModule(tensorShader.code.size() * 4, tensorShader.code.data(), &module) == SPV_REFLECT_RESULT_SUCCESS,
+               "Tensor shader reflection");
+        expect(module.descriptor_binding_count == 2, "Tensor descriptors must both be reflected");
+        Device limits;
+        limits.enabledExtra = TensorResources;
+        limits.extensions = std::make_shared<Extensions>();
+        limits.extensions->tensor.shaderTensorAccess = true;
+        auto &p = limits.extensions->tensorProperties;
+        p.shaderTensorSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+        p.maxTensorDimensionCount = 8; p.maxPerDimensionTensorElements = 1024;
+        p.maxTensorShaderAccessArrayLength = 16; p.maxTensorShaderAccessSize = 64;
+        for (uint32_t i = 0; i < 2; ++i) {
+            const auto &reflected = module.descriptor_bindings[i];
+            expect(reflected.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_TENSOR_ARM && reflected.count == 1 && reflected.accessed,
+                   "Tensor descriptor type and access");
+            BindingLayout binding{reflected.binding, VK_DESCRIPTOR_TYPE_TENSOR_ARM};
+            binding.stages = VK_SHADER_STAGE_COMPUTE_BIT;
+            reflectTensorBinding(limits, tensorShader, reflected.spirv_id, binding);
+            expect(binding.storageFormat == VK_FORMAT_R32_SFLOAT && binding.tensorRank == 2 && binding.tensorDimensions == std::vector<int64_t>{2, 3},
+                   "Tensor shader format, rank and shape");
+            auto specialized = tensorShader; specialized.constants[0] = 1;
+            binding.tensorDimensions.clear();
+            reflectTensorBinding(limits, specialized, reflected.spirv_id, binding);
+            expect(binding.tensorDimensions == std::vector<int64_t>{1, 3}, "Tensor shape specialization");
+        }
+        spvReflectDestroyShaderModule(&module);
+    }
     for (const char* name : {"tile-loop.comp.spv", "tile-area.comp.spv", "tile-read.frag.spv"}) {
         const auto code = shader(name).code;
         SpvReflectShaderModule module{};

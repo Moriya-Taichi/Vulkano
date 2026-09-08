@@ -7,6 +7,7 @@
 #include "sparse.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include "synchronization.hpp"
+#include "tensors.hpp"
 #include "tiles.hpp"
 #include <algorithm>
 #include <cmath>
@@ -311,6 +312,9 @@ struct Module {
                         "Fragment tile shading is unavailable");
                 tileShader = true;
             }
+            if (op == SpvOpCapability && words == 2 && code[i + 1] == SpvCapabilityTensorsARM)
+                require((d.enabledExtra & TensorResources) && d.extensions->tensor.shaderTensorAccess,
+                        "Tensor shader access was not enabled");
             if (op == SpvOpVariable && words >= 4 && code[i + 3] == SpvStorageClassTileAttachmentQCOM)
                 tileVariables.insert(code[i + 2]);
             if (op == SpvOpDecorate && words == 4 && code[i + 2] == SpvDecorationBuiltIn &&
@@ -501,6 +505,17 @@ struct Module {
             VkSubgroupFeatureFlags subgroupOperation = 0;
             switch (cap) {
             case SpvCapabilityTileShadingQCOM:
+            case SpvCapabilityTensorsARM:
+                break;
+            case SpvCapabilityStorageTensorArrayDynamicIndexingARM:
+                require((d.enabledExtra & TensorResources) &&
+                            d.extensions->tensor.shaderStorageTensorArrayDynamicIndexing,
+                        "Tensor dynamic indexing was not enabled");
+                break;
+            case SpvCapabilityStorageTensorArrayNonUniformIndexingARM:
+                require((d.enabledExtra & TensorResources) &&
+                            d.extensions->tensor.shaderStorageTensorArrayNonUniformIndexing,
+                        "Tensor non-uniform indexing was not enabled");
                 break;
             case SpvCapabilitySparseResidency:
                 require(d.coreFeatures.shaderResourceResidency, "Sparse shader residency was not enabled");
@@ -586,7 +601,10 @@ struct Module {
                 requiredFeature = DescriptorIndexing;
                 break;
             case SpvCapabilityShaderNonUniform:
-                requiredFeature = DescriptorIndexing;
+                require((d.enabled & DescriptorIndexing) ||
+                            ((d.enabledExtra & TensorResources) &&
+                             d.extensions->tensor.shaderStorageTensorArrayNonUniformIndexing),
+                        "Non-uniform descriptor indexing was not enabled");
                 break;
             case SpvCapabilitySampledImageArrayNonUniformIndexing:
                 requiredFeature = DescriptorIndexing;
@@ -882,6 +900,13 @@ struct Module {
                                 "Unsupported storage image format; declare rgba8/rgba16f/rgba32f/r32f");
                         }
                     }
+                } else if (binding.type == VK_DESCRIPTOR_TYPE_TENSOR_ARM) {
+                    binding.readonly = (b.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) != 0;
+                    reflectTensorBinding(d, shader, b.spirv_id, binding);
+                    if (executionModel <= 4 || executionModel == SpvExecutionModelMeshEXT ||
+                        executionModel == SpvExecutionModelTaskEXT)
+                        require(binding.readonly || (d.enabled & (executionModel == 4 ? FragmentStores : VertexStores)),
+                                "Writable graphics tensors require the corresponding stores feature");
                 } else if (binding.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
                     require((executionModel == 4 || binding.tile) && b.count == 1,
                             "Input attachment must be a scalar fragment descriptor");
@@ -929,6 +954,15 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
                             it->second.numericType == b.numericType && it->second.tile == b.tile &&
                             it->second.inputAttachmentIndex == b.inputAttachmentIndex,
                         "Shader stages disagree on descriptor type");
+                require(!it->second.tensorRank || !b.tensorRank || it->second.tensorRank == b.tensorRank,
+                        "Shader stages disagree on tensor rank");
+                require(it->second.tensorDimensions.empty() || b.tensorDimensions.empty() ||
+                            it->second.tensorDimensions == b.tensorDimensions,
+                        "Shader stages disagree on tensor dimensions");
+                if (!it->second.tensorRank)
+                    it->second.tensorRank = b.tensorRank;
+                if (it->second.tensorDimensions.empty())
+                    it->second.tensorDimensions = b.tensorDimensions;
                 it->second.minimumBytes = std::max(it->second.minimumBytes, b.minimumBytes);
                 it->second.stages |= b.stages;
                 it->second.readonly = it->second.readonly && b.readonly;
@@ -962,7 +996,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 10) == 0, "Unknown extended feature");
+    require((extra >> 12) == 0, "Unknown extended feature");
+    if (extra & (TensorResources | DataGraph))
+        extra |= Synchronization2;
     if ((extra & (IndependentQueues | HardwareBufferInterop)) == (IndependentQueues | HardwareBufferInterop))
         extra |= Synchronization2;
     require((required >> 60) == 0, "Unknown requested feature");
@@ -1393,8 +1429,8 @@ void Pipeline::makeLayout() {
         require(b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                     b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                     b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR ||
-                    b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || b.type == VK_DESCRIPTOR_TYPE_SAMPLER ||
-                    b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
+                    b.type == VK_DESCRIPTOR_TYPE_TENSOR_ARM || b.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                    b.type == VK_DESCRIPTOR_TYPE_SAMPLER || b.type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
                     b.type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER || b.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
                 "Unsupported descriptor type");
 
@@ -1436,6 +1472,10 @@ void Pipeline::makeLayout() {
         require(count(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) <=
                     (perStage ? l.maxPerStageDescriptorUniformBuffers : l.maxDescriptorSetUniformBuffers),
                 "Too many uniform buffers");
+        const auto &tensor = d->extensions->tensorProperties;
+        require(count(VK_DESCRIPTOR_TYPE_TENSOR_ARM) <=
+                    (perStage ? tensor.maxPerStageDescriptorSetStorageTensors : tensor.maxDescriptorSetStorageTensors),
+                "Too many tensor descriptors");
         const auto &a = d->extensions->accelerationProperties;
         require(
             count(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) <=
@@ -1998,6 +2038,17 @@ void Command::recording() const {
     require(state == State::Recording, "Command buffer is not recording (one submission only)");
 }
 void Command::barrier() {
+    if (d->enabledExtra & Synchronization2) {
+        VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        memory.srcStageMask = memory.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        memory.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        memory.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &memory;
+        d->extensions->pipelineBarrier2(command, &dependency);
+        return;
+    }
     VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     memory.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     memory.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -2024,8 +2075,21 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                 "Binding/array element is not declared in pipeline");
         require(!schema->immutableSampler || b.sampler == schema->immutableSampler,
                 "Binding sampler differs from the immutable pipeline sampler");
+        require(!b.tensor || schema->type == VK_DESCRIPTOR_TYPE_TENSOR_ARM, "Unexpected tensor binding");
         const auto &limits = d->properties.limits;
-        if (schema->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || schema->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+        if (schema->type == VK_DESCRIPTOR_TYPE_TENSOR_ARM) {
+            require(b.tensor && !b.buffer && !b.texture && !b.sampler && !b.texel && !b.acceleration,
+                    "Tensor view binding required");
+            same(*this, *b.tensor);
+            const auto &tensor = *b.tensor->tensor;
+            require(tensor.options.usage & VK_TENSOR_USAGE_SHADER_BIT_ARM, "Tensor was not created for shader access");
+            require(b.tensor->format == schema->storageFormat, "Tensor element type differs from shader");
+            require(!schema->tensorRank || tensor.options.dimensions.size() == schema->tensorRank,
+                    "Tensor rank differs from shader");
+            require(schema->tensorDimensions.empty() || tensor.options.dimensions == schema->tensorDimensions,
+                    "Tensor dimensions differ from shader");
+        } else if (schema->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+                   schema->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             require(b.buffer && !b.texture && !b.sampler, "Binding requires a buffer");
             same(*this, *b.buffer);
             range(b.buffer->size, b.offset, b.length);
@@ -2119,6 +2183,8 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
 }
 void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, bool compute) {
     for (const auto &b : bindings) {
+        if (b.tensor)
+            tensors.push_back(b.tensor->tensor);
         if (b.acceleration) {
             auto found = accelerationStates.find(b.acceleration.get());
             require(found == accelerationStates.end() ? b.acceleration->built : found->second,
@@ -2163,8 +2229,8 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
             key.insert(key.end(),
                        {b->index, b->element, reinterpret_cast<uintptr_t>(b->buffer.get()), b->offset, b->length,
                         reinterpret_cast<uintptr_t>(b->texture.get()), reinterpret_cast<uintptr_t>(b->sampler.get()),
-                        reinterpret_cast<uintptr_t>(b->acceleration.get()),
-                        reinterpret_cast<uintptr_t>(b->texel.get())});
+                        reinterpret_cast<uintptr_t>(b->acceleration.get()), reinterpret_cast<uintptr_t>(b->texel.get()),
+                        reinterpret_cast<uintptr_t>(b->tensor.get())});
         }
         VkDescriptorSet set;
         auto cached = descriptorSets.find(key);
@@ -2205,6 +2271,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
             std::vector<VkDescriptorImageInfo> imageInfo(bs.size());
             std::vector<VkWriteDescriptorSet> writes(bs.size());
             std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfo(bs.size());
+            std::vector<VkWriteDescriptorSetTensorARM> tensorInfo(bs.size());
             for (size_t i = 0; i < bs.size(); ++i) {
                 const auto &b = bs[i];
                 auto &w = writes[i];
@@ -2219,6 +2286,12 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 if (b.buffer) {
                     buffersInfo[i] = {b.buffer->buffer, b.offset, b.length};
                     w.pBufferInfo = &buffersInfo[i];
+                } else if (b.tensor) {
+                    auto &tensor = tensorInfo[i];
+                    tensor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_TENSOR_ARM;
+                    tensor.tensorViewCount = 1;
+                    tensor.pTensorViews = &b.tensor->view;
+                    w.pNext = &tensor;
                 } else if (b.texel) {
                     w.pTexelBufferView = &b.texel->view;
                 } else if (b.acceleration) {
@@ -3066,6 +3139,8 @@ void Command::commit() {
         }
         for (auto &b : buffers)
             ++b->inFlight;
+        for (auto &t : tensors)
+            ++t->inFlight;
         for (const auto &[a, built] : accelerationStates) {
             a->built = built;
             ++a->generation;
@@ -3111,6 +3186,8 @@ bool Command::wait(uint64_t timeout) {
     state = State::Completed;
     for (auto &b : buffers)
         --b->inFlight;
+    for (auto &t : tensors)
+        --t->inFlight;
     // Keep all recorded objects alive until the command pool is destroyed.
     return true;
 }
@@ -3121,6 +3198,8 @@ Command::~Command() {
         completed = vkWaitForFences(d->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
         for (auto &b : buffers)
             --b->inFlight;
+        for (auto &t : tensors)
+            --t->inFlight;
     }
     // Reset only after GPU completion, before releasing recorded resources.
     // Retain one primary buffer per pool rather than allocating one each reuse.

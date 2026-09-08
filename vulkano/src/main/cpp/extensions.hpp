@@ -3,6 +3,17 @@
 namespace vulkano {
 struct Extensions {
     VkPhysicalDeviceSynchronization2Features sync2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
+    PFN_vkCmdPipelineBarrier2 pipelineBarrier2 = nullptr;
+    VkPhysicalDeviceTensorFeaturesARM tensor{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TENSOR_FEATURES_ARM};
+    VkPhysicalDeviceTensorPropertiesARM tensorProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TENSOR_PROPERTIES_ARM};
+    PFN_vkCreateTensorARM createTensor = nullptr;
+    PFN_vkDestroyTensorARM destroyTensor = nullptr;
+    PFN_vkCreateTensorViewARM createTensorView = nullptr;
+    PFN_vkDestroyTensorViewARM destroyTensorView = nullptr;
+    PFN_vkGetTensorMemoryRequirementsARM tensorMemoryRequirements = nullptr;
+    PFN_vkGetDeviceTensorMemoryRequirementsARM deviceTensorMemoryRequirements = nullptr;
+    PFN_vkBindTensorMemoryARM bindTensorMemory = nullptr;
+    PFN_vkCmdCopyTensorARM copyTensor = nullptr;
     VkPhysicalDeviceBufferDeviceAddressFeatures address{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};

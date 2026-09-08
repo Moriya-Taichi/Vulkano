@@ -148,3 +148,15 @@ Queue選択、単一Queueの順序維持、QueueごとのCommand Pool、複数Fa
 Queue間でのTexture転送、Counterの保持、Pool再利用、連続Signalの順序を検証するテストを用意しています。
 ローカルではNative 740項目、Kotlin/JNI 63件中42件成功・21件スキップ・失敗0件です。
 このDriverには独立Queueがないため、追加したQueue間実行の3件はスキップしています。
+
+Commit `f9c246a`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34247040339)も成功しました。
+Native 740項目、Kotlin/JNI 63件中49件成功・14件スキップ・失敗0件です。
+CIにも独立Queueがないため、Queue間実行の3件はスキップしています。
+
+### 専用Tensor
+
+TensorのSPIR-V Reflection、Scalar Format、Rank、Shape、Function ConstantsをNativeで検査しました。
+TensorのCPU/GPUアクセス、配置変換、Shader実行、解放済みResourceの保持を確認するテストを追加しています。
+ローカルではNative 748項目、Kotlin/JNI 68件中45件成功・23件スキップ・失敗0件です。
+Tensor対応のDriverがないため、専用Tensorの転送とShader実行の2件はスキップしています。
+Tensor Featureが未有効の場合の拒否、KotlinでのShape/Strideの検査、Synchronization2でのBuffer転送は実行に成功しました。

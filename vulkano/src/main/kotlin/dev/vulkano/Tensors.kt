@@ -14,6 +14,7 @@ enum class TensorDataType(val byteSize: Int, internal val matrixType: Int) {
     UINT16(2, 8),
     UINT32(4, 9),
     UINT64(8, 10),
+    BOOL(1, -1),
 }
 
 /** Strides are measured in elements; the default is contiguous row-major storage. */

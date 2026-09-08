@@ -304,6 +304,7 @@ private class BoundResource(
     val arrayElement: Int = 0,
     val acceleration: AccelerationStructure? = null,
     val texel: TextureBuffer? = null,
+    val tensor: TensorView? = null,
 ) {
     fun pack() =
         listOf(
@@ -316,6 +317,7 @@ private class BoundResource(
             arrayElement.toLong(),
             acceleration?.handle() ?: 0,
             texel?.handle() ?: 0,
+            tensor?.handle() ?: 0,
         )
 }
 
@@ -383,6 +385,13 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         texture.handle()
         bindings[index to arrayElement] =
             BoundResource(index, texel = texture, arrayElement = arrayElement)
+    }
+
+    fun setTensor(tensor: TensorView, index: Int, arrayElement: Int = 0): Unit = encode {
+        require(tensor.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
+        tensor.handle()
+        bindings[index to arrayElement] =
+            BoundResource(index, tensor = tensor, arrayElement = arrayElement)
     }
 
     fun setAccelerationStructure(
@@ -923,6 +932,14 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
 }
 
 class BlitCommandEncoder internal constructor(command: CommandBuffer) : CommandEncoder(command) {
+    /** Copies the complete tensor; dimensions and scalar byte sizes must match. */
+    fun copy(source: TensorResource, destination: TensorResource): Unit = encode {
+        require(
+            source.device === commandBuffer.device && destination.device === commandBuffer.device
+        )
+        Native.copyTensor(it, source.handle(), destination.handle())
+    }
+
     /** Orders uses of overlapping placed resources and discards both textures' prior contents. */
     fun aliasResources(before: Resource, after: Resource): Unit = encode {
         require(before.device === commandBuffer.device && after.device === commandBuffer.device)
