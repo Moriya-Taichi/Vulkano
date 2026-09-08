@@ -14,7 +14,8 @@ VMAは必要に応じてCPUキャッシュをFlush・Invalidateし、Non-coheren
 
 EncoderはNativeに操作とResource参照を記録します。実際のVkCommandBufferは`commit()`時に作り、送信順にTextureのLayoutを確定します。先に記録したCommand Bufferを後から送信しても、過去のLayoutを前提にしたBarrierは生成しません。
 
-Compute Dispatch、Blit、Render Passの間にメモリ依存関係を入れます。Render Pass内のシェーダーResourceは読み取り専用です。Attachmentと同じTextureを同一Pass内でSamplingするFeedback Loopは禁止します。Textureは必要に応じてTransfer、General、Attachment、PresentationのLayoutへ移行します。
+Compute Dispatch、Blit、Render Passの間にメモリ依存関係を入れます。GraphicsのStorage書き込みは対応Featureを要求します。
+Draw間にStorageの読み書き依存がある場合はRender Passを分けてください。Attachmentと同じTextureを同一Pass内でSamplingするFeedback Loopは禁止します。Textureは必要に応じてTransfer、General、Attachment、PresentationのLayoutへ移行します。
 
 未初期化TextureのSampling・Readback・Attachment Loadは拒否します。Storage ImageへのDispatchは書き込みを含む操作として扱いますが、画像の全画素を初期化することを保証しません。Storage Imageの読み出し範囲やBufferの初期化、シェーダー内部のデータ競合・境界検査はシェーダーの責任です。
 
@@ -41,3 +42,16 @@ SurfaceLayerごとにDrawableを1枚だけ取得できます。TextureをRender 
 現在はCompositorに画面回転を任せます。ShaderでのPre-rotation、複数フレームの同時進行、フレーム間のDescriptor Pool再利用、より狭いBarrierへの最適化は、実機での性能確認後に進める対象です。
 
 DescriptorのCommand内再利用、Shared Bufferの常時マッピング、画像Layoutの選択は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。
+
+## HeapとShared Event
+
+`makeHeap()`は容量を固定したVMA Poolを作成します。
+Heapから作ったBufferとTextureはHeapのNative参照を保持し、GPU処理が終わるまで割り当てを解放しません。
+Shared HeapはBuffer用、Private Heapは互換メモリ種別のBufferとTexture用です。
+明示的な配置オフセットやSparse Mappingは現在のHeap APIにはありません。
+
+`makeSharedEvent()`はTimeline Semaphoreを使います。
+CommandのWaitは最初のGPU操作より前に記録し、SignalはCommand全体の完了時に発生します。
+HostのSignal値は現在値を増やし、送信済みGPU Signalの値より小さくする必要があります。
+満たされないWaitを残したままDeviceを閉じると、完了待ちは終了しません。
+同じVulkan Queue内の将来のCommandだけにSignalを依存させると循環待ちになるため、CPUなど実行可能なSignal元を用意します。

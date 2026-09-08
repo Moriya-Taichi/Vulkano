@@ -1,0 +1,240 @@
+package dev.vulkano
+
+import dev.vulkano.internal.Native
+
+sealed interface AccelerationGeometry
+
+/** Indices supplied by the application must stay within vertexCount. */
+data class TriangleGeometry(
+    val vertexBuffer: Buffer,
+    val vertexCount: Int,
+    val triangleCount: Int = vertexCount / 3,
+    val vertexStride: Long = 12,
+    val vertexOffset: Long = 0,
+    val indexBuffer: Buffer? = null,
+    val indexType: IndexType = IndexType.UINT32,
+    val indexOffset: Long = 0,
+    val opaque: Boolean = true,
+) : AccelerationGeometry {
+    init {
+        require(
+            vertexCount > 0 &&
+                triangleCount > 0 &&
+                vertexStride >= 12 &&
+                vertexOffset >= 0 &&
+                indexOffset >= 0
+        )
+    }
+}
+
+/** Each AABB contains minX/minY/minZ/maxX/maxY/maxZ as six Float values. */
+data class BoundingBoxGeometry(
+    val buffer: Buffer,
+    val count: Int,
+    val offset: Long = 0,
+    val stride: Long = 24,
+    val opaque: Boolean = true,
+) : AccelerationGeometry {
+    init {
+        require(count > 0 && offset >= 0 && stride >= 24)
+    }
+}
+
+class AccelerationStructure internal constructor(device: Device, id: Long) : Resource(device, id)
+
+class AccelerationStructureInstance(
+    val structure: AccelerationStructure,
+    transform: FloatArray = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f),
+    val customIndex: Int = 0,
+    val mask: Int = 255,
+    val hitGroupOffset: Int = 0,
+    val triangleCullingDisabled: Boolean = true,
+) {
+    internal val matrix = transform.copyOf()
+
+    init {
+        require(
+            matrix.size == 12 &&
+                matrix.all { it.isFinite() } &&
+                customIndex in 0..0xffffff &&
+                mask in 0..255 &&
+                hitGroupOffset in 0..0xffffff
+        )
+    }
+}
+
+fun Device.makePrimitiveAccelerationStructure(
+    geometries: List<AccelerationGeometry>,
+    allowRefit: Boolean = false,
+): AccelerationStructure = access {
+    require(geometries.isNotEmpty())
+    val packed =
+        geometries
+            .flatMap {
+                when (it) {
+                    is TriangleGeometry -> {
+                        require(
+                            it.vertexBuffer.device === this &&
+                                (it.indexBuffer == null || it.indexBuffer.device === this)
+                        )
+                        listOf(
+                            0L,
+                            it.vertexBuffer.handle(),
+                            it.vertexOffset,
+                            it.vertexStride,
+                            it.vertexCount.toLong(),
+                            it.triangleCount.toLong(),
+                            it.indexBuffer?.handle() ?: 0L,
+                            if (it.indexBuffer == null) 1000165000L else it.indexType.vk.toLong(),
+                            it.indexOffset,
+                            if (it.opaque) 1L else 0L,
+                        )
+                    }
+                    is BoundingBoxGeometry -> {
+                        require(it.buffer.device === this)
+                        listOf(
+                            1L,
+                            it.buffer.handle(),
+                            it.offset,
+                            it.stride,
+                            0L,
+                            it.count.toLong(),
+                            0L,
+                            1000165000L,
+                            0L,
+                            if (it.opaque) 1L else 0L,
+                        )
+                    }
+                }
+            }
+            .toLongArray()
+    AccelerationStructure(
+        this,
+        Native.createPrimitiveAcceleration(nativeHandle, packed, allowRefit),
+    )
+}
+
+fun Device.makeInstanceAccelerationStructure(
+    instances: List<AccelerationStructureInstance>,
+    allowRefit: Boolean = false,
+): AccelerationStructure = access {
+    require(instances.isNotEmpty() && instances.all { it.structure.device === this })
+    AccelerationStructure(
+        this,
+        Native.createInstanceAcceleration(
+            nativeHandle,
+            instances
+                .flatMap {
+                    listOf(
+                        it.structure.handle(),
+                        it.customIndex.toLong(),
+                        it.mask.toLong(),
+                        it.hitGroupOffset.toLong(),
+                        if (it.triangleCullingDisabled) 1L else 0L,
+                    )
+                }
+                .toLongArray(),
+            instances.flatMap { it.matrix.toList() }.toFloatArray(),
+            allowRefit,
+        ),
+    )
+}
+
+class AccelerationStructureCommandEncoder internal constructor(command: CommandBuffer) :
+    CommandEncoder(command) {
+    fun build(structure: AccelerationStructure): Unit = encode {
+        require(structure.device === commandBuffer.device)
+        Native.buildAcceleration(it, structure.handle(), false)
+    }
+
+    /**
+     * Refits existing geometry with updated input-buffer contents and unchanged geometry counts.
+     */
+    fun refit(structure: AccelerationStructure): Unit = encode {
+        require(structure.device === commandBuffer.device)
+        Native.buildAcceleration(it, structure.handle(), true)
+    }
+}
+
+enum class RayShaderStage(internal val vk: Int) {
+    RAY_GENERATION(256),
+    ANY_HIT(512),
+    CLOSEST_HIT(1024),
+    MISS(2048),
+    INTERSECTION(4096),
+    CALLABLE(8192),
+}
+
+data class RayShader(val function: ShaderFunction, val stage: RayShaderStage)
+
+/** Shader indices refer to the shaders list. -1 means unused. */
+data class RayShaderGroup(
+    val general: Int = -1,
+    val closestHit: Int = -1,
+    val anyHit: Int = -1,
+    val intersection: Int = -1,
+) {
+    internal fun pack() =
+        listOf(
+            if (general >= 0) 0 else if (intersection >= 0) 2 else 1,
+            general,
+            closestHit,
+            anyHit,
+            intersection,
+        )
+}
+
+data class RayTracingPipelineDescriptor(
+    val shaders: List<RayShader>,
+    val groups: List<RayShaderGroup>,
+    val maxRecursionDepth: Int = 1,
+    val bindings: List<BindingLayout> = emptyList(),
+    val pushConstantBytes: Int = 0,
+)
+
+class RayTracingPipelineState
+internal constructor(device: Device, id: Long, val pushConstantBytes: Int) : Resource(device, id)
+
+fun Device.makeRayTracingPipelineState(
+    descriptor: RayTracingPipelineDescriptor
+): RayTracingPipelineState = access {
+    require(
+        descriptor.shaders.isNotEmpty() &&
+            descriptor.shaders.all { it.function.library.device === this }
+    )
+    val functions = descriptor.shaders.map { it.function }
+    val id =
+        Native.createRayPipeline(
+            nativeHandle,
+            functions.map { it.library.code }.toTypedArray(),
+            functions.map { it.name }.toTypedArray(),
+            functions.map { it.constants }.toTypedArray(),
+            descriptor.shaders.map { it.stage.vk }.toIntArray(),
+            descriptor.groups.flatMap { it.pack() }.toIntArray(),
+            descriptor.maxRecursionDepth,
+            descriptor.bindings.flatMap { listOf(it.index, it.type.vk, it.count) }.toIntArray(),
+            descriptor.pushConstantBytes,
+        )
+    RayTracingPipelineState(this, id, Native.pipelineLocalSize(id)[3])
+}
+
+class RayTracingCommandEncoder internal constructor(command: CommandBuffer) :
+    ShaderCommandEncoder(command) {
+    private var pipeline: RayTracingPipelineState? = null
+
+    fun setRayTracingPipelineState(state: RayTracingPipelineState): Unit = encode {
+        require(state.device === commandBuffer.device)
+        state.handle()
+        pipeline = state
+    }
+
+    fun traceRays(size: Size): Unit = encode {
+        Native.traceRays(
+            it,
+            checkNotNull(pipeline).handle(),
+            bindingData(),
+            constantData(),
+            size.array(),
+        )
+    }
+}

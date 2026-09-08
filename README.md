@@ -9,8 +9,10 @@ Vulkanのメモリ確保、リソースのBinding、画像レイアウトの遷�
 | 用途 | 機能 |
 | --- | --- |
 | GPUで計算する | Compute ShaderでBufferやTextureを処理し、結果をCPUへ読み戻す |
-| 画像を描く | 三角形、テクスチャ、深度テスト、Alpha Blendingを使い、オフスクリーンやAndroidの`Surface`へ描画する |
-| データを転送する | CPUとGPUで使うBufferを作成し、Buffer間・BufferとTexture間でコピーする |
+| 画像を描く | MSAA、Indexed/Indirect Draw、頂点属性、MRT、Depth/Stencil、Blending、Tessellation、Mesh Shaderを使って描画する |
+| データを転送する | Buffer、Textureの領域やMip、配列Sliceをコピーし、Mipを生成する |
+| 光線を追跡する | 対応端末でBLAS/TLASを構築し、Ray QueryまたはRay Tracing Pipelineを実行する |
+| リソースを管理する | Texture View、Resource配列、Heap、Shared Event、Counter、Pipeline Cacheを使う |
 | 端末に合わせる | 利用可能なFeature、画像形式、処理サイズの上限、メモリ情報を取得する |
 
 Android 10（API 29）以上の`arm64-v8a`・`x86_64`に対応します。Vulkan 1.1以上とGraphics・Computeを扱えるGPUが必要です。実際に利用できるかは`Device.create()`で検査します。
@@ -147,7 +149,9 @@ Resourceは`use`または`close()`で解放します。`Device.close()`は残っ
 
 ## 詳しい使い方と対応範囲
 
-現在は2D Texture、Color Attachment 1枚と任意のDepth、Triangle Listによる描画に対応しています。MSAA、Mip生成、Indexed Draw、Ray Tracingなどは未対応です。細かな条件は以下のドキュメントを参照してください。
+MSAA、Mip生成、Indexed Drawは基本APIから利用できます。
+Ray TracingやMesh Shaderなどの追加機能は、端末が提供するFeatureをDevice作成時に要求します。
+利用手順は[拡張APIの使用例](docs/advanced-features.md)、Metalとの対応と残る機能は[機能対応表](docs/metal-coverage.md)を参照してください。
 
 - [APIの詳細と対応範囲](docs/api-guide.md)：Featureの選択、画像形式、シェーダーや描画の制約
 - [メモリと同期](docs/memory-and-synchronization.md)：CPU/GPUアクセス、送信順、リソースとSurfaceの寿命

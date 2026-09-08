@@ -24,7 +24,7 @@ jobs:
       - name: Compile and validate shader fixtures
         run: |
           python3 tools/compile-test-shaders.py
-          for shader in tests/shaders/*.spv; do spirv-val --target-env vulkan1.1 "$shader"; done
+          for shader in tests/shaders/*.spv; do spirv-val --target-env vulkan1.2 "$shader"; done
       - name: Build host backend
         run: cmake -S vulkano/src/main/cpp -B build/host -G Ninja && cmake --build build/host
       - name: Select software Vulkan driver

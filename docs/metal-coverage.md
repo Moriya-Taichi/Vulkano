@@ -1,0 +1,66 @@
+# Metalとの機能対応
+
+VulkanoはAndroidのVulkanを使うKotlin APIです。
+対応する機能を追加しており、Metal全体との完全互換はまだ達成していません。
+「端末依存」は、FeatureとExtensionを問い合わせ、Device作成時に有効化した場合に利用できることを意味します。
+GPUのメーカー名からFeatureの有無を推定しません。
+
+## 実装した機能
+
+| 機能 | Vulkano API | Vulkanでの実装と条件 |
+| --- | --- | --- |
+| Graphics / Compute | Render / Compute Encoder | Graphics / Compute Pipeline |
+| MSAA | sampleCount / resolveTexture | FormatごとのSample Count検査、Color Resolve、Transient Attachment |
+| Mip生成 | generateMipmaps | Subresource別BarrierとBlit。BlitとFilterをサポートするFormat |
+| Indexed / Instanced Draw | drawIndexedPrimitives | UINT16 / UINT32、Base Vertex、First Instance |
+| Indirect Draw / Dispatch | Indirect Bufferを受けるEncoder API | Draw、Indexed Draw、Compute、Mesh。Multi Drawは端末依存 |
+| Vertex Descriptor | vertexBuffers / vertexAttributes | Vertex Input、頂点ごとまたはInstanceごとの入力 |
+| 複数Render Target | colorAttachments | DeviceのAttachment上限まで。Independent Blendは端末依存 |
+| Depth / Stencil | DepthStencilDescriptor | Compare、Mask、Stencil操作、Depth Bias、Depth Bounds |
+| Rasterization | RenderPipelineDescriptor | Primitive、Cull、Winding、Wireframe、Clip/Clamp、Sample Mask、Sample Shading |
+| Viewport / Scissor | setViewports / setScissorRects | 複数Viewportは端末依存 |
+| Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
+| Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer/圧縮Format |
+| Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource View、VkBufferView |
+| Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color |
+| 転送 | Blit Encoder | Buffer、Texture領域、Mip、Slice、Fill |
+| Argument Bufferに相当する配列 | BindingLayout / arrayElement | 固定Descriptor Array、端末依存のRuntime Array、BDAによる間接参照 |
+| Function Constants | FunctionConstants | 32ビットのSpecialization Constants |
+| Tessellation | Control / Evaluation Function | 端末依存。Patch Primitive |
+| Object / Mesh Shader | objectFunction / meshShader | VK_EXT_mesh_shader。Task Shaderは別Feature |
+| Ray Query | AccelerationStructureとCompute/Graphics Shader | VK_KHR_ray_query、BLAS/TLAS、Triangle/AABB、Build/Refit |
+| Ray Tracing Pipeline | RayTracingPipelineState / traceRays | Raygen、Miss、Hit、Intersection、Callable、SBT。端末依存 |
+| Heap | makeHeap | 固定容量のVMA Pool |
+| Event | makeSharedEvent | Timeline Semaphore。WaitはCommandの開始前、Signalは完了時 |
+| Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
+| Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
+| SIMD / 数値型 / Atomic | SPIR-V Shader | Subgroup、8/16/64ビット型、64ビット整数Buffer Atomic、32ビットFloat Buffer Atomicは個別Feature |
+| Raster Order Groupに相当する排他 | Fragment ShaderのPixel Interlock | VK_EXT_fragment_shader_interlock。Fragment Storage Featureも必要 |
+| メモリモデル | StorageMode / Vulkan Memory Model | AndroidのShared Memory、Flush/Invalidate、任意のVulkan Memory Model Feature |
+
+## Vulkanに手段があるものの残っている機能
+
+次の項目はVulkan非対応という理由で除外していません。
+現在のWrapperでの未実装項目として扱います。
+
+| 機能 | 残る実装 |
+| --- | --- |
+| Sparse Resource | Tile/Page Mapping、Sparse QueueへのBind、Residency検査 |
+| Variable Rate Shading | Fragment Shading Rate AttachmentとRate Map |
+| Tile Shader / Imageblockの一部 | Subpass、Input Attachment、Tile内の処理。Appleの任意Tile Kernelとの一対一互換はない |
+| GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
+| Acceleration Structureの高度な管理 | Compaction、Copy、Serialization、Motion Blur用拡張 |
+| 深度MSAA Resolve | Depth/Stencil Resolve Modeの問い合わせとRender Pass 2 |
+| Placement Heap / Alias | 配置オフセットの指定とAlias Barrier |
+| Androidとの画像共有 | AHardwareBuffer、外部Semaphore、Camera用Format変換 |
+| 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
+| Tensor / ML | Tensor Descriptor、Cooperative Matrixなどを使う専用Encoder |
+
+## APIの直接の対応先がないもの
+
+MSLソースのコンパイル、MetalのDynamic Library形式、XcodeのGPUキャプチャ形式はVulkanのAPIとして提供されません。
+VulkanoはSPIR-VとVulkanの開発ツールを使用します。
+MetalFXやMPSなどの上位ライブラリのアルゴリズムは、Vulkan APIの機能対応とは別の実装課題です。
+
+比較の基準は[AppleのMetal Feature Set Tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)です。
+Vulkan側の条件は[KhronosのFeature管理](https://docs.vulkan.org/guide/latest/features.html)と[Ray Tracingの対応関係](https://docs.vulkan.org/guide/latest/extensions/ray_tracing.html)を参照してください。

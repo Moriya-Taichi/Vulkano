@@ -12,7 +12,8 @@ Metalに近いオブジェクト構成のAPIですが、Metal全体との機能�
 
 BindingとPush Constantsの範囲、Workgroupの大きさはシェーダーから取得します。`bindings`や`pushConstantBytes`を明示した場合は、シェーダーの宣言との整合性も検査します。`setBytes`には`pipeline.pushConstantBytes`で確認できる範囲全体を渡してください。
 
-オフスクリーン描画には`COLOR_ATTACHMENT`用途のTextureを渡します。頂点データはStorage Bufferから読むVertex Pulling、または`gl_VertexIndex`による生成を使用します。深度形式は`DEPTH32_FLOAT`に対応します。NDCのYは上向き、テクスチャの原点は左上、深度範囲は0〜1です。
+オフスクリーン描画には`COLOR_ATTACHMENT`用途のTextureを渡します。頂点データは頂点属性レイアウトとVertex Buffer、Storage BufferからのVertex Pulling、`gl_VertexIndex`による生成を使用できます。
+Depth16、Depth32、Stencil8、Depth/Stencil複合形式は、端末のFormat対応を検査して作成します。NDCのYは上向き、テクスチャの原点は左上、深度範囲は0〜1です。
 
 ## Android向けのメモリモデル
 
@@ -62,15 +63,28 @@ Subgroupの幅・Stage・演算を取得し、使用するシェーダーとの�
 
 ## 対応範囲と制約
 
-| 項目 | 0.1の対応 |
-| --- | --- |
-| Compute | Storage/Uniform Buffer、Storage/Sampled Texture、Push Constants、固定Local Size、端末対応範囲のSubgroup |
-| Graphics | Triangle List、Instancing、Vertex Pulling、Color 1枚、任意のDepth 1枚、Alpha Blending、全面Viewport/Scissor |
-| Texture | 2D、1 Mip、1 Layer、1 Sample。RGBA8/BGRA8 UNORM、RGBA16/RGBA32/R32 Float、Depth32 Float |
-| Blit | Buffer間、BufferとTextureの相互転送。Textureは画像全体・行を詰めた配置 |
-| Presentation | Android Surface、FIFO。未提示Drawableの破棄、Resize、Out-of-dateへの対処 |
-| Shader | SPIR-V 1.0〜1.3、Logical/GLSL450 Memory Model、Descriptor Set 0、Bindingごとに1 Resource |
+機能別の対応状況は[Metalとの機能対応表](metal-coverage.md)、使用例は[拡張API](advanced-features.md)にまとめています。
+SPIR-Vのバージョンは実効Vulkanバージョンに従い、Vulkan 1.1ではSPIR-V 1.3、Vulkan 1.2では1.5、Vulkan 1.3では1.6までを受け付けます。
+Vulkan 1.1にRay Tracing/Meshの拡張を追加した構成では、依存するSPIR-V 1.4拡張も確認します。
+シェーダーはDescriptor Set 0を使用します。
 
-GraphicsのStorage Bufferは`readonly`宣言が必要です。MSAA、Mip生成、Texture Array/Cube、圧縮Textureの作成、Descriptor Array/Bindless、頂点属性レイアウト、Indexed/Indirect Draw、複数Render Target、複数Queueでの並列実行、Specialization Constants、AHardwareBuffer/Cameraとの共有、Ray Tracingは未対応です。ASTC/ETC2のFeature情報は取得できますが、圧縮Texture形式はまだ公開していません。16-bit演算とSubgroupを混在させるシェーダーも、Extended Typesを有効化していないため拒否します。
+Function Constantsは32ビットの整数、浮動小数点、Booleanを指定できます。
+固定Local Sizeに加え、Local Sizeのスカラー特殊化定数に対応します。
+複雑な特殊化式によるWorkgroupサイズは拒否します。
 
-自動同期は保守的なBarrierを使用します。Descriptor SetをCommand内で再利用し、Surfaceは同時に1枚だけ取得してPresentationの完了を待ちます。Mali・PowerVR・Adreno・Xclipseを対象としたDescriptor、Pipeline、メモリ、画像Layoutの最適化は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。GPU固有の性能や熱・電力特性は計測していません。
+固定Descriptor Arrayは全要素をBindingしてください。
+Runtime Descriptor Arrayは`DESCRIPTOR_INDEXING`と明示的な`BindingLayout.count`を要求し、未使用要素を省略できます。
+シェーダーが未Bindingの要素や配列範囲外へアクセスしないようにしてください。
+ここでの配列はCommandに記録したBindingのスナップショットであり、送信済みDescriptorを書き換えるAPIではありません。
+
+GraphicsでStorageを書き込む場合は、Stageに応じて`VERTEX_STORES_AND_ATOMICS`または`FRAGMENT_STORES_AND_ATOMICS`を要求してください。
+同じRender Pass内のDraw間に任意のStorage依存を自動挿入しません。
+後続Drawが先行DrawのStorage結果を必要とする場合はPassを分け、保持するAttachmentにはPrivate TextureのLOAD/STOREを使います。
+Memoryless TextureはPassをまたいで保持できません。
+
+GPUが生成するIndirect引数、Index値、デバイスアドレスの参照先はシェーダー側でも範囲を守る必要があります。
+`Buffer.gpuAddress`から間接参照するBufferは、Encoderの`useResource(buffer)`でCommandに保持させてください。
+TextureのStorage書き込みは、指定したSubresource全体の初期化をアプリが保証する契約です。
+
+Mali、PowerVR、Adreno、Xclipse向けのメモリ選択とキャッシュ方針は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。
+GPU固有の性能、熱特性、消費電力は実機未計測です。

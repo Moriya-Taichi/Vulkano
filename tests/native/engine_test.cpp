@@ -32,7 +32,7 @@ int main() try {
     auto d = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
     std::cout << "Device: " << d->properties.deviceName << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
-    rejects([&] { Device::create(1u << 30, false, true); }, "Unknown feature must fail");
+    rejects([&] { Device::create(1ull << 63, false, true); }, "Unknown feature must fail");
     {
         auto rdna = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
         auto upload = std::make_shared<Buffer>(rdna, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Storage::Shared, true);
