@@ -1,0 +1,41 @@
+; QCOM enum operands use raw integers so older spirv-as can assemble these fixtures.
+; Validation still uses SPIRV-Tools matching Vulkan 1.4.335 in CI.
+OpCapability Shader
+OpCapability !4495 ; TileShadingQCOM
+OpExtension "SPV_QCOM_tile_shading"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %image %coord %color
+OpExecutionMode %main OriginUpperLeft
+OpDecorate %image DescriptorSet 0
+OpDecorate %image Binding 0
+OpDecorate %image NonWritable
+OpDecorate %coord BuiltIn FragCoord
+OpDecorate %color Location 0
+%void = OpTypeVoid
+%function = OpTypeFunction %void
+%float = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+%uvec2 = OpTypeVector %u32 2
+%vec2 = OpTypeVector %float 2
+%vec4 = OpTypeVector %float 4
+%inputPtr = OpTypePointer Input %vec4
+%outputPtr = OpTypePointer Output %vec4
+%coord = OpVariable %inputPtr Input
+%color = OpVariable %outputPtr Output
+%imageType = OpTypeImage %float 2D 0 0 0 2 Rgba8
+%tileImagePtr = OpTypePointer !4491 %imageType
+%image = OpVariable %tileImagePtr !4491
+%f0 = OpConstant %float 0
+%quarter = OpConstant %float 0.25
+%increment = OpConstantComposite %vec4 %f0 %quarter %f0 %f0
+%main = OpFunction %void None %function
+%entry = OpLabel
+%position = OpLoad %vec4 %coord
+%xy = OpVectorShuffle %vec2 %position %position 0 1
+%pixel = OpConvertFToU %uvec2 %xy
+%img = OpLoad %imageType %image
+%old = OpImageRead %vec4 %img %pixel
+%new = OpFAdd %vec4 %old %increment
+OpStore %color %new
+OpReturn
+OpFunctionEnd

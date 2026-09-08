@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "tiles.hpp"
 #include <algorithm>
 #include <set>
 namespace vulkano {
@@ -82,10 +83,12 @@ void validateSubpassLayout(Device &d, const SubpassLayout &layout) {
     }
 }
 VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::vector<Attachment> &targets,
-                             VkAttachmentLoadOp depthLoad, VkAttachmentStoreOp depthStore, uint32_t viewMask) {
+                             VkAttachmentLoadOp depthLoad, VkAttachmentStoreOp depthStore, uint32_t viewMask,
+                             bool tileShading, VkExtent2D tileApron) {
     validateSubpassLayout(d, layout);
     require(targets.empty() || targets.size() == layout.colors.size(), "Subpass target count mismatch");
-    std::vector<int> key{-31};
+    validateTileOptions(d, tileShading, tileApron);
+    std::vector<int> key{-31, tileShading, int(tileApron.width), int(tileApron.height)};
     key.insert(key.end(), layout.key.begin(), layout.key.end());
     key.insert(key.end(), {depthLoad, depthStore, int(viewMask)});
     const auto baseCount = layout.colors.size() + (layout.depth != VK_FORMAT_UNDEFINED);
@@ -132,8 +135,9 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
                 "Resolve targets do not match render pass layout");
         a.stencilLoadOp = depth ? a.loadOp : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         a.stencilStoreOp = depth ? a.storeOp : VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        a.initialLayout = a.finalLayout =
-            depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        a.initialLayout = a.finalLayout = tileShading ? VK_IMAGE_LAYOUT_GENERAL
+                                          : depth     ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                                      : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         key.insert(key.end(), {a.loadOp, a.storeOp});
     }
     const auto found = d.renderPassCache.find(key);
@@ -153,19 +157,22 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
         std::set<uint32_t> used;
         bool anyResolve = false;
         for (auto i : source.colors) {
-            ref.colors.push_back({i, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
+            ref.colors.push_back({i, tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
             used.insert(i);
             const auto target = resolves.count(i) ? resolves[i] : VK_ATTACHMENT_UNUSED;
-            ref.resolves.push_back({target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
+            ref.resolves.push_back(
+                {target, tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
             if (target != VK_ATTACHMENT_UNUSED) {
                 used.insert(target);
                 anyResolve = true;
             }
         }
         for (auto i : source.inputs) {
-            ref.inputs.push_back({i, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
+            ref.inputs.push_back({i, tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
             used.insert(i);
         }
+        if (tileApron.width || tileApron.height)
+            sub.flags |= VK_SUBPASS_DESCRIPTION_TILE_SHADING_APRON_BIT_QCOM;
         sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         sub.colorAttachmentCount = uint32_t(ref.colors.size());
         sub.pColorAttachments = ref.colors.data();
@@ -173,7 +180,8 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
         sub.pInputAttachments = ref.inputs.data();
         sub.pResolveAttachments = anyResolve ? ref.resolves.data() : nullptr;
         if (source.depth) {
-            ref.depth = {uint32_t(layout.colors.size()), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+            ref.depth = {uint32_t(layout.colors.size()),
+                         tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
             used.insert(ref.depth.attachment);
             sub.pDepthStencilAttachment = &ref.depth;
         }
@@ -199,8 +207,17 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
             dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+            if (tileShading)
+                dep = tileDependency(src, dst);
             dependencies.push_back(dep);
         }
+    if (tileShading) {
+        for (uint32_t n = 0; n < subpasses.size(); ++n)
+            dependencies.push_back(tileDependency(n, n));
+        if (viewMask)
+            for (auto &dep : dependencies)
+                dep.dependencyFlags |= VK_DEPENDENCY_VIEW_LOCAL_BIT;
+    }
     VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     info.attachmentCount = uint32_t(attachments.size());
     info.pAttachments = attachments.data();
@@ -217,6 +234,13 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
         multiview.correlationMaskCount = 1;
         multiview.pCorrelationMasks = &viewMask;
         info.pNext = &multiview;
+    }
+    VkRenderPassTileShadingCreateInfoQCOM tileInfo{VK_STRUCTURE_TYPE_RENDER_PASS_TILE_SHADING_CREATE_INFO_QCOM};
+    if (tileShading) {
+        tileInfo.flags = VK_TILE_SHADING_RENDER_PASS_ENABLE_BIT_QCOM;
+        tileInfo.tileApronSize = tileApron;
+        tileInfo.pNext = info.pNext;
+        info.pNext = &tileInfo;
     }
     VkRenderPass pass;
     check(vkCreateRenderPass(d.device, &info, nullptr, &pass), "create subpass render pass");

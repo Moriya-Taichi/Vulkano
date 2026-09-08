@@ -468,7 +468,7 @@ PVRTC拡張は非推奨で、既存Assetとの互換用途に使えます。
 ## GPUによるPipelineとCommandの選択
 
 `DEVICE_GENERATED_COMMANDS`を要求すると、対応端末で`VK_EXT_device_generated_commands`を使えます。
-依存するBuffer Device Addressも有効になります。
+依存するBuffer Device Address、Maintenance5、Dynamic Renderingも有効になります。
 `indirectCommandLimits()`で対応Stage、Pipeline選択Stage、Sequence数、Stride、Token数などを確認します。
 Pipelineを選択するTokenを使う場合は、作成時に`supportsIndirectCommands = true`を指定します。
 
@@ -495,6 +495,7 @@ command.compute {
 }
 ```
 
+Mesh Tokenを使うDeviceでは`MESH_SHADER`と`TASK_SHADER`の両方を要求してください。
 Pipeline番号は`pipelines`の0始まりのIndexです。
 最後のTokenにDraw、DrawIndexed、Dispatch、DrawMesh、TraceRaysのいずれかを置きます。
 Pipeline Tokenは先頭に置き、Push Constants、Sequence Index、Vertex/Index BufferのTokenを間に配置できます。
@@ -532,3 +533,50 @@ Graphicsでは既定でSequence順を保ち、順序が不要なら`unorderedSeq
 この拡張の規則によりMultiviewとは組み合わせられません。
 前処理用メモリは実行ごとに確保し、Command完了まで保持します。
 [KhronosのDevice Generated Commands仕様](https://docs.vulkan.org/spec/latest/chapters/device_generated_commands/generatedcommands.html)の制約に従います。
+
+
+## Tile ComputeとTile Attachment
+
+`TILE_SHADING`を有効にすると、対応端末で`VK_QCOM_tile_shading`を使えます。
+`tileShadingCapabilities()`は色・深度・Stencil・Input・Sampled Attachment、Fragment Stage、Tile内Draw/Dispatch、Apronの対応と上限を返します。
+メーカー名による有効化は行いません。
+
+Render PassとGraphics Pipelineには同じ`TileShadingDescriptor`を指定します。
+Compute Pipelineは通常の`makeComputePipelineState`で作成します。
+シェーダーでTile Attachmentを使う場合は`SPV_QCOM_tile_shading`に対応したコンパイラーが必要です。
+
+```kotlin
+val tile = TileShadingDescriptor()
+val pipeline = device.makeComputePipelineState(tileFunction)
+val pass = RenderPassDescriptor(
+    colorAttachments = listOf(ColorAttachment(target)),
+    tileShading = tile,
+)
+command.render(pass) {
+    setTileComputePipelineState(pipeline)
+    setTexture(target, index = 0)
+    perTile {
+        tileMemoryBarrier()
+        dispatchTileThreadgroups(Size(1))
+    }
+}
+```
+
+`dispatchTileThreadgroups`は、指定したWorkgroup数で各TileのComputeを実行します。
+間接引数Bufferを受けるオーバーロードもあります。
+`TileShadingRateQCOM`を宣言するシェーダーには`dispatchTile()`を使い、Tile全体を処理するWorkgroup数とサイズをDriverに任せます。
+その場合のRateは`pipeline.tileShadingRate`で取得でき、通常の`threadgroupSize`をDispatch計算には使いません。
+シェーダーは`TileOffsetQCOM`、`TileDimensionQCOM`を使い、Render AreaとTileの範囲内だけを読み書きします。
+
+`tileMemoryBarrier()`は同じTile内でAttachment、Compute、間接引数へのアクセスを順序付けます。
+Tile間の実行順序は保証されないため、別Tileが書いた一般のBufferへ依存する処理は別Passに分けます。
+`perTile`の内側では、対応FeatureがあればVertex/Fragment Drawも記録できます。
+Tessellation、Mesh、Ray Tracing、Queryは記録できません。
+
+AttachmentのDescriptorは、Framebufferと同じImage、Format、Mip、Layer範囲を参照する、SwizzleのないViewを使います。
+Storage Tile Imageには`STORAGE` Usageを付け、Fragment・Depth/Stencil・InputのImageは`readonly`で宣言します。
+Storage UsageとMemorylessは組み合わせられません。
+`apronWidth`と`apronHeight`はTileの外側で読める画素の幅です。
+Apronへの書き込みはできず、幅を増やすとTile処理の負担も増えるため、必要な範囲だけを指定します。
+
+[KhronosのTile Shading仕様](https://docs.vulkan.org/features/latest/features/proposals/VK_QCOM_tile_shading.html)に従います。

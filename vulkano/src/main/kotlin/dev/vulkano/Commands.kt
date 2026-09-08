@@ -167,6 +167,7 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
                     actions,
                     clear,
                     pass.subpassLayout?.pack() ?: intArrayOf(),
+                    pass.tileShading?.pack() ?: intArrayOf(),
                 ),
             )
             .also { encoder = it }
@@ -466,6 +467,71 @@ class RenderCommandEncoder
 internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
     ShaderCommandEncoder(command) {
     private var pipeline: RenderPipelineState? = null
+    private var tilePipeline: ComputePipelineState? = null
+
+    fun beginPerTileExecution(): Unit = encode { Native.tileControl(nativeEncoder, 3) }
+
+    fun endPerTileExecution(): Unit = encode { Native.tileControl(nativeEncoder, 4) }
+
+    /** Commands in this block execute independently for every tile; tile order is unspecified. */
+    fun perTile(block: RenderCommandEncoder.() -> Unit) {
+        beginPerTileExecution()
+        try {
+            block()
+        } finally {
+            endPerTileExecution()
+        }
+    }
+
+    /** Orders attachment, compute and indirect accesses within each tile. */
+    fun tileMemoryBarrier(): Unit = encode { Native.tileControl(nativeEncoder, 5) }
+
+    fun setTileComputePipelineState(state: ComputePipelineState): Unit = encode {
+        require(state.device === commandBuffer.device)
+        state.handle()
+        tilePipeline = state
+    }
+
+    fun dispatchTileThreadgroups(groups: Size): Unit = encode {
+        Native.dispatchTile(
+            nativeEncoder,
+            checkNotNull(tilePipeline) { "Set a tile compute pipeline first" }.handle(),
+            bindingData(),
+            constantData(),
+            intArrayOf(groups.width, groups.height, groups.depth),
+            false,
+            0,
+            0,
+        )
+    }
+
+    fun dispatchTileThreadgroups(indirectBuffer: Buffer, offset: Long = 0): Unit = encode {
+        require(indirectBuffer.device === commandBuffer.device && offset >= 0)
+        Native.dispatchTile(
+            nativeEncoder,
+            checkNotNull(tilePipeline) { "Set a tile compute pipeline first" }.handle(),
+            bindingData(),
+            constantData(),
+            intArrayOf(1, 1, 1),
+            false,
+            indirectBuffer.handle(),
+            offset,
+        )
+    }
+
+    /** Executes TileShadingRateQCOM over the tile area; Vulkan selects the workgroup dimensions. */
+    fun dispatchTile(): Unit = encode {
+        Native.dispatchTile(
+            nativeEncoder,
+            checkNotNull(tilePipeline) { "Set a tile compute pipeline first" }.handle(),
+            bindingData(),
+            constantData(),
+            intArrayOf(1, 1, 1),
+            true,
+            0,
+            0,
+        )
+    }
 
     fun setRenderPipelineState(state: RenderPipelineState): Unit = encode {
         require(state.device === commandBuffer.device)
@@ -477,6 +543,7 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
     fun nextSubpass(): Unit = encode {
         Native.nextSubpass(nativeEncoder)
         pipeline = null
+        tilePipeline = null
         resetBindings()
         vertexBuffers.clear()
         visibility = null

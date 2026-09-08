@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "spirv-reflect/spirv_reflect.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -29,6 +30,21 @@ std::shared_ptr<Texture> texture(const std::shared_ptr<Device>& d, VkImageUsageF
 }
 }
 int main() try {
+    for (const char* name : {"tile-loop.comp.spv", "tile-area.comp.spv", "tile-read.frag.spv"}) {
+        const auto code = shader(name).code;
+        SpvReflectShaderModule module{};
+        expect(spvReflectCreateShaderModule(code.size() * 4, code.data(), &module) == SPV_REFLECT_RESULT_SUCCESS,
+               "Tile shader SPIR-V reflection");
+        expect(module.descriptor_binding_count == 1, "Tile attachment descriptor must be reflected");
+        const auto &binding = module.descriptor_bindings[0];
+        expect(binding.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE && binding.binding == 0 &&
+                   binding.set == 0 && binding.count == 1 && binding.accessed,
+               "Tile attachment type, binding and static access");
+        expect(binding.image.dim == SpvDim2D && binding.image.image_format == SpvImageFormatRgba8,
+               "Tile image format reflection");
+        expect(module.entry_points[0].descriptor_set_count == 1, "Tile attachment belongs to the entry point");
+        spvReflectDestroyShaderModule(&module);
+    }
     auto d = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
     std::cout << "Device: " << d->properties.deviceName << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");

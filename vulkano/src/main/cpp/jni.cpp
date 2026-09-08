@@ -5,6 +5,7 @@
 #include "ray.hpp"
 #include "sparse.hpp"
 #include "synchronization.hpp"
+#include "tiles.hpp"
 #include <cstring>
 #include <jni.h>
 #include <mutex>
@@ -206,6 +207,7 @@ struct PendingRender : Resource {
     std::shared_ptr<Command> command;
     Render pass;
     uint32_t subpass = 0;
+    bool perTile = false;
     explicit PendingRender(std::shared_ptr<Command> c) : Resource(c->d), command(std::move(c)) {}
 };
 } // namespace
@@ -445,6 +447,7 @@ JNI_METHOD(void, endRender)(JNIEnv *e, jobject, jlong id) {
         auto p = get<PendingRender>(id);
         require(!p->pass.passLayout || p->subpass + 1 == p->pass.passLayout->subpasses.size(),
                 "Encode every subpass before ending the render pass");
+        require(!p->perTile, "End per-tile execution before ending the render pass");
         p->command->render(p->pass);
         objects.erase(id);
     });
@@ -531,6 +534,7 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
 
 #include "jni_generated.inc"
 #include "jni_graphics.inc"
+#include "jni_tiles.inc"
 
 #include "jni_ray.inc"
 

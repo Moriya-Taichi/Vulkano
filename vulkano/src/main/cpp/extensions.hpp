@@ -85,6 +85,9 @@ struct Extensions {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamicState{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+    VkPhysicalDeviceMaintenance5Features maintenance5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES};
+    VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
     bool generatedVertexInput = false;
     PFN_vkCmdBindVertexBuffers2 bindVertexBuffers2 = nullptr;
     PFN_vkCreateIndirectCommandsLayoutEXT createGeneratedLayout = nullptr;
@@ -94,6 +97,15 @@ struct Extensions {
     PFN_vkUpdateIndirectExecutionSetPipelineEXT updateExecutionSet = nullptr;
     PFN_vkGetGeneratedCommandsMemoryRequirementsEXT generatedMemoryRequirements = nullptr;
     PFN_vkCmdExecuteGeneratedCommandsEXT executeGenerated = nullptr;
+    VkPhysicalDeviceTileShadingFeaturesQCOM tile{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TILE_SHADING_FEATURES_QCOM};
+    VkPhysicalDeviceTileShadingPropertiesQCOM tileProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TILE_SHADING_PROPERTIES_QCOM};
+    VkPhysicalDeviceTilePropertiesFeaturesQCOM tileQuery{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TILE_PROPERTIES_FEATURES_QCOM};
+    PFN_vkCmdBeginPerTileExecutionQCOM beginTile = nullptr;
+    PFN_vkCmdEndPerTileExecutionQCOM endTile = nullptr;
+    PFN_vkCmdDispatchTileQCOM dispatchTile = nullptr;
+    PFN_vkGetFramebufferTilePropertiesQCOM framebufferTiles = nullptr;
     bool core12 = false, core13 = false;
     void *chain = nullptr;
     std::vector<VkExtensionProperties> supported;

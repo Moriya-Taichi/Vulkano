@@ -15,7 +15,8 @@ JNI_METHOD(jlong, createTextureView)
 }
 JNI_METHOD(jlong, createGraphics)
 (JNIEnv *e, jobject, jlong device, jobjectArray codes, jobjectArray entries, jobjectArray constants, jintArray options,
- jintArray schema, jint push, jboolean mesh, jintArray subpasses, jint subpass, jboolean indirect) {
+ jintArray schema, jint push, jboolean mesh, jintArray subpasses, jint subpass, jboolean indirect,
+ jintArray tileOptions) {
     return guard(e, [&] {
         require(codes && entries && constants && push >= 0, "Invalid graphics descriptor");
         int count = e->GetArrayLength(codes);
@@ -39,6 +40,11 @@ JNI_METHOD(jlong, createGraphics)
         require(v.size() == 49 + size_t(v[13]) * 9 + size_t(v[14]) * 3 + size_t(v[15]) * 4,
                 "Invalid graphics option lengths");
         GraphicsOptions g;
+        auto tile = ints(e, tileOptions);
+        require(tile.empty() || (tile.size() == 2 && tile[0] >= 0 && tile[1] >= 0), "Invalid tile options");
+        g.tileShading = !tile.empty();
+        if (g.tileShading)
+            g.tileApron = {uint32_t(tile[0]), uint32_t(tile[1])};
         g.indirectBindable = indirect;
         require(subpass >= 0, "Invalid subpass index");
         g.passLayout = parseSubpassLayout(ints(e, subpasses));
@@ -117,7 +123,8 @@ JNI_METHOD(jlong, createGraphics)
     });
 }
 JNI_METHOD(jlong, beginRenderAdvanced)
-(JNIEnv *e, jobject, jlong command, jlongArray handles, jintArray options, jfloatArray clear, jintArray subpasses) {
+(JNIEnv *e, jobject, jlong command, jlongArray handles, jintArray options, jfloatArray clear, jintArray subpasses,
+ jintArray tileOptions) {
     return guard(e, [&] {
         auto h = longValues(e, handles);
         auto v = ints(e, options);
@@ -129,6 +136,12 @@ JNI_METHOD(jlong, beginRenderAdvanced)
         c->recording();
         auto pending = std::make_shared<PendingRender>(c);
         auto &p = pending->pass;
+        auto tile = ints(e, tileOptions);
+        require(tile.empty() || (tile.size() == 2 && tile[0] >= 0 && tile[1] >= 0), "Invalid tile options");
+        p.tileShading = !tile.empty();
+        if (p.tileShading)
+            p.tileApron = {uint32_t(tile[0]), uint32_t(tile[1])};
+        validateTileOptions(*c->d, p.tileShading, p.tileApron);
         p.passLayout = parseSubpassLayout(ints(e, subpasses));
         if (h[0])
             p.depth = get<Texture>(h[0]);
@@ -332,6 +345,7 @@ JNI_METHOD(void, nextSubpass)(JNIEnv *e, jobject, jlong id) {
         auto p = get<PendingRender>(id);
         p->command->recording();
         require(p->pass.passLayout && p->subpass + 1 < p->pass.passLayout->subpasses.size(), "No next subpass");
+        require(!p->perTile, "End per-tile execution before changing subpass");
         ++p->subpass;
     });
 }

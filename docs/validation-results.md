@@ -120,4 +120,18 @@ Vulkan-Headers 1.4.335導入までのCommit `8b3ecfb6225dc3f58bf5724e60699f47fd5
 新しいToken Layout、Pipeline選択、GPU引数/Count、Compute・Indexed/Mesh描画、PipelineとBufferの保持を検証するテストを追加しました。
 Mesa 24.0.5のローカル環境ではNative 725項目、Kotlin/JNI 55件中40件成功・15件スキップ・失敗0件です。
 このDriverにはDevice Generated Commandsがないため、追加した成功経路2件はスキップしています。
-CIのMesa 25.2.8でもFeatureに応じて実行し、実行/スキップの内訳とValidation ErrorをJUnitレポートから検査します。
+CIのMesa 25.2.8でもFeatureに応じて実行し、実行/スキップの内訳をJUnitレポートから検査します。
+
+
+### Tile Shadingと検証レイヤーの更新
+
+Vulkan-ValidationLayersをヘッダーと同じ1.4.335に固定しました。
+Commit `d4438da`のCIではKotlin/JNI 55件中47件が実行に成功し、Device Generated Commands、Ray Tracing、Sparseの成功経路も動作しました。
+ただしJNIの標準出力に4件のValidation Errorがあり、この結果を検証完了とは扱いません。
+必要なMaintenance5の有効化、頂点入力がないPipelineのDynamic Stride、Generated MeshのTask Featureを修正しました。
+JUnitのXMLだけではJNIの標準出力を取り込めないため、Gradle全体のログも検査するようにしました。
+
+Tile AttachmentのSPIR-V ReflectionをNativeで検査し、Tile機能の拒否、通常/間接Tile Dispatch、Area Dispatch、Fragment Tile Readのテストを追加しました。
+ローカルではNative 740項目、Kotlin/JNI 59件中41件成功・18件スキップ・失敗0件です。
+Tile Shadingに非対応のDriverなので、TileのGPU実行3件はスキップしています。
+TileのSPIR-VはCIで同じ固定版のSPIRV-Toolsを使って検証します。

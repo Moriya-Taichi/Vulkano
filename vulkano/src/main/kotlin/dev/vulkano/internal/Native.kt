@@ -140,6 +140,7 @@ internal object Native {
         subpasses: IntArray,
         subpass: Int,
         indirect: Boolean,
+        tileOptions: IntArray,
     ): Long
 
     external fun createTextureView(
@@ -160,6 +161,7 @@ internal object Native {
         options: IntArray,
         clear: FloatArray,
         subpasses: IntArray,
+        tileOptions: IntArray,
     ): Long
 
     external fun nextSubpass(encoder: Long)
@@ -206,6 +208,23 @@ internal object Native {
     external fun generateMipmaps(command: Long, texture: Long, filter: Int)
 
     external fun fillBuffer(command: Long, buffer: Long, offset: Long, length: Long, value: Int)
+
+    external fun tileCapabilities(device: Long): IntArray
+
+    external fun pipelineTileRate(pipeline: Long): IntArray
+
+    external fun tileControl(encoder: Long, action: Int)
+
+    external fun dispatchTile(
+        encoder: Long,
+        pipeline: Long,
+        bindings: LongArray,
+        constants: ByteArray,
+        groups: IntArray,
+        area: Boolean,
+        indirect: Long,
+        offset: Long,
+    )
 
     external fun pipelineLocalSize(pipeline: Long): IntArray
 

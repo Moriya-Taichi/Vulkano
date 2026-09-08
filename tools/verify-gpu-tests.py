@@ -27,6 +27,13 @@ for report in sorted(reports):
             if "Validation Error" in line or "SYNC-HAZARD" in line:
                 validation.append(line)
 print(f"Tests: {total}, passed: {total - skipped - failed}, skipped: {skipped}, failures: {failed}")
+# JVM native stdout bypasses Gradle's per-test capture, so XML alone misses VUIDs.
+log = Path("build/gradle-gpu.log")
+if not log.is_file():
+    raise SystemExit("The complete Gradle/JNI log is required for Vulkan validation")
+for line in log.read_text(errors="replace").splitlines():
+    if "Validation Error" in line or "SYNC-HAZARD" in line:
+        validation.append(line)
 for line in validation:
     print(line)
 sys.exit(1 if failed or validation or total == 0 else 0)

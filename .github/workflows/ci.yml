@@ -25,7 +25,7 @@ jobs:
         id: validation-cache
         with:
           path: ${{ runner.temp }}/vulkano-vvl-install
-          key: ${{ runner.os }}-vulkano-vvl-1.4.335-gcc13-v1
+          key: ${{ runner.os }}-vulkano-vvl-1.4.335-gcc13-v2
       - name: Build matching Vulkan validation layers
         if: steps.validation-cache.outputs.cache-hit != 'true'
         env:
@@ -35,16 +35,23 @@ jobs:
           cmake -S "$RUNNER_TEMP/vulkano-vvl" -B "$RUNNER_TEMP/vulkano-vvl-build" -G Ninja -DUPDATE_DEPS=ON -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/vulkano-vvl-install"
           cmake --build "$RUNNER_TEMP/vulkano-vvl-build" --parallel 2
           cmake --install "$RUNNER_TEMP/vulkano-vvl-build"
+          mkdir -p "$RUNNER_TEMP/vulkano-vvl-install/bin"
+          for tool in spirv-as spirv-val; do
+            source_path=$(find "$RUNNER_TEMP/vulkano-vvl" "$RUNNER_TEMP/vulkano-vvl-build" -path "*/SPIRV-Tools/build/install/bin/$tool" -print -quit)
+            test -n "$source_path"
+            cp "$source_path" "$RUNNER_TEMP/vulkano-vvl-install/bin/$tool"
+          done
       - uses: actions/cache/save@v4
         if: steps.validation-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/vulkano-vvl-install
-          key: ${{ runner.os }}-vulkano-vvl-1.4.335-gcc13-v1
+          key: ${{ runner.os }}-vulkano-vvl-1.4.335-gcc13-v2
       - name: Select matching Vulkan validation layers
         run: |
           echo "VK_LAYER_PATH=$RUNNER_TEMP/vulkano-vvl-install/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/vulkano-vvl-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
           ldd -r "$RUNNER_TEMP/vulkano-vvl-install/lib/libVkLayer_khronos_validation.so"
+          echo "$RUNNER_TEMP/vulkano-vvl-install/bin" >> "$GITHUB_PATH"
       - name: Compile and validate shader fixtures
         run: |
           python3 tools/compile-test-shaders.py
@@ -56,7 +63,9 @@ jobs:
       - name: Test native GPU results and synchronization
         run: python3 tools/run-native-tests.py build/host/vulkano_tests
       - name: Build AAR, minified sample and instrumentation APK; test Kotlin through JNI
-        run: ./gradlew :vulkano:assembleRelease :sample:assembleDebug :sample:assembleRelease :vulkano:assembleDebugAndroidTest :vulkano:testDebugUnitTest -Pvulkano.hostLibraryPath="$GITHUB_WORKSPACE/build/host"
+        run: |
+          set -o pipefail
+          ./gradlew :vulkano:assembleRelease :sample:assembleDebug :sample:assembleRelease :vulkano:assembleDebugAndroidTest :vulkano:testDebugUnitTest -Pvulkano.hostLibraryPath="$GITHUB_WORKSPACE/build/host" 2>&1 | tee build/gradle-gpu.log
       - name: Verify GPU test results and validation output
         if: always()
         run: python3 tools/verify-gpu-tests.py

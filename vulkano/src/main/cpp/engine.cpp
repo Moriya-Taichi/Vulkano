@@ -7,6 +7,7 @@
 #include "sparse.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include "synchronization.hpp"
+#include "tiles.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -69,9 +70,16 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
     if (render && render->passLayout) {
         require(!render->depthResolve && !render->rateMapTexelSize.width,
                 "Subpass layout cannot combine depth resolve or rate map");
-        return makeSubpassPass(d, *render->passLayout, targets, depthLoad, depthStore, viewMask);
+        return makeSubpassPass(d, *render->passLayout, targets, depthLoad, depthStore, viewMask, render->tileShading,
+                               render->tileApron);
     }
     std::vector<int> key{int(colors.size()), depth, samples, depthLoad, depthStore, int(viewMask)};
+    const bool tile = render && render->tileShading;
+    const VkExtent2D apron = render ? render->tileApron : VkExtent2D{};
+    validateTileOptions(d, tile, apron);
+    key.insert(key.end(), {tile, int(apron.width), int(apron.height)});
+    const auto colorLayout = tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    const auto depthLayout = tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     const bool depthResolve = render && render->depthResolve;
     const bool rateMap = render && render->rateMapTexelSize.width;
     if (rateMap)
@@ -93,11 +101,11 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         a.storeOp = store;
         a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        a.initialLayout = a.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        a.initialLayout = a.finalLayout = colorLayout;
         refs.push_back({uint32_t(attachments.size()), a.finalLayout});
         attachments.push_back(a);
     }
-    VkAttachmentReference dr{VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference dr{VK_ATTACHMENT_UNUSED, depthLayout};
     if (depth != VK_FORMAT_UNDEFINED) {
         VkAttachmentDescription a{};
         a.format = depth;
@@ -110,7 +118,7 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
     }
     bool anyResolve = false;
     for (size_t n = 0; n < colors.size(); ++n) {
-        VkAttachmentReference rr{VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference rr{VK_ATTACHMENT_UNUSED, colorLayout};
         if (!targets.empty() && targets[n].resolve) {
             anyResolve = true;
             VkAttachmentDescription a{};
@@ -147,6 +155,20 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
     mv.pCorrelationMasks = &viewMask;
     if (viewMask)
         i.pNext = &mv;
+    VkRenderPassTileShadingCreateInfoQCOM tileInfo{VK_STRUCTURE_TYPE_RENDER_PASS_TILE_SHADING_CREATE_INFO_QCOM};
+    tileInfo.flags = VK_TILE_SHADING_RENDER_PASS_ENABLE_BIT_QCOM;
+    tileInfo.tileApronSize = apron;
+    auto dependency = tileDependency(0, 0);
+    if (viewMask)
+        dependency.dependencyFlags |= VK_DEPENDENCY_VIEW_LOCAL_BIT;
+    if (tile) {
+        tileInfo.pNext = i.pNext;
+        i.pNext = &tileInfo;
+        i.dependencyCount = 1;
+        i.pDependencies = &dependency;
+        if (apron.width || apron.height)
+            sub.flags |= VK_SUBPASS_DESCRIPTION_TILE_SHADING_APRON_BIT_QCOM;
+    }
     VkRenderPass pass;
     if (!depthResolve && !rateMap) {
         check(vkCreateRenderPass(d.device, &i, nullptr, &pass), "vkCreateRenderPass");
@@ -180,7 +202,7 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         auto depth2 = ref(dr);
         VkAttachmentReference2 resolve2{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
         resolve2.attachment = uint32_t(descriptions.size());
-        resolve2.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        resolve2.layout = depthLayout;
         VkAttachmentDescription2 target{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
         target.format = depth;
         target.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -224,6 +246,21 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         sub2.pResolveAttachments = anyResolve ? resolves2.data() : nullptr;
         sub2.pDepthStencilAttachment = depth != VK_FORMAT_UNDEFINED ? &depth2 : nullptr;
         VkRenderPassCreateInfo2 info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+        VkSubpassDependency2 dependency2{VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2};
+        if (tile) {
+            tileInfo.pNext = info.pNext;
+            info.pNext = &tileInfo;
+            dependency2.srcSubpass = dependency.srcSubpass;
+            dependency2.dstSubpass = dependency.dstSubpass;
+            dependency2.srcStageMask = dependency.srcStageMask;
+            dependency2.dstStageMask = dependency.dstStageMask;
+            dependency2.srcAccessMask = dependency.srcAccessMask;
+            dependency2.dstAccessMask = dependency.dstAccessMask;
+            dependency2.dependencyFlags = dependency.dependencyFlags;
+            info.dependencyCount = 1;
+            info.pDependencies = &dependency2;
+            sub2.flags = sub.flags;
+        }
         info.attachmentCount = uint32_t(descriptions.size());
         info.pAttachments = descriptions.data();
         info.subpassCount = 1;
@@ -244,6 +281,9 @@ struct Module {
     Device &d;
     VkShaderModule module = VK_NULL_HANDLE;
     uint32_t entryId = 0;
+    bool tileShader = false;
+    std::array<uint32_t, 3> tileRate{};
+    std::set<uint32_t> tileVariables;
     std::vector<BindingLayout> reflectedBindings;
     std::map<uint32_t, int> inputs, outputs;
     std::vector<std::vector<uint64_t>> outputInterface;
@@ -264,6 +304,15 @@ struct Module {
         for (size_t i = 5; i < code.size();) {
             uint32_t words = code[i] >> 16, op = code[i] & 0xffff;
             require(words > 0 && words <= code.size() - i, "Malformed SPIR-V instruction");
+            if (op == SpvOpCapability && words == 2 && code[i + 1] == SpvCapabilityTileShadingQCOM) {
+                require((d.enabledExtra & TileShading) && (executionModel == 4 || executionModel == 5),
+                        "Tile shader requires enabled tile shading in compute/fragment stage");
+                require(executionModel != 4 || d.extensions->tile.tileShadingFragmentStage,
+                        "Fragment tile shading is unavailable");
+                tileShader = true;
+            }
+            if (op == SpvOpVariable && words >= 4 && code[i + 3] == SpvStorageClassTileAttachmentQCOM)
+                tileVariables.insert(code[i + 2]);
             if (op == SpvOpDecorate && words == 4 && code[i + 2] == SpvDecorationBuiltIn &&
                 code[i + 3] == SpvBuiltInPrimitiveShadingRateKHR)
                 require(d.enabled & PrimitiveRate, "Primitive shading rate shader feature was not enabled");
@@ -285,6 +334,22 @@ struct Module {
             i += words;
         }
         require(entryId != 0, "Shader entry point not found for the requested stage");
+        for (size_t i = 5; tileShader && i < code.size(); i += code[i] >> 16) {
+            const auto op = code[i] & 0xffff, words = code[i] >> 16;
+            if (op == SpvOpExecutionMode && words == 6 && code[i + 1] == entryId &&
+                code[i + 2] == SpvExecutionModeTileShadingRateQCOM) {
+                require(executionModel == 5 && d.extensions->tile.tileShadingDispatchTile,
+                        "Area tile dispatch is unavailable");
+                tileRate = {code[i + 3], code[i + 4], code[i + 5]};
+                const auto &limit = d.extensions->tileProperties.maxTileShadingRate;
+                require(tileRate[0] && !(tileRate[0] & (tileRate[0] - 1)) && tileRate[0] <= limit.width &&
+                            tileRate[1] && !(tileRate[1] & (tileRate[1] - 1)) && tileRate[1] <= limit.height &&
+                            tileRate[2],
+                        "Tile shading rate exceeds device limits");
+            }
+            if (op == SpvOpImageTexelPointer)
+                require(d.extensions->tile.tileShadingAtomicOps, "Tile image atomics are unavailable");
+        }
         if (executionModel == 5 || executionModel == SpvExecutionModelMeshEXT ||
             executionModel == SpvExecutionModelTaskEXT) {
             std::map<uint32_t, uint32_t> ids, values;
@@ -338,6 +403,8 @@ struct Module {
                                                                                      : mp.maxMeshWorkGroupInvocations)
                                        : d.properties.limits.maxComputeWorkGroupInvocations;
             uint64_t total = 1;
+            if (tileRate[0])
+                local = {1, 1, 1}; // Workgroup size is chosen by the tile implementation.
             for (int n = 0; n < 3; ++n) {
                 require(local[n] && local[n] <= limits[n] && total <= invocations / local[n],
                         "Shader workgroup exceeds device limits");
@@ -433,6 +500,8 @@ struct Module {
             uint64_t requiredFeature = 0;
             VkSubgroupFeatureFlags subgroupOperation = 0;
             switch (cap) {
+            case SpvCapabilityTileShadingQCOM:
+                break;
             case SpvCapabilitySparseResidency:
                 require(d.coreFeatures.shaderResourceResidency, "Sparse shader residency was not enabled");
                 requiredFeature = SparseResources;
@@ -643,6 +712,9 @@ struct Module {
                 binding.arrayed = b.image.arrayed;
                 binding.multisampled = b.image.ms;
                 binding.shadow = b.image.depth;
+                binding.tile = tileVariables.count(b.spirv_id);
+                binding.readonly = (b.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) != 0 ||
+                                   binding.type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                 if (b.type_description &&
                     (b.type_description->type_flags &
                      (SPV_REFLECT_TYPE_FLAG_EXTERNAL_IMAGE | SPV_REFLECT_TYPE_FLAG_EXTERNAL_SAMPLED_IMAGE))) {
@@ -811,7 +883,7 @@ struct Module {
                         }
                     }
                 } else if (binding.type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-                    require(executionModel == 4 && b.count == 1,
+                    require((executionModel == 4 || binding.tile) && b.count == 1,
                             "Input attachment must be a scalar fragment descriptor");
                     binding.inputAttachmentIndex = b.input_attachment_index;
                 } else if (binding.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
@@ -854,11 +926,12 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
                 require(it->second.type == b.type && it->second.storageFormat == b.storageFormat &&
                             it->second.count == b.count && it->second.imageDim == b.imageDim &&
                             it->second.arrayed == b.arrayed && it->second.multisampled == b.multisampled &&
-                            it->second.numericType == b.numericType &&
+                            it->second.numericType == b.numericType && it->second.tile == b.tile &&
                             it->second.inputAttachmentIndex == b.inputAttachmentIndex,
                         "Shader stages disagree on descriptor type");
                 it->second.minimumBytes = std::max(it->second.minimumBytes, b.minimumBytes);
                 it->second.stages |= b.stages;
+                it->second.readonly = it->second.readonly && b.readonly;
             }
         }
     }
@@ -889,7 +962,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 7) == 0, "Unknown extended feature");
+    require((extra >> 8) == 0, "Unknown extended feature");
     require((required >> 60) == 0, "Unknown requested feature");
     if ((required & (RayQuery | RayPipeline)) || (extra & DeviceGeneratedCommands))
         required |= BufferAddress;
@@ -1381,6 +1454,9 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
             validateIndirectPipeline(*this);
         Module module(*d, shader, 5);
         localSize = module.local;
+        tileShader = module.tileShader;
+        tileRate = module.tileRate;
+        require(!tileShader || !indirectBindable, "Tile compute pipelines cannot be selected by generated commands");
         resolveLayout(*this, {&module});
         makeLayout();
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -1414,6 +1490,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
       colorFormat(color), depthFormat(depth) {
     try {
         auto &g = graphics;
+        validateTileOptions(*d, g.tileShading, g.tileApron);
         indirectBindable = g.indirectBindable;
         const auto &l = d->properties.limits;
         if (g.passLayout) {
@@ -1550,11 +1627,15 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         require(!g.viewMask || (32u - uint32_t(__builtin_clz(g.viewMask))) <=
                                    d->extensions->multiviewProperties.maxMultiviewViewCount,
                 "View mask exceeds multiview limit");
+        tileShader = fs.tileShader;
+        require(!tileShader || g.tileShading, "Fragment tile shader requires tile-enabled pipeline descriptor");
         fragmentInterface = fs.outputInterface;
         generatedStateKey = generatedGraphicsKey(*this);
         if (indirectBindable)
             validateIndirectPipeline(*this);
         Render compatibleRender;
+        compatibleRender.tileShading = g.tileShading;
+        compatibleRender.tileApron = g.tileApron;
         compatibleRender.rateMapTexelSize = g.rateMapTexelSize;
         compatibleRender.passLayout = g.passLayout;
         compatiblePass = makePass(*d, g.colors, depth, g.samples, {}, VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -1622,8 +1703,10 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
                                    VK_DYNAMIC_STATE_LINE_WIDTH,
                                    VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
         VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-        dyn.dynamicStateCount =
-            (d->enabledExtra & DeviceGeneratedCommands) && d->extensions->generatedVertexInput && !g.mesh ? 7 : 6;
+        dyn.dynamicStateCount = (d->enabledExtra & DeviceGeneratedCommands) && d->extensions->generatedVertexInput &&
+                                        !g.mesh && !g.vertexBindings.empty()
+                                    ? 7
+                                    : 6;
         dyn.pDynamicStates = states;
         VkPipelineFragmentShadingRateStateCreateInfoKHR rate{
             VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR};
@@ -2008,7 +2091,7 @@ void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, b
                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             auto schema =
                 std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.binding == b.index; });
-            if (schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+            if (schema->tile || schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
                 continue;
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                                  schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -2090,9 +2173,9 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 w.dstBinding = b.index;
                 w.dstArrayElement = b.element;
                 w.descriptorCount = 1;
-                w.descriptorType = std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) {
-                                       return s.binding == b.index;
-                                   })->type;
+                const auto schema = std::find_if(p.bindings.begin(), p.bindings.end(),
+                                                 [&](const auto &s) { return s.binding == b.index; });
+                w.descriptorType = schema->type;
                 if (b.buffer) {
                     buffersInfo[i] = {b.buffer->buffer, b.offset, b.length};
                     w.pBufferInfo = &buffersInfo[i];
@@ -2105,12 +2188,14 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                     a.pAccelerationStructures = &b.acceleration->acceleration;
                     w.pNext = &a;
                 } else {
-                    imageInfo[i] = {b.sampler ? b.sampler->sampler : VK_NULL_HANDLE,
-                                    b.texture ? b.texture->view : VK_NULL_HANDLE,
-                                    (w.descriptorType != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && b.texture &&
-                                     (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT))
-                                        ? VK_IMAGE_LAYOUT_GENERAL
-                                        : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                    imageInfo[i] = {
+                        b.sampler ? b.sampler->sampler : VK_NULL_HANDLE, b.texture ? b.texture->view : VK_NULL_HANDLE,
+                        (schema->tile ||
+                         (w.descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && p.graphics.tileShading) ||
+                         (w.descriptorType != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && b.texture &&
+                          (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT)))
+                            ? VK_IMAGE_LAYOUT_GENERAL
+                            : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                     w.pImageInfo = &imageInfo[i];
                 }
             }
@@ -2126,7 +2211,7 @@ void Command::executeGenerated(std::shared_ptr<GeneratedExecution> g, std::vecto
                                std::vector<uint8_t> constants) {
     recording();
     auto p = g->layout->pipelines.front();
-    require(p->compute || p->rayTracing, "Generated graphics commands require a render encoder");
+    require((p->compute || p->rayTracing) && !p->tileShader, "Generated dispatch requires a non-tile pipeline");
     resolveSamplers(*p, bs);
     if (constants.empty())
         constants.resize(p->pushBytes);
@@ -2147,7 +2232,8 @@ void Command::executeGenerated(std::shared_ptr<GeneratedExecution> g, std::vecto
 }
 void Command::dispatch(Dispatch op) {
     recording();
-    require(op.pipeline && op.pipeline->compute, "Compute pipeline required");
+    require(op.pipeline && op.pipeline->compute && !op.pipeline->tileShader,
+            "Ordinary dispatch requires a compute pipeline without tile shading");
     resolveSamplers(*op.pipeline, op.bindings);
     validateBindings(*op.pipeline, op.bindings, op.constants);
     for (int i = 0; !op.indirect && i < 3; ++i)
@@ -2178,6 +2264,7 @@ void Command::dispatch(Dispatch op) {
 }
 void Command::render(Render op) {
     recording();
+    validateTileOptions(*d, op.tileShading, op.tileApron);
     if (op.colors.empty() && op.color)
         op.colors.push_back({op.color, {}, 0, 0, 0, 0, op.colorLoad, op.colorStore, op.clearColor});
     require(!op.colors.empty() || op.depth, "Render pass requires attachments");
@@ -2319,14 +2406,51 @@ void Command::render(Render op) {
             (void)bl;
             require(a == b || !memoryOverlaps(*a, *b), "Render targets alias placement memory");
         }
+    bool perTile = false;
+    uint32_t subpass = 0;
     for (auto &draw : op.draws) {
-        require(bool(draw.pipeline) && !draw.pipeline->rayTracing, "Graphics pipeline required");
+        require(draw.subpass >= subpass && draw.subpass < (op.passLayout ? op.passLayout->subpasses.size() : 1),
+                "Render commands must follow the subpass order");
+        require(draw.subpass == subpass || !perTile, "End per-tile execution before changing subpass");
+        subpass = draw.subpass;
+        require(draw.tileAction <= 5 && (!draw.tileAction || op.tileShading), "Invalid tile action");
+        if (draw.tileAction >= 3) {
+            if (draw.tileAction == 3) {
+                require(!perTile, "Per-tile execution is already active");
+                require(d->extensions->tile.tileShadingPerTileDraw || d->extensions->tile.tileShadingPerTileDispatch,
+                        "Per-tile execution is unavailable");
+                perTile = true;
+            }
+            if (draw.tileAction == 4) {
+                require(perTile, "Per-tile execution is not active");
+                perTile = false;
+            }
+            continue;
+        }
+        draw.perTile = perTile;
+        require(bool(draw.pipeline) && !draw.pipeline->rayTracing && draw.pipeline->compute == bool(draw.tileAction),
+                "Pipeline stage differs from the render command");
+        require(!draw.pipeline->tileShader || op.tileShading, "Tile shader requires a tile render pass");
+        if (draw.tileAction) {
+            const auto &f = d->extensions->tile;
+            require(perTile && (draw.tileAction == 2 ? f.tileShadingDispatchTile : f.tileShadingPerTileDispatch),
+                    "Tile dispatch is unavailable or outside per-tile execution");
+            require((draw.tileAction == 2) == bool(draw.pipeline->tileRate[0]),
+                    "Area dispatch requires TileShadingRateQCOM; threadgroup dispatch requires LocalSize");
+        } else if (perTile) {
+            require(d->extensions->tile.tileShadingPerTileDraw && !draw.visibility && !draw.generated &&
+                        !(draw.pipeline->stages & ~(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)),
+                    "Per-tile drawing requires supported vertex/fragment commands without queries");
+        }
         if (draw.generated && draw.constants.empty())
             draw.constants.resize(draw.pipeline->pushBytes);
         resolveSamplers(*draw.pipeline, draw.bindings);
     }
+    require(!perTile, "End per-tile execution before ending the render pass");
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
     for (const auto &draw : op.draws) {
+        if (draw.tileAction >= 3)
+            continue;
         if (draw.visibility) {
             require(draw.visibility->owner() == d.get() && !draw.visibility->timestamp &&
                         draw.visibilityIndex < draw.visibility->count,
@@ -2336,7 +2460,6 @@ void Command::render(Render op) {
             counters.push_back(draw.visibility);
             counterIndices.push_back(draw.visibilityIndex);
         }
-        require(draw.pipeline && !draw.pipeline->compute, "Graphics pipeline required");
         validateBindings(*draw.pipeline, draw.bindings, draw.constants);
         if (draw.generated) {
             require(op.viewMask == 0, "Vulkan generated commands do not support multiview");
@@ -2347,21 +2470,29 @@ void Command::render(Render op) {
             require(!indexed || g.indexToken || draw.indexBuffer,
                     "Generated indexed drawing requires an index binding");
         }
-        if (op.passLayout) {
-            require(
-                draw.pipeline->graphics.passLayout && draw.pipeline->graphics.passLayout->key == op.passLayout->key &&
-                    draw.subpass == draw.pipeline->graphics.subpass && draw.subpass < op.passLayout->subpasses.size() &&
-                    draw.pipeline->graphics.viewMask == op.viewMask,
-                "Pipeline subpass layout/index mismatch");
-        } else {
-            require(!draw.pipeline->graphics.passLayout && draw.pipeline->graphics.colors == formats &&
-                        draw.pipeline->depthFormat == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED) &&
-                        draw.pipeline->graphics.samples == samples && draw.pipeline->graphics.viewMask == op.viewMask,
-                    "Pipeline attachment formats/sample count mismatch");
+        if (!draw.tileAction) {
+            require(draw.pipeline->graphics.tileShading == op.tileShading &&
+                        draw.pipeline->graphics.tileApron.width == op.tileApron.width &&
+                        draw.pipeline->graphics.tileApron.height == op.tileApron.height,
+                    "Pipeline and render pass tile options differ");
+            if (op.passLayout) {
+                require(draw.pipeline->graphics.passLayout &&
+                            draw.pipeline->graphics.passLayout->key == op.passLayout->key &&
+                            draw.subpass == draw.pipeline->graphics.subpass &&
+                            draw.subpass < op.passLayout->subpasses.size() &&
+                            draw.pipeline->graphics.viewMask == op.viewMask,
+                        "Pipeline subpass layout/index mismatch");
+            } else {
+                require(!draw.pipeline->graphics.passLayout && draw.pipeline->graphics.colors == formats &&
+                            draw.pipeline->depthFormat == (op.depth ? op.depth->format : VK_FORMAT_UNDEFINED) &&
+                            draw.pipeline->graphics.samples == samples &&
+                            draw.pipeline->graphics.viewMask == op.viewMask,
+                        "Pipeline attachment formats/sample count mismatch");
+            }
+            require(draw.pipeline->graphics.rateMapTexelSize.width == op.rateMapTexelSize.width &&
+                        draw.pipeline->graphics.rateMapTexelSize.height == op.rateMapTexelSize.height,
+                    "Pipeline rate map layout differs from render pass");
         }
-        require(draw.pipeline->graphics.rateMapTexelSize.width == op.rateMapTexelSize.width &&
-                    draw.pipeline->graphics.rateMapTexelSize.height == op.rateMapTexelSize.height,
-                "Pipeline rate map layout differs from render pass");
         for (const auto &b : draw.bindings) {
             if (b.texel)
                 buffers.push_back(b.texel->buffer);
@@ -2369,6 +2500,10 @@ void Command::render(Render op) {
                 buffers.push_back(b.buffer);
             const auto schema = std::find_if(draw.pipeline->bindings.begin(), draw.pipeline->bindings.end(),
                                              [&](const auto &s) { return s.binding == b.index; });
+            if (schema->tile) {
+                validateTileBinding(*draw.pipeline, *schema, b, op, draw.subpass);
+                continue;
+            }
             if (schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
                 require(op.passLayout &&
                             schema->inputAttachmentIndex < op.passLayout->subpasses[draw.subpass].inputs.size(),
@@ -2412,6 +2547,21 @@ void Command::render(Render op) {
                     (void)layer;
                     require(&b.texture->root() != root, "Attachment feedback is unsupported");
                 }
+        }
+        if (draw.tileAction) {
+            if (draw.indirect) {
+                same(*this, *draw.indirect);
+                require(draw.tileAction == 1 && (draw.indirect->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) &&
+                            draw.indirectOffset % 4 == 0,
+                        "Invalid indirect tile dispatch buffer");
+                range(draw.indirect->size, draw.indirectOffset, 12);
+                buffers.push_back(draw.indirect);
+            } else if (draw.tileAction == 1) {
+                for (int n = 0; n < 3; ++n)
+                    require(draw.meshGroups[n] > 0 && draw.meshGroups[n] <= l.maxComputeWorkGroupCount[n],
+                            "Tile dispatch workgroup count exceeds device limits");
+            }
+            continue;
         }
         require(draw.pipeline->graphics.mesh == (draw.meshGroups[0] != 0),
                 "Use mesh draws with mesh pipelines and primitive draws with vertex pipelines");
@@ -2522,20 +2672,22 @@ void Command::render(Render op) {
             if (draw.visibility)
                 vkCmdResetQueryPool(c.command, draw.visibility->pool, draw.visibilityIndex, 1);
         for (const auto &draw : op.draws)
-            c.prepare(*draw.pipeline, draw.bindings, false);
+            if (draw.tileAction < 3)
+                c.prepare(*draw.pipeline, draw.bindings, draw.tileAction != 0);
+        const auto colorLayout = op.tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        const auto depthLayout =
+            op.tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         std::vector<VkImageView> views;
         std::vector<VkClearValue> clears;
         for (const auto &a : op.colors) {
-            transition(*a.texture, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, a.load == VK_ATTACHMENT_LOAD_OP_LOAD,
-                       a.mip, a.layer);
+            transition(*a.texture, colorLayout, a.load == VK_ATTACHMENT_LOAD_OP_LOAD, a.mip, a.layer);
             views.push_back(a.texture->attachmentView(a.mip, a.layer, op.layers));
             VkClearValue value{};
             std::memcpy(&value.color, a.clear.data(), sizeof(value.color));
             clears.push_back(value);
         }
         if (op.depth) {
-            transition(*op.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                       op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD, op.depthMip, op.depthLayer);
+            transition(*op.depth, depthLayout, op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD, op.depthMip, op.depthLayer);
             views.push_back(op.depth->attachmentView(op.depthMip, op.depthLayer, op.layers));
             VkClearValue value{};
             value.depthStencil = {op.clearDepth, op.clearStencil};
@@ -2543,13 +2695,12 @@ void Command::render(Render op) {
         }
         for (const auto &a : op.colors)
             if (a.resolve) {
-                transition(*a.resolve, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false, a.resolveMip, a.resolveLayer);
+                transition(*a.resolve, colorLayout, false, a.resolveMip, a.resolveLayer);
                 views.push_back(a.resolve->attachmentView(a.resolveMip, a.resolveLayer, op.layers));
                 clears.push_back({});
             }
         if (op.depthResolve) {
-            transition(*op.depthResolve, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, op.depthResolveMip,
-                       op.depthResolveLayer);
+            transition(*op.depthResolve, depthLayout, false, op.depthResolveMip, op.depthResolveLayer);
             views.push_back(op.depthResolve->attachmentView(op.depthResolveMip, op.depthResolveLayer, op.layers));
             clears.push_back({});
         }
@@ -2573,6 +2724,21 @@ void Command::render(Render op) {
         VkFramebuffer fb;
         check(vkCreateFramebuffer(c.d->device, &fi, nullptr, &fb), "vkCreateFramebuffer");
         c.framebuffers.push_back(fb);
+        if (op.tileShading &&
+            std::any_of(op.draws.begin(), op.draws.end(), [](const auto &draw) { return draw.tileAction == 2; })) {
+            uint32_t count = 0;
+            check(c.d->extensions->framebufferTiles(c.d->device, fb, &count, nullptr), "query framebuffer tile count");
+            std::vector<VkTilePropertiesQCOM> tiles(count, {VK_STRUCTURE_TYPE_TILE_PROPERTIES_QCOM});
+            check(c.d->extensions->framebufferTiles(c.d->device, fb, &count, tiles.data()), "query framebuffer tiles");
+            require(count >= (op.passLayout ? op.passLayout->subpasses.size() : 1),
+                    "Missing framebuffer tile properties");
+            for (const auto &draw : op.draws)
+                if (draw.tileAction == 2) {
+                    auto z = draw.pipeline->tileRate[2];
+                    require(z <= tiles[draw.subpass].tileSize.depth && tiles[draw.subpass].tileSize.depth % z == 0,
+                            "Tile shading Z rate must divide the framebuffer tile depth");
+                }
+        }
         VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         bi.renderPass = pass;
         bi.framebuffer = fb;
@@ -2585,6 +2751,30 @@ void Command::render(Render op) {
             while (activeSubpass < draw.subpass) {
                 vkCmdNextSubpass(c.command, VK_SUBPASS_CONTENTS_INLINE);
                 ++activeSubpass;
+            }
+            if (draw.tileAction >= 3) {
+                if (draw.tileAction == 3) {
+                    VkPerTileBeginInfoQCOM info{VK_STRUCTURE_TYPE_PER_TILE_BEGIN_INFO_QCOM};
+                    c.d->extensions->beginTile(c.command, &info);
+                } else if (draw.tileAction == 4) {
+                    VkPerTileEndInfoQCOM info{VK_STRUCTURE_TYPE_PER_TILE_END_INFO_QCOM};
+                    c.d->extensions->endTile(c.command, &info);
+                    // Per-tile state changes do not promise state for subsequent non-tile commands.
+                    c.boundPipelines = {};
+                } else
+                    tileBarrier(c);
+                continue;
+            }
+            if (draw.tileAction) {
+                c.bind(*draw.pipeline, draw.bindings, draw.constants);
+                if (draw.tileAction == 2) {
+                    VkDispatchTileInfoQCOM info{VK_STRUCTURE_TYPE_DISPATCH_TILE_INFO_QCOM};
+                    c.d->extensions->dispatchTile(c.command, &info);
+                } else if (draw.indirect)
+                    vkCmdDispatchIndirect(c.command, draw.indirect->buffer, draw.indirectOffset);
+                else
+                    vkCmdDispatch(c.command, draw.meshGroups[0], draw.meshGroups[1], draw.meshGroups[2]);
+                continue;
             }
             const VkViewport defaultViewport{0, float(extent.height), float(extent.width), -float(extent.height), 0, 1};
             const VkRect2D defaultScissor{{0, 0}, {extent.width, extent.height}};

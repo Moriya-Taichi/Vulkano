@@ -22,6 +22,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Viewport / Scissor | setViewports / setScissorRects | 複数Viewportは端末依存 |
 | 可変Shading Rate | fragmentSize / fragmentShadingRates | Pipeline、Primitive、Rate Map Attachment。サイズとSample Countを照合 |
 | Subpass / Input Attachment | RenderPassLayout / nextSubpass | Color/Depth/MSAA入力、Color Resolve、Attachment保持、BY_REGION依存関係 |
+| Tile Compute / Tile Attachment | perTile / dispatchTileThreadgroups / dispatchTile | VK_QCOM_tile_shading。色・深度・Stencil・Input・SampledのFeature、Apron、Tile内Barrier |
 | Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
 | Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer、ASTC LDR/HDR、ETC/EAC、BC、PVRTC |
 | Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Swizzle、Usage制限、VkBufferView |
@@ -51,7 +52,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 
 | 機能 | 残る実装 |
 | --- | --- |
-| Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
 | 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
@@ -61,8 +61,16 @@ GPUのメーカー名からFeatureの有無を推定しません。
 Device Generated Commandsは、対応するShader StageとPipeline Binding Stageを個別に問い合わせます。
 選択先のPipelineは固定描画状態、Descriptor Layout、Push Constant Layout、Fragment出力の一致が必要です。
 このVulkan拡張ではMultiviewのView Maskを0にする必要があります。
+Mesh Tokenには`MESH_SHADER`と`TASK_SHADER`の両方を有効にします。
 DescriptorのGPU選択にはRuntime ArrayやBuffer Device Addressを組み合わせます。
 前処理は各実行に固有の領域で行い、明示的な前処理結果の再利用は公開していません。
+
+Tile内の命令はTileごとに独立して実行され、Tile間の順序は保証されません。
+Tile Attachment用DescriptorはFramebufferと等価なImage、Mip、Layer、Format、ComponentのViewを指定します。
+Fragment、Depth/Stencil、InputのTile Imageは`readonly`で宣言します。
+Storage Imageとして参照するTile Attachmentには`STORAGE` Usageが必要で、Memoryless Textureにはできません。
+Apronは周辺画素の読み取り用で、書き込み先にはできません。
+Tile内ではTessellation、Mesh、Ray Tracing、Visibility Queryを使用できません。
 
 SubpassはColor ResolveとMultiviewに対応します。
 Depth/Stencil ResolveとRate Mapは単一Subpassで利用でき、明示的なSubpass Layoutとの組み合わせは未実装です。

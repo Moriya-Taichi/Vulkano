@@ -236,6 +236,7 @@ data class RenderPipelineDescriptor(
     val rateMapCombiner: ShadingRateCombiner = ShadingRateCombiner.REPLACE,
     val primitiveShadingRateCombiner: ShadingRateCombiner = ShadingRateCombiner.KEEP,
     val supportsIndirectCommands: Boolean = false,
+    val tileShading: TileShadingDescriptor? = null,
 ) {
     internal fun pack(): IntArray {
         require(

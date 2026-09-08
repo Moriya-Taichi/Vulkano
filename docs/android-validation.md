@@ -58,3 +58,10 @@ adb shell getconf PAGE_SIZE
 
 Sparse対応端末ではPage/TileのMap/Unmap、Mapping共有、Mip Tail、Shader Residencyのテストも実行します。
 Placement HeapはAlignmentと領域の検査、Alias Barrier後の描画結果を確認します。
+
+
+Tile Shading対応端末では、Featureを確認してからTile内の通常/間接Dispatch、Area Dispatch、FragmentのAttachment Readを実行します。
+Apron、Depth/Stencil、Input/Sampled Attachment、複数Subpassとの組み合わせは、対応するFeatureを備えた実機でも確認してください。
+CIのSPIRV-ToolsはVulkan-ValidationLayers 1.4.335の固定依存版です。
+`tools/compile-test-shaders.py`には`glslc`と`spirv-as`が必要です。
+JNIからのValidation ErrorはGradle全体のログも対象にして検査します。

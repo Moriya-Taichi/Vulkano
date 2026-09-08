@@ -19,6 +19,9 @@ std::vector<uint64_t> generatedGraphicsKey(const Pipeline &p) {
         return v;
     };
     std::vector<uint64_t> k{g.mesh,
+                            g.tileShading,
+                            g.tileApron.width,
+                            g.tileApron.height,
                             g.subpass,
                             g.samples,
                             g.topology,
@@ -76,9 +79,11 @@ std::vector<uint64_t> generatedGraphicsKey(const Pipeline &p) {
 namespace {
 bool sameBinding(const BindingLayout &a, const BindingLayout &b) {
     return std::tie(a.binding, a.type, a.storageFormat, a.minimumBytes, a.count, a.stages, a.imageDim, a.arrayed,
-                    a.multisampled, a.shadow, a.runtime, a.inputAttachmentIndex, a.numericType, a.immutableSampler) ==
-           std::tie(b.binding, b.type, b.storageFormat, b.minimumBytes, b.count, b.stages, b.imageDim, b.arrayed,
-                    b.multisampled, b.shadow, b.runtime, b.inputAttachmentIndex, b.numericType, b.immutableSampler);
+                    a.multisampled, a.shadow, a.runtime, a.inputAttachmentIndex, a.numericType, a.immutableSampler,
+                    a.tile, a.readonly) == std::tie(b.binding, b.type, b.storageFormat, b.minimumBytes, b.count,
+                                                    b.stages, b.imageDim, b.arrayed, b.multisampled, b.shadow,
+                                                    b.runtime, b.inputAttachmentIndex, b.numericType,
+                                                    b.immutableSampler, b.tile, b.readonly);
 }
 void compatible(const Pipeline &a, const Pipeline &b) {
     require(a.owner() == b.owner() && a.compute == b.compute && a.rayTracing == b.rayTracing && a.stages == b.stages &&
@@ -103,6 +108,10 @@ GeneratedLayout::GeneratedLayout(std::shared_ptr<Device> device, std::vector<std
     require(!pipelines.empty() && pipelines.front() && pipelines.front()->owner() == d.get(),
             "Missing initial pipeline");
     const auto &base = *pipelines.front();
+    if (base.graphics.mesh)
+        require((d->enabled & (MeshShader | TaskShader)) == (MeshShader | TaskShader),
+                "Generated mesh tokens require both mesh and task shader features");
+    require(!base.tileShader || !base.compute, "Generated compute cannot execute tile shaders");
     require(!(base.stages & ~limits.supportedIndirectCommandsShaderStages), "Unsupported generated shader stages");
     require(!tokens.empty() && tokens.size() <= limits.maxIndirectCommandsTokenCount && stride > 0 && stride % 4 == 0 &&
                 stride <= limits.maxIndirectCommandsIndirectStride,

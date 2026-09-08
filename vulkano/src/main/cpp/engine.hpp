@@ -106,7 +106,8 @@ enum ExtraFeature : uint64_t {
     DrawIndirectCount = 8,
     AstcHdr = 16,
     Pvrtc = 32,
-    DeviceGeneratedCommands = 64
+    DeviceGeneratedCommands = 64,
+    TileShading = 128
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -274,6 +275,7 @@ struct BindingLayout {
     bool arrayed = false, multisampled = false, shadow = false, runtime = false;
     uint32_t inputAttachmentIndex = 0;
     int numericType = -1;
+    bool tile = false, readonly = false;
     std::shared_ptr<Sampler> immutableSampler;
     uint64_t descriptorCost() const {
         return uint64_t(count) * (immutableSampler ? immutableSampler->descriptorCost : 1);
@@ -301,6 +303,8 @@ std::shared_ptr<SubpassLayout> parseSubpassLayout(const std::vector<int> &);
 void validateSubpassLayout(Device &, const SubpassLayout &);
 struct GraphicsOptions {
     bool mesh = false, indirectBindable = false;
+    bool tileShading = false;
+    VkExtent2D tileApron{};
     std::shared_ptr<SubpassLayout> passLayout;
     uint32_t subpass = 0;
     std::shared_ptr<Shader> task;
@@ -342,6 +346,8 @@ struct Pipeline : Resource {
     bool rayTracing = false, indirectBindable = false;
     std::vector<uint64_t> generatedStateKey;
     std::vector<std::vector<uint64_t>> fragmentInterface;
+    bool tileShader = false;
+    std::array<uint32_t, 3> tileRate{};
     GraphicsOptions graphics;
     VkShaderStageFlags stages = 0;
     std::array<uint32_t, 3> localSize{1, 1, 1};
@@ -399,6 +405,8 @@ struct Draw {
     uint32_t visibilityIndex = 0;
     uint32_t subpass = 0;
     std::shared_ptr<GeneratedExecution> generated;
+    bool perTile = false;
+    uint32_t tileAction = 0; // 0 draw, 1 dispatch, 2 area dispatch, 3 begin, 4 end, 5 barrier
 };
 struct Attachment {
     std::shared_ptr<Texture> texture, resolve;
@@ -425,9 +433,12 @@ struct Render {
     uint32_t depthResolveMip = 0, depthResolveLayer = 0;
     VkResolveModeFlagBits depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT,
                           stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    bool tileShading = false;
+    VkExtent2D tileApron{};
 };
 VkRenderPass makeSubpassPass(Device &, const SubpassLayout &, const std::vector<Attachment> &, VkAttachmentLoadOp,
-                             VkAttachmentStoreOp, uint32_t viewMask);
+                             VkAttachmentStoreOp, uint32_t viewMask, bool tileShading = false,
+                             VkExtent2D tileApron = {});
 struct ImageRegion {
     uint32_t mip = 0, layer = 0, layers = 1;
     VkOffset3D origin{};

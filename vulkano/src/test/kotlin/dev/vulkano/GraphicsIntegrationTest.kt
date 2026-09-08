@@ -36,6 +36,223 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun tileShadingRequiresExplicitFeatureAndRenderPass(): Unit =
+        device().use { d ->
+            assertThrows(IllegalArgumentException::class.java) { TileShadingDescriptor(-1) }
+            for (file in listOf("tile-loop.comp.spv", "tile-area.comp.spv")) {
+                assertThrows(IllegalArgumentException::class.java) {
+                    d.makeComputePipelineState(d.function(file))
+                }
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        tileShading = TileShadingDescriptor(),
+                    )
+                )
+            }
+            val texture =
+                d.makeTexture(TextureDescriptor(8, 8, usage = setOf(TextureUsage.COLOR_ATTACHMENT)))
+            d.makeCommandQueue().use { q ->
+                q.makeCommandBuffer().use { c ->
+                    assertThrows(IllegalArgumentException::class.java) {
+                        c.makeRenderCommandEncoder(
+                            RenderPassDescriptor(
+                                listOf(ColorAttachment(texture)),
+                                tileShading = TileShadingDescriptor(),
+                            )
+                        )
+                    }
+                    c.render(RenderPassDescriptor(ColorAttachment(texture))) {
+                        assertThrows(IllegalArgumentException::class.java) {
+                            beginPerTileExecution()
+                        }
+                    }
+                }
+            }
+        }
+
+    private fun Device.tileTarget() =
+        makeTexture(
+            TextureDescriptor(
+                32,
+                32,
+                usage =
+                    setOf(
+                        TextureUsage.COLOR_ATTACHMENT,
+                        TextureUsage.STORAGE,
+                        TextureUsage.TRANSFER_SOURCE,
+                    ),
+            )
+        )
+
+    private fun tileExtent() =
+        ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putInt(32).putInt(32).array()
+
+    private fun assertTilePixels(bytes: ByteArray, green: Int) {
+        for (at in bytes.indices step 4) {
+            assertEquals("red at ${at / 4}", 255, bytes[at].toInt() and 255)
+            assertTrue(
+                "green at ${at / 4}",
+                kotlin.math.abs((bytes[at + 1].toInt() and 255) - green) <= 1,
+            )
+            assertEquals("blue at ${at / 4}", 128, bytes[at + 2].toInt() and 255)
+            assertEquals("alpha at ${at / 4}", 255, bytes[at + 3].toInt() and 255)
+        }
+    }
+
+    @Test
+    fun tileThreadgroupsReadWriteAttachmentsAndRetainResources(): Unit {
+        val caps = device().use { it.tileShadingCapabilities() }
+        assumeTrue(caps != null && caps.perTileDispatch && caps.colorAttachments)
+        device(setOf(Feature.TILE_SHADING)).use { d ->
+            val target = d.tileTarget()
+            val output = d.makeBuffer(32L * 32 * 4)
+            val compute = d.makeComputePipelineState(d.function("tile-loop.comp.spv"))
+            assertNull(compute.tileShadingRate)
+            val draw =
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        tileShading = TileShadingDescriptor(),
+                    )
+                )
+            val args = d.makeBuffer(12, usage = setOf(BufferUsage.INDIRECT))
+            args.write(
+                ByteBuffer.allocateDirect(12).order(ByteOrder.nativeOrder()).apply {
+                    putInt(1)
+                    putInt(1)
+                    putInt(1)
+                    flip()
+                }
+            )
+            d.makeCommandQueue().use { q ->
+                q.makeCommandBuffer().use { c ->
+                    c.compute {
+                        setComputePipelineState(compute)
+                        setTexture(target, 0)
+                        setBytes(tileExtent())
+                        assertThrows(IllegalArgumentException::class.java) {
+                            dispatchThreadgroups(Size(1))
+                        }
+                    }
+                }
+            }
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        listOf(ColorAttachment(target)),
+                        tileShading = TileShadingDescriptor(),
+                    )
+                ) {
+                    setRenderPipelineState(draw)
+                    drawPrimitives(3)
+                    resetBindings()
+                    setTileComputePipelineState(compute)
+                    setTexture(target, 0)
+                    setBytes(tileExtent())
+                    assertThrows(IllegalArgumentException::class.java) {
+                        dispatchTileThreadgroups(Size(1))
+                    }
+                    perTile {
+                        assertThrows(IllegalArgumentException::class.java) {
+                            beginPerTileExecution()
+                        }
+                        tileMemoryBarrier()
+                        dispatchTileThreadgroups(Size(1))
+                        tileMemoryBarrier()
+                        dispatchTileThreadgroups(args)
+                    }
+                }
+                blit { copy(target, output) }
+                target.close()
+                compute.close()
+                args.close()
+                draw.close()
+            }
+            assertTilePixels(output.readBytes(32 * 32 * 4), 192)
+        }
+    }
+
+    @Test
+    fun areaTileDispatchCoversFramebuffer(): Unit {
+        val caps = device().use { it.tileShadingCapabilities() }
+        assumeTrue(
+            caps != null &&
+                caps.areaDispatch &&
+                caps.colorAttachments &&
+                (caps.perTileDraw || caps.perTileDispatch)
+        )
+        device(setOf(Feature.TILE_SHADING)).use { d ->
+            val target = d.tileTarget()
+            val output = d.makeBuffer(32L * 32 * 4)
+            val compute = d.makeComputePipelineState(d.function("tile-area.comp.spv"))
+            assertEquals(Size(1), compute.tileShadingRate)
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        listOf(
+                            ColorAttachment(target, clearColor = ClearColor(1f, 0.25f, 0.5f, 1f))
+                        ),
+                        tileShading = TileShadingDescriptor(),
+                    )
+                ) {
+                    setTileComputePipelineState(compute)
+                    setTexture(target, 0)
+                    setBytes(tileExtent())
+                    perTile {
+                        tileMemoryBarrier()
+                        dispatchTile()
+                    }
+                }
+                blit { copy(target, output) }
+            }
+            assertTilePixels(output.readBytes(32 * 32 * 4), 128)
+        }
+    }
+
+    @Test
+    fun fragmentTileReadsObservePreviousDraw(): Unit {
+        val caps = device().use { it.tileShadingCapabilities() }
+        assumeTrue(caps != null && caps.fragmentStage && caps.colorAttachments)
+        device(setOf(Feature.TILE_SHADING)).use { d ->
+            val target = d.tileTarget()
+            val output = d.makeBuffer(32L * 32 * 4)
+            val descriptor =
+                RenderPipelineDescriptor(
+                    d.function("fullscreen.vert.spv"),
+                    d.function("solid.frag.spv"),
+                    tileShading = TileShadingDescriptor(),
+                )
+            val first = d.makeRenderPipelineState(descriptor)
+            val second =
+                d.makeRenderPipelineState(
+                    descriptor.copy(fragmentFunction = d.function("tile-read.frag.spv"))
+                )
+            d.submit {
+                render(
+                    RenderPassDescriptor(
+                        listOf(ColorAttachment(target)),
+                        tileShading = TileShadingDescriptor(),
+                    )
+                ) {
+                    setRenderPipelineState(first)
+                    drawPrimitives(3)
+                    tileMemoryBarrier()
+                    setRenderPipelineState(second)
+                    setTexture(target, 0)
+                    if (caps!!.perTileDraw) perTile { drawPrimitives(3) } else drawPrimitives(3)
+                }
+                blit { copy(target, output) }
+            }
+            assertTilePixels(output.readBytes(32 * 32 * 4), 128)
+        }
+    }
+
+    @Test
     fun generatedCommandsRequireFeatureAndValidateTokenOffsets(): Unit =
         device().use { d ->
             assertThrows(IllegalArgumentException::class.java) { IndirectCommandToken.draw(2) }
@@ -174,10 +391,12 @@ class GraphicsIntegrationTest {
                 ShaderStage.FRAGMENT in limits.pipelineBindingStages
         )
         val mesh =
-            Feature.MESH_SHADER in available && ShaderStage.MESH in limits!!.pipelineBindingStages
+            Feature.MESH_SHADER in available &&
+                Feature.TASK_SHADER in available &&
+                ShaderStage.MESH in limits!!.pipelineBindingStages
         device(
                 setOf(Feature.DEVICE_GENERATED_COMMANDS) +
-                    if (mesh) setOf(Feature.MESH_SHADER) else emptySet()
+                    if (mesh) setOf(Feature.MESH_SHADER, Feature.TASK_SHADER) else emptySet()
             )
             .use { d ->
                 val usage =

@@ -1,0 +1,77 @@
+; QCOM enum operands use raw integers so older spirv-as can assemble these fixtures.
+; Validation still uses SPIRV-Tools matching Vulkan 1.4.335 in CI.
+OpCapability Shader
+OpCapability !4495 ; TileShadingQCOM
+OpExtension "SPV_QCOM_tile_shading"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %image %tileOffset %tileDimension %extent
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %tileOffset BuiltIn !4492 ; TileOffsetQCOM
+OpDecorate %tileDimension BuiltIn !4493 ; TileDimensionQCOM
+OpDecorate %image DescriptorSet 0
+OpDecorate %image Binding 0
+OpDecorate %extentBlock Block
+OpMemberDecorate %extentBlock 0 Offset 0
+%void = OpTypeVoid
+%function = OpTypeFunction %void
+%bool = OpTypeBool
+%u32 = OpTypeInt 32 0
+%uvec2 = OpTypeVector %u32 2
+%uvec3 = OpTypeVector %u32 3
+%bvec2 = OpTypeVector %bool 2
+%float = OpTypeFloat 32
+%vec4 = OpTypeVector %float 4
+%u0 = OpConstant %u32 0
+%u1 = OpConstant %u32 1
+%f0 = OpConstant %float 0
+%quarter = OpConstant %float 0.25
+%increment = OpConstantComposite %vec4 %f0 %quarter %f0 %f0
+%imageType = OpTypeImage %float 2D 0 0 0 2 Rgba8
+%tileImagePtr = OpTypePointer !4491 %imageType ; TileAttachmentQCOM
+%image = OpVariable %tileImagePtr !4491
+%offsetPtr = OpTypePointer Input %uvec2
+%dimensionPtr = OpTypePointer Input %uvec3
+%tileOffset = OpVariable %offsetPtr Input
+%tileDimension = OpVariable %dimensionPtr Input
+%extentBlock = OpTypeStruct %uvec2
+%extentPtr = OpTypePointer PushConstant %extentBlock
+%extentMemberPtr = OpTypePointer PushConstant %uvec2
+%extent = OpVariable %extentPtr PushConstant
+%main = OpFunction %void None %function
+%entry = OpLabel
+%offset = OpLoad %uvec2 %tileOffset
+%dimension3 = OpLoad %uvec3 %tileDimension
+%extentMember = OpAccessChain %extentMemberPtr %extent %u0
+%limit = OpLoad %uvec2 %extentMember
+%img = OpLoad %imageType %image
+%width = OpCompositeExtract %u32 %dimension3 0
+%height = OpCompositeExtract %u32 %dimension3 1
+%total = OpIMul %u32 %width %height
+OpBranch %loop
+%loop = OpLabel
+%i = OpPhi %u32 %u0 %entry %next %continue
+%more = OpULessThan %bool %i %total
+OpLoopMerge %done %continue None
+OpBranchConditional %more %body %done
+%body = OpLabel
+%x = OpUMod %u32 %i %width
+%y = OpUDiv %u32 %i %width
+%local = OpCompositeConstruct %uvec2 %x %y
+%pixel = OpIAdd %uvec2 %offset %local
+%inside2 = OpULessThan %bvec2 %pixel %limit
+%inside = OpAll %bool %inside2
+OpSelectionMerge %continueRead None
+OpBranchConditional %inside %write %continueRead
+%write = OpLabel
+%old = OpImageRead %vec4 %img %pixel
+%new = OpFAdd %vec4 %old %increment
+OpImageWrite %img %pixel %new
+OpBranch %continueRead
+%continueRead = OpLabel
+OpBranch %continue
+%continue = OpLabel
+%next = OpIAdd %u32 %i %u1
+OpBranch %loop
+%done = OpLabel
+OpReturn
+OpFunctionEnd

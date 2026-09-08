@@ -69,6 +69,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     TEXTURE_COMPRESSION_ASTC_HDR(16, 1),
     TEXTURE_COMPRESSION_PVRTC(32, 1),
     DEVICE_GENERATED_COMMANDS(64, 1),
+    TILE_SHADING(128, 1),
 }
 
 enum class StorageMode {
@@ -470,6 +471,7 @@ data class RenderPassDescriptor(
     val renderTargetArrayLength: Int = 1,
     val rasterizationRateMap: RasterizationRateMap? = null,
     val subpassLayout: RenderPassLayout? = null,
+    val tileShading: TileShadingDescriptor? = null,
 ) {
     constructor(
         colorAttachment: ColorAttachment,

@@ -218,6 +218,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                     descriptor.subpassLayout?.pack() ?: intArrayOf(),
                     descriptor.subpassIndex,
                     descriptor.supportsIndirectCommands,
+                    descriptor.tileShading?.pack() ?: intArrayOf(),
                 )
             RenderPipelineState(this, id, Native.pipelineLocalSize(id)[3])
         }

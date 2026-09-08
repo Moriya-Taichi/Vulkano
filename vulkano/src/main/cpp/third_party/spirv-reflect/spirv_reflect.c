@@ -2138,7 +2138,8 @@ static SpvReflectResult ParseDescriptorBindings(SpvReflectPrvParser* p_parser, S
     SpvReflectPrvNode* p_node = &(p_parser->nodes[i]);
     if ((p_node->op != SpvOpVariable) ||
         ((p_node->storage_class != SpvStorageClassUniform) && (p_node->storage_class != SpvStorageClassStorageBuffer) &&
-         (p_node->storage_class != SpvStorageClassUniformConstant))) {
+         (p_node->storage_class != SpvStorageClassUniformConstant) &&
+         (p_node->storage_class != SpvStorageClassTileAttachmentQCOM))) {
       continue;
     }
     if ((p_node->decorations.set.value == INVALID_VALUE) || (p_node->decorations.binding.value == INVALID_VALUE)) {
@@ -2173,7 +2174,8 @@ static SpvReflectResult ParseDescriptorBindings(SpvReflectPrvParser* p_parser, S
     SpvReflectPrvNode* p_node = &(p_parser->nodes[i]);
     if ((p_node->op != SpvOpVariable) ||
         ((p_node->storage_class != SpvStorageClassUniform) && (p_node->storage_class != SpvStorageClassStorageBuffer) &&
-         (p_node->storage_class != SpvStorageClassUniformConstant))) {
+         (p_node->storage_class != SpvStorageClassUniformConstant) &&
+         (p_node->storage_class != SpvStorageClassTileAttachmentQCOM))) {
       continue;
     }
     if ((p_node->decorations.set.value == INVALID_VALUE) || (p_node->decorations.binding.value == INVALID_VALUE)) {
