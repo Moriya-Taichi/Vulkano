@@ -300,3 +300,25 @@ ViewのBinding Offsetには、通常のStorage Bufferと同じAlignment制約が
 `cooperativeMatrixConfigurations()`が返すM、N、K、数値型、Saturationの組み合わせからShaderを作成します。
 16ビットの演算を含むShaderでは`SHADER_FLOAT16`などのFeatureも要求します。
 [cooperative.comp](../tests/shaders/cooperative.comp)と対応する統合テストは、Function Constantsで行列サイズとSubgroup幅を指定する例です。
+
+## Placement Heap
+
+`heapBufferRequirements`と`heapTextureRequirements`は、物理メモリを確保せずに端末の配置条件を問い合わせます。
+Heapに置く各Resourceの条件を渡し、互換性のあるMemory Typeを選びます。
+
+```kotlin
+val desc = TextureDescriptor(256, 256, usage = setOf(TextureUsage.COLOR_ATTACHMENT))
+val req = device.heapTextureRequirements(desc)
+val heap = device.makePlacementHeap(req.size, listOf(req))
+val first = heap.makeTexture(desc, offset = 0)
+val second = heap.makeTexture(desc, offset = 0)
+command.render(RenderPassDescriptor(listOf(ColorAttachment(first))))
+command.blit { aliasResources(first, second) }
+command.render(RenderPassDescriptor(listOf(ColorAttachment(second))))
+```
+
+同じ領域のResourceを同時には使いません。
+各切り替えでAlias Barrierを発行し、TextureはClearや全面転送から再開します。
+異なる画像間で内容を引き継ぐことはできません。
+Shared Placement BufferへのCPUアクセスは、DeviceのGPU Commandが完了した状態で行います。
+Heapを閉じた後も、作成済みResourceが割り当てを保持します。

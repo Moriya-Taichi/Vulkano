@@ -179,9 +179,11 @@ uint64_t Texture::byteSize(uint32_t mip) const {
            e.depth * pixelSize();
 }
 Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags u, Storage s,
-                 TextureOptions o, std::shared_ptr<Heap> hpool)
+                 TextureOptions o, std::shared_ptr<Heap> hpool, VkDeviceSize offset, bool unbound)
     : Resource(std::move(device)), format(f), width(w), height(h), options(o), usage(u), storage(s) {
     heap = std::move(hpool);
+    heapOffset = offset;
+    require(!offset || (heap && heap->placement()), "An offset requires a placement heap");
     if (heap)
         require(heap->owner() == d.get() && heap->storage == Storage::Private,
                 "Texture requires a private heap on the same device");
@@ -253,11 +255,28 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         alloc.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
     if (heap)
         alloc.pool = heap->pool;
-    check(vmaCreateImage(d->allocator, &info, &alloc, &image, &allocation, nullptr), "vmaCreateImage");
+    if (unbound || (heap && heap->placement())) {
+        check(vkCreateImage(d->device, &info, nullptr, &image), "create unbound image");
+        try {
+            if (!unbound) {
+                bool dedicated;
+                const auto requirements = textureRequirements(*d, image, &dedicated);
+                heapSpan = heap->validate(requirements, dedicated, offset);
+                check(vmaBindImageMemory2(d->allocator, heap->block, offset, image, nullptr), "bind placed image");
+            }
+        } catch (...) {
+            vkDestroyImage(d->device, image, nullptr);
+            image = VK_NULL_HANDLE;
+            throw;
+        }
+        if (unbound)
+            return;
+    } else
+        check(vmaCreateImage(d->allocator, &info, &alloc, &image, &allocation, nullptr), "vmaCreateImage");
     try {
         states.resize(size_t(o.layers) * o.mipLevels);
         VkMemoryPropertyFlags mf;
-        vmaGetAllocationMemoryProperties(d->allocator, allocation, &mf);
+        vmaGetAllocationMemoryProperties(d->allocator, heap && heap->placement() ? heap->block : allocation, &mf);
         lazy = (mf & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) != 0;
         if (usage & viewUsages)
             view = imageView(*this, f, o.type, 0, o.mipLevels, 0, o.layers);
@@ -500,6 +519,7 @@ void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDevi
                    ImageRegion r, uint32_t row, uint32_t height) {
     recording();
     require(b && t, "Buffer and texture required");
+    require(!memoryOverlaps(*b, *t), "Buffer/image copy aliases physical memory");
     sameOwner(*this, *b);
     sameOwner(*this, *t);
     t->usable();
@@ -545,6 +565,7 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
     validRegion(*source, a);
     validRegion(*dest, b);
     const bool sameImage = source->image == dest->image;
+    require(sameImage || !memoryOverlaps(*source, *dest), "Image copy aliases physical memory");
     if (sameImage && source->baseMip + a.mip == dest->baseMip + b.mip) {
         auto overlap = [](uint64_t a, uint64_t an, uint64_t b, uint64_t bn) { return a < b + bn && b < a + an; };
         const bool aliases = overlap(source->baseLayer + a.layer, a.layers, dest->baseLayer + b.layer, b.layers) &&

@@ -32,7 +32,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Object / Mesh Shader | objectFunction / meshShader | VK_EXT_mesh_shader。Task Shaderは別Feature |
 | Ray Query | AccelerationStructureとCompute/Graphics Shader | VK_KHR_ray_query、BLAS/TLAS、Triangle/AABB、Build/Refit、Copy/Compaction、SerializationとBLASアドレス再配置 |
 | Ray Tracing Pipeline | RayTracingPipelineState / traceRays | Raygen、Miss、Hit、Intersection、Callable、SBT。端末依存 |
-| Heap | makeHeap | 固定容量のVMA Pool |
+| Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
 | Event | makeSharedEvent | Timeline Semaphore。WaitはCommandの開始前、Signalは完了時 |
 | Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
 | Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
@@ -52,7 +52,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
 | GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
-| Placement Heap / Alias | 配置オフセットの指定とAlias Barrier |
 | Androidとの画像共有 | AHardwareBuffer、外部Semaphore、Camera用Format変換 |
 | 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |

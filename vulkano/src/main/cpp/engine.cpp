@@ -1093,7 +1093,7 @@ void Device::waitIdle() {
 }
 
 Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsageFlags flags, Storage mode,
-               bool writeOnly, std::shared_ptr<Heap> h)
+               bool writeOnly, std::shared_ptr<Heap> h, VkDeviceSize offset, bool unbound)
     : Resource(std::move(device)), size(length), usage(flags), storage(mode), cpuWriteOnly(writeOnly) {
     heap = std::move(h);
     if (heap)
@@ -1114,6 +1114,24 @@ Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsag
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = size;
     info.usage = usage;
+    heapOffset = offset;
+    require(!offset || (heap && heap->placement()), "An offset requires a placement heap");
+    if (unbound || (heap && heap->placement())) {
+        check(vkCreateBuffer(d->device, &info, nullptr, &buffer), "create unbound buffer");
+        try {
+            if (!unbound) {
+                bool dedicated;
+                const auto requirements = bufferRequirements(*d, buffer, &dedicated);
+                heapSpan = heap->validate(requirements, dedicated, offset);
+                check(vmaBindBufferMemory2(d->allocator, heap->block, offset, buffer, nullptr), "bind placed buffer");
+            }
+        } catch (...) {
+            vkDestroyBuffer(d->device, buffer, nullptr);
+            buffer = VK_NULL_HANDLE;
+            throw;
+        }
+        return;
+    }
     VmaAllocationCreateInfo alloc{};
     alloc.usage = storage == Storage::Shared ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (storage == Storage::Shared) {
@@ -1145,7 +1163,11 @@ void Buffer::write(VkDeviceSize offset, const void *bytes, size_t count) {
     require(storage == Storage::Shared, "Private buffers require a blit from shared storage");
     d->collect();
     require(inFlight == 0, "Buffer is in use by the GPU; wait for command completion");
-    check(vmaCopyMemoryToAllocation(d->allocator, bytes, allocation, offset, count), "write/flush shared buffer");
+    if (heap && heap->placement())
+        require(d->pending.empty(), "Placed CPU access requires completed GPU commands");
+    check(vmaCopyMemoryToAllocation(d->allocator, bytes, heap && heap->placement() ? heap->block : allocation,
+                                    heapOffset + offset, count),
+          "write/flush shared buffer");
 }
 void Buffer::read(VkDeviceSize offset, void *bytes, size_t count) {
     require(!cpuWriteOnly, "Upload buffers prohibit CPU reads; blit to a shared readback buffer");
@@ -1153,7 +1175,11 @@ void Buffer::read(VkDeviceSize offset, void *bytes, size_t count) {
     require(storage == Storage::Shared, "Private buffers require a blit to shared storage");
     d->collect();
     require(inFlight == 0, "Buffer is in use by the GPU; wait for command completion");
-    check(vmaCopyAllocationToMemory(d->allocator, allocation, offset, bytes, count), "invalidate/read shared buffer");
+    if (heap && heap->placement())
+        require(d->pending.empty(), "Placed CPU access requires completed GPU commands");
+    check(vmaCopyAllocationToMemory(d->allocator, heap && heap->placement() ? heap->block : allocation,
+                                    heapOffset + offset, bytes, count),
+          "invalidate/read shared buffer");
 }
 void Pipeline::makeLayout() {
     require(pushBytes % 4 == 0 && pushBytes <= d->properties.limits.maxPushConstantsSize,
@@ -1368,8 +1394,9 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
                 "Invalid/disabled mesh pipeline");
         Module vs(*d, vertex, g.mesh ? SpvExecutionModelMeshEXT : 0), fs(*d, fragment, 4);
         for (const auto &[location, kind] : vs.inputs) {
-            const auto attribute = std::find_if(g.attributes.begin(), g.attributes.end(),
-                                                [&](const auto &a) { return a.location == location; });
+            const auto attribute =
+                std::find_if(g.attributes.begin(), g.attributes.end(),
+                             [location = location](const auto &a) { return a.location == location; });
             require(attribute != g.attributes.end(), "Vertex shader input has no attribute");
             require(numericClass(attribute->format) == kind, "Vertex attribute numeric type differs from shader");
         }
@@ -2108,9 +2135,17 @@ void Command::render(Render op) {
         for (auto [root, mip, layer] : used) {
             (void)mip;
             (void)layer;
-            require(&t.root() != root, "Rate map aliases a render target");
+            require(&t.root() != root && !memoryOverlaps(t, *root), "Rate map aliases a render target");
         }
     }
+    for (auto [a, am, al] : used)
+        for (auto [b, bm, bl] : used) {
+            (void)am;
+            (void)al;
+            (void)bm;
+            (void)bl;
+            require(a == b || !memoryOverlaps(*a, *b), "Render targets alias placement memory");
+        }
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
     for (const auto &draw : op.draws) {
         if (draw.visibility) {
@@ -2167,6 +2202,18 @@ void Command::render(Render op) {
                             b.texture->options.layers == op.layers,
                         "Input descriptor does not match framebuffer attachment subresource");
                 continue;
+            }
+            Resource *resource = b.buffer  ? static_cast<Resource *>(b.buffer.get())
+                                 : b.texel ? static_cast<Resource *>(b.texel->buffer.get())
+                                           : static_cast<Resource *>(b.texture.get());
+            if (resource) {
+                if (op.rateMap)
+                    require(!memoryOverlaps(*resource, *op.rateMap), "Binding aliases rate map memory");
+                for (auto [root, mip, layer] : used) {
+                    (void)mip;
+                    (void)layer;
+                    require(!memoryOverlaps(*resource, *root), "Binding aliases render target memory");
+                }
             }
             if (b.texture && op.rateMap)
                 require(&b.texture->root() != &op.rateMap->root(),
@@ -2400,7 +2447,10 @@ void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkD
     range(dst->size, to, size);
     require((src->usage & VK_BUFFER_USAGE_TRANSFER_SRC_BIT) && (dst->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT),
             "Blit requires transfer usage");
-    require(src != dst || so + size <= to || to + size <= so, "Buffer copy ranges overlap");
+    const bool sharedMemory = src == dst || (src->heap && src->heap == dst->heap && src->heap->placement());
+    require(!sharedMemory || src->heapOffset + so + size <= dst->heapOffset + to ||
+                dst->heapOffset + to + size <= src->heapOffset + so,
+            "Buffer copy ranges overlap in memory");
     require(so % 4 == 0 && to % 4 == 0 && size % 4 == 0, "Buffer blits require 4-byte alignment");
     buffers.push_back(src);
     buffers.push_back(dst);

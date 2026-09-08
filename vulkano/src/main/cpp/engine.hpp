@@ -154,12 +154,13 @@ struct Buffer : Resource {
     VmaAllocation allocation = VK_NULL_HANDLE;
     std::shared_ptr<Heap> heap;
     VkDeviceSize size;
+    VkDeviceSize heapOffset = 0, heapSpan = 0;
     VkBufferUsageFlags usage;
     Storage storage;
     bool cpuWriteOnly;
     uint32_t inFlight = 0;
     Buffer(std::shared_ptr<Device>, VkDeviceSize, VkBufferUsageFlags, Storage, bool cpuWriteOnly = false,
-           std::shared_ptr<Heap> heap = {});
+           std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false);
     void write(VkDeviceSize offset, const void *bytes, size_t count);
     void read(VkDeviceSize offset, void *bytes, size_t count);
     ~Buffer() override;
@@ -184,6 +185,7 @@ struct Texture : Resource {
     VkFormat format;
     uint32_t width, height;
     TextureOptions options;
+    VkDeviceSize heapOffset = 0, heapSpan = 0;
     uint32_t baseMip = 0, baseLayer = 0;
     std::shared_ptr<Texture> parent;
     VkComponentMapping components{};
@@ -196,7 +198,7 @@ struct Texture : Resource {
     std::shared_ptr<Surface> surface;
     std::shared_ptr<FrameState> frame;
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImageUsageFlags, Storage, TextureOptions = {},
-            std::shared_ptr<Heap> heap = {});
+            std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false);
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImage, VkImageView);
     bool depth() const;
     bool stencil() const;
@@ -441,6 +443,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     void commit();
     bool wait(uint64_t timeout = UINT64_MAX);
     void barrier();
+    void alias(std::shared_ptr<Resource>, std::shared_ptr<Resource>);
     void transition(Texture &, VkImageLayout, bool read);
     void transition(Texture &, VkImageLayout, bool read, uint32_t mip, uint32_t layer, uint32_t levels,
                     uint32_t layers);

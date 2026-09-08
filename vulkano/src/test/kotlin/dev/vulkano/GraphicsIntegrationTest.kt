@@ -36,6 +36,86 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun placedBuffersAliasAndRejectInvalidRanges(): Unit =
+        device().use { d ->
+            val requirements = d.heapBufferRequirements(64)
+            val heap =
+                d.makePlacementHeap(requirements.size * 2, listOf(requirements), StorageMode.SHARED)
+            val a = heap.makeBuffer(64, offset = 0)
+            val b = heap.makeBuffer(64, offset = 0)
+            val other = heap.makeBuffer(64, offset = requirements.size)
+            assertThrows(IllegalArgumentException::class.java) { heap.makeBuffer(64, offset = 1) }
+            assertThrows(IllegalArgumentException::class.java) {
+                heap.makeBuffer(64, offset = heap.size)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit { blit { copy(a, b, length = 64) } }
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit { blit { aliasResources(a, other) } }
+            }
+            heap.close()
+            d.submit {
+                blit {
+                    fill(a, 19)
+                    aliasResources(a, b)
+                    copy(b, other, length = 64)
+                }
+            }
+            assertArrayEquals(ByteArray(64) { 19 }, other.readBytes(64))
+            b.write(ByteArray(64) { 27 })
+            assertArrayEquals(ByteArray(64) { 27 }, a.readBytes(64))
+        }
+
+    @Test
+    fun placedTexturesSwitchWithDiscardAndReadback(): Unit =
+        device().use { d ->
+            val descriptor =
+                TextureDescriptor(
+                    2,
+                    2,
+                    usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                )
+            val requirements = d.heapTextureRequirements(descriptor)
+            val heap = d.makePlacementHeap(requirements.size, listOf(requirements))
+            val a = heap.makeTexture(descriptor, offset = 0)
+            val b = heap.makeTexture(descriptor, offset = 0)
+            val output = d.makeBuffer(48)
+            heap.close()
+            fun pass(t: Texture, color: ClearColor) =
+                RenderPassDescriptor(listOf(ColorAttachment(t, clearColor = color)))
+            d.submit {
+                render(pass(a, ClearColor(1f, 0f, 0f, 1f)))
+                blit {
+                    copy(a, output, destinationOffset = 0)
+                    aliasResources(a, b)
+                }
+                render(pass(b, ClearColor(0f, 1f, 0f, 1f)))
+                blit {
+                    copy(b, output, destinationOffset = 16)
+                    aliasResources(b, a)
+                }
+                render(pass(a, ClearColor(0f, 0f, 1f, 1f)))
+                blit { copy(a, output, destinationOffset = 32) }
+            }
+            val bytes = output.readBytes(48)
+            for (channel in 0..2) for (pixel in 0..3) {
+                for (component in 0..3) assertEquals(
+                    if (component == channel || component == 3) 255 else 0,
+                    bytes[channel * 16 + pixel * 4 + component].toInt() and 255,
+                )
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit {
+                    blit {
+                        aliasResources(a, b)
+                        copy(b, output)
+                    }
+                }
+            }
+        }
+
+    @Test
     fun mipArrayViewsCopyAndReadback(): Unit =
         device().use { d ->
             val texture =

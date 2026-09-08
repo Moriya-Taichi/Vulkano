@@ -56,3 +56,10 @@ Tensor View、SubpassのMemoryless/MSAA/Depth入力、Color Resolve、Multiview�
 
 Nativeの既存724チェックも保持しています。
 新機能のMali、PowerVR、Adreno、Xclipse上での性能、電力、Driver固有の挙動は実機未検証です。
+
+### Placement Heap
+
+Placement BufferのAlias、非重複領域へのCopy、TextureのAlias切り替えとRGB読み戻しを追加しました。
+配置範囲、Alignment、重複Copy、未初期化Textureの読み取りも検査しています。
+ローカル結果はKotlin/JNI 38件中32件成功、6件スキップ、失敗0件です。
+Android CIで見つかったC++17のLambda Captureを修正し、再ビルドの対象にしています。

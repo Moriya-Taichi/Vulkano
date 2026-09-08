@@ -660,6 +660,12 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
 }
 
 class BlitCommandEncoder internal constructor(command: CommandBuffer) : CommandEncoder(command) {
+    /** Orders uses of overlapping placed resources and discards both textures' prior contents. */
+    fun aliasResources(before: Resource, after: Resource): Unit = encode {
+        require(before.device === commandBuffer.device && after.device === commandBuffer.device)
+        Native.aliasResources(it, before.handle(), after.handle())
+    }
+
     fun generateMipmaps(texture: Texture, filter: MipFilter = MipFilter.LINEAR): Unit = encode {
         require(texture.device === commandBuffer.device)
         Native.generateMipmaps(it, texture.handle(), filter.ordinal)

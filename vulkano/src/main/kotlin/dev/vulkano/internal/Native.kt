@@ -213,9 +213,30 @@ internal object Native {
 
     external fun commandState(command: Long): Int
 
+    external fun heapBufferRequirements(device: Long, size: Long, usage: Int): LongArray
+
+    external fun heapTextureRequirements(
+        device: Long,
+        width: Int,
+        height: Int,
+        format: Int,
+        usage: Int,
+        options: IntArray,
+    ): LongArray
+
+    external fun createPlacementHeap(
+        device: Long,
+        size: Long,
+        storage: Int,
+        types: Int,
+        alignment: Long,
+    ): Long
+
+    external fun aliasResources(command: Long, before: Long, after: Long)
+
     external fun createHeap(device: Long, size: Long, storage: Int): Long
 
-    external fun createHeapBuffer(heap: Long, size: Long, usage: Int): Long
+    external fun createHeapBuffer(heap: Long, size: Long, usage: Int, offset: Long): Long
 
     external fun createHeapTexture(
         heap: Long,
@@ -224,6 +245,7 @@ internal object Native {
         format: Int,
         usage: Int,
         options: IntArray,
+        offset: Long,
     ): Long
 
     external fun createTextureBuffer(
