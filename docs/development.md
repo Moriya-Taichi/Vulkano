@@ -52,6 +52,10 @@ python3 tools/run-native-tests.py build/host/vulkano_tests
 
 Validation LayerとソフトウェアICDが必要です。複数ICDがある場合は`VK_ICD_FILENAMES`を設定してください。CIはシェーダーの検証、同期検証を有効にしたNative Test、Kotlin経由のGPU Test、AAR、難読化したサンプルAPK、Instrumentation APKのビルドを行います。
 
+CIのValidation Layerは同梱ヘッダーに合わせてVulkan-ValidationLayers v1.4.335を使用します。
+初回に公式ソースと固定された依存関係からビルドし、以降はInstall済みファイルをキャッシュします。
+古いLayerはDevice Generated Commandsなどの新しい構造体を認識せず、正しい問い合わせもエラーとして報告するため、実機検証でも新しいLayerを使用してください。
+
 NDK r28とAGP 8.9を使用し、共有ライブラリは16 KBで配置します。[Androidの16 KBページ対応](https://developer.android.com/guide/practices/page-sizes)
 
 端末で確認する項目は[Android実機検証](android-validation.md)に記載しています。
