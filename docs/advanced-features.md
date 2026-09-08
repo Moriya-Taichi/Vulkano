@@ -380,3 +380,46 @@ GPUでSignalするSemaphoreもExportは1回で、同じSignalをWaitとExportの
 固定したSamplerはPipelineが保持するため、作成元のSamplerを閉じても利用できます。
 描画時は`setTexture(texture, index)`にSamplerを渡す必要がありません。
 独立したSampler Bindingを固定した場合は、そのBindingへの`setSampler`も不要です。
+
+
+## HardwareBufferとCamera画像
+
+`ANDROID_HARDWARE_BUFFER`を有効化すると、Androidの`HardwareBuffer`を直接Textureとして取り込めます。
+YUVなどの外部Formatには`SAMPLER_YCBCR_CONVERSION`も必要です。
+外部Fenceを使う場合は`EXTERNAL_SYNC_FD`を有効化します。
+以下の`hardwareBuffer`と`producerFence`は、画像の生成元から受け取ったものです。
+
+```kotlin
+val imported = device.importHardwareBuffer(hardwareBuffer)
+val wait = device.importSyncFd(producerFence)
+val signal = device.makeExternalSemaphore()
+val binding = BindingLayout(
+    0, BindingType.SAMPLED_TEXTURE,
+    immutableSampler = imported.conversionSampler ?: device.makeSampler(),
+)
+// bindingをRender Pipelineのbindingsへ指定する。
+command.waitForExternalSemaphore(wait)
+command.acquireExternalTexture(imported.texture)
+// Render EncoderでsetTexture(imported.texture, 0)を指定して描画する。
+command.releaseExternalTexture(imported.texture)
+command.signalExternalSemaphore(signal)
+command.commit()
+val consumerFence = signal.exportSyncFd()
+// 生成元へconsumerFenceを返し、画像を再利用できる時点を伝える。
+```
+
+RGBとDepthは対応するVulkan Formatを使い、HardwareBufferのUsageの範囲で描画・転送にも利用できます。
+YUVなどの外部Formatは`PixelFormat.EXTERNAL`になり、Combined Image Samplerで読み取ります。
+`HardwareBufferConversion`を指定すると、RGB画像も外部Formatとして取り込めます。
+色のModelとRangeはDriverの提案値を初期値とし、CameraやCodecのColor Metadataに従ってBT.601/709/2020、Full/Narrowを指定できます。
+この変換はY′CbCrからRGBへの変換で、HDRのTone Mappingや色域変換までは行いません。
+Linear Filterは端末のLuma/Chroma両方の対応を検査します。
+同じ変換設定はNative Samplerを共有するため、同じFormatのフレームには既存Pipelineを再利用できます。
+
+ImportはJavaのHardwareBufferとは独立した参照を保持します。
+ただしCameraのImageを返却すると生成元が同じメモリを書き換える可能性があるため、GPU処理の完了前に再利用させないでください。
+CPUで同期済みの場合は外部Semaphoreを省けます。
+新規に確保した画像の内容を破棄して描画する場合は`acquireExternalTexture(texture, preserveContents = false)`を使います。
+`releaseExternalTexture`は画像をGENERAL Layoutで返します。
+通常は`ExternalTextureOwner.FOREIGN`を使い、同じGPU/Driver UUIDを持つ別のVulkan DeviceやOpenGL ESから渡す場合は`EXTERNAL`を指定します。
+同じBufferを同じDeviceに重複してImportせず、必要に応じてTexture Viewを作成します。

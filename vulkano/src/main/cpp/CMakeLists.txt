@@ -14,7 +14,7 @@ set_source_files_properties(third_party/spirv-reflect/spirv_reflect.c PROPERTIES
 
 if(ANDROID)
     target_compile_definitions(vulkano_core PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
-    target_link_libraries(vulkano_core PUBLIC vulkan android)
+    target_link_libraries(vulkano_core PUBLIC vulkan android dl)
 else()
     find_package(Vulkan REQUIRED)
     target_link_libraries(vulkano_core PUBLIC Vulkan::Vulkan)

@@ -11,6 +11,7 @@
 #include <type_traits>
 #include <unistd.h>
 #ifdef __ANDROID__
+#include <android/hardware_buffer_jni.h>
 #include <android/native_window_jni.h>
 #endif
 

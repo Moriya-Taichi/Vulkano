@@ -35,6 +35,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
 | Sparse Resource | makeSparseBuffer / makeSparseTexture | Page/Tile/Mip TailのMapping、必要なMetadataの確保、Mapping共有、CPU/Shader Residency検査 |
 | Event / 外部同期 | makeSharedEvent / makeExternalSemaphore | TimelineとBinary Semaphore、SYNC_FDのImport/Export。WaitはCommand開始前、Signalは完了時 |
+| Android画像共有 / YCbCr | importHardwareBuffer / acquireExternalTexture / releaseExternalTexture | AHardwareBufferのMemory Import、RGB/Depth、外部Format変換、Foreign/External所有権移譲 |
 | Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
 | Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
 | SIMD / 数値型 / Atomic | SPIR-V Shader | Subgroup、8/16/64ビット型、64ビット整数Buffer Atomic、32ビットFloat Buffer Atomicは個別Feature |
@@ -52,7 +53,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
 | GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
-| Androidとの画像共有 | AHardwareBuffer、Camera用Format変換 |
 | 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
 
@@ -70,6 +70,12 @@ Sparse TextureはSingle Sampleの2D/3D Color ImageとそのArray/Cubeに対応�
 Sparse MappingはDeviceの先行Command完了を待ち、Sparse QueueへのBind完了後に戻ります。
 未割り当て領域の値は端末のResidency規則に従い、新規に割り当てた領域は使用前に初期化します。
 共有Mapping間のCopyには中間Buffer/Textureを使います。
+
+HardwareBufferの外部FormatはSampled用途、単一Layer/Mipの2D画像に対応します。
+変換SamplerはPipelineのImmutable Samplerとして指定します。
+外部との受け渡しではSemaphoreまたはCPU待機による同期が必要です。
+Android 29/30では同じメモリを別のHardwareBuffer Handleから重複してImportしないでください。
+Android 31以降はBuffer IDによる重複検査も行います。
 
 Cooperative MatrixはSubgroup ScopeのCompute Shaderに対応し、Shape、数値型、Saturationを端末の組み合わせと照合します。
 

@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "heaps.hpp"
+#include "interop.hpp"
 #include "sparse.hpp"
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,11 @@ VkImageView imageView(Texture &t, VkFormat format, VkImageViewType type, uint32_
     VkImageViewUsageCreateInfo u{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
     u.usage = t.usage;
     i.pNext = &u;
+    VkSamplerYcbcrConversionInfo conversion{VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO};
+    if (t.external && t.external->conversionSampler) {
+        conversion.conversion = t.external->conversionSampler->conversion;
+        u.pNext = &conversion;
+    }
     i.subresourceRange = {t.depth() ? uint32_t(VK_IMAGE_ASPECT_DEPTH_BIT) : t.aspects(), mip, levels, layer, layers};
     VkImageView v;
     check(vkCreateImageView(t.d->device, &i, nullptr, &v), "vkCreateImageView");
@@ -103,7 +109,16 @@ VkImageType Texture::imageType() const {
         return VK_IMAGE_TYPE_1D;
     return options.type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
 }
+VkFormatFeatureFlags Texture::formatFeatures() const {
+    if (external && format == VK_FORMAT_UNDEFINED)
+        return external->formatFeatures;
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(d->physical, format, &properties);
+    return properties.optimalTilingFeatures;
+}
 VkImageCreateFlags Texture::flags() const {
+    if (external)
+        return external->flags;
     return (sparse ? (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
                       (d->coreFeatures.sparseResidencyAliased ? uint32_t(VK_IMAGE_CREATE_SPARSE_ALIASED_BIT) : 0u))
                    : 0u) |
@@ -113,6 +128,10 @@ VkImageCreateFlags Texture::flags() const {
                 : 0u);
 }
 uint32_t Texture::pixelSize() const {
+    if (format == VK_FORMAT_R8G8B8_UNORM)
+        return 3;
+    if (format == VK_FORMAT_R5G6B5_UNORM_PACK16)
+        return 2;
     if (format >= VK_FORMAT_R8_UNORM && format <= VK_FORMAT_R8_SRGB)
         return 1;
     if (format >= VK_FORMAT_R8G8_UNORM && format <= VK_FORMAT_R8G8_SRGB)
@@ -312,11 +331,21 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
       usage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT), storage(Storage::Private), borrowed(true) {
     states.resize(1);
 }
+Texture::Texture(std::shared_ptr<Device> device, std::shared_ptr<ExternalImage> imported, uint32_t w, uint32_t h,
+                 VkFormat f, VkImageUsageFlags use, TextureOptions o)
+    : Resource(std::move(device)), image(imported->image), external(std::move(imported)), format(f), width(w),
+      height(h), options(o), usage(use), storage(Storage::Private) {
+    states.resize(size_t(o.layers) * o.mipLevels, {VK_IMAGE_LAYOUT_GENERAL, true});
+    layout = VK_IMAGE_LAYOUT_GENERAL;
+    initialized = true;
+    if (usage & viewUsages)
+        view = imageView(*this, f, o.type, 0, o.mipLevels, 0, o.layers);
+}
 Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, uint32_t mip, uint32_t levels,
                  uint32_t layer, uint32_t layers, VkImageUsageFlags viewUsage, VkComponentMapping swizzle)
-    : Resource(p->d), image(p->image), format(f), width(p->extent(mip).width), height(p->extent(mip).height),
-      options(p->options), baseMip(p->baseMip + mip), baseLayer(p->baseLayer + layer), parent(p), usage(p->usage),
-      storage(p->storage) {
+    : Resource(p->d), image(p->image), external(p->external), format(f), width(p->extent(mip).width),
+      height(p->extent(mip).height), options(p->options), baseMip(p->baseMip + mip), baseLayer(p->baseLayer + layer),
+      parent(p), usage(p->usage), storage(p->storage) {
     p->usable();
     require(!p->borrowed, "Drawable views are not exposed");
     require(levels && mip < p->options.mipLevels && levels <= p->options.mipLevels - mip && layers &&
@@ -325,7 +354,10 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
     const auto sourceClass = formatCompatibilityClass(p->root().format);
     require(f == p->root().format || (sourceClass && sourceClass == formatCompatibilityClass(f)),
             "Incompatible Vulkan format class");
-    pixelSize();
+    if (format != VK_FORMAT_UNDEFINED)
+        pixelSize();
+    require(!external || f == p->root().format || (external->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT),
+            "Imported image does not allow mutable formats");
     if (viewUsage) {
         require((viewUsage & p->usage) == viewUsage, "View usage must be a subset of parent usage");
         usage = viewUsage;
@@ -339,8 +371,7 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
             "Component swizzles require a sampled-only image view");
     for (auto value : {swizzle.r, swizzle.g, swizzle.b, swizzle.a})
         require(value >= VK_COMPONENT_SWIZZLE_IDENTITY && value <= VK_COMPONENT_SWIZZLE_A, "Invalid component swizzle");
-    VkFormatProperties fp{};
-    vkGetPhysicalDeviceFormatProperties(d->physical, f, &fp);
+    const auto features = formatFeatures();
     for (auto [use, feature] : std::initializer_list<std::pair<VkImageUsageFlags, VkFormatFeatureFlags>>{
              {VK_IMAGE_USAGE_SAMPLED_BIT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
              {VK_IMAGE_USAGE_STORAGE_BIT, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT},
@@ -348,7 +379,9 @@ Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, u
              {VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT},
              {VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR,
               VK_FORMAT_FEATURE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR}})
-        require(!(usage & use) || (fp.optimalTilingFeatures & feature), "View format does not support requested usage");
+        require(!(usage & use) || (features & feature), "View format does not support requested usage");
+    require(!external || !external->conversionSampler || (identity && type == VK_IMAGE_VIEW_TYPE_2D),
+            "Converted image views require identity swizzle and 2D type");
     options.type = type;
     options.depth = p->extent(mip).depth;
     options.mipLevels = levels;
@@ -406,7 +439,7 @@ Texture::~Texture() {
     if (!borrowed) {
         if (view)
             vkDestroyImageView(d->device, view, nullptr);
-        if (image && !parent)
+        if (image && !parent && !external)
             vmaDestroyImage(d->allocator, image, allocation);
     }
 }
@@ -451,6 +484,8 @@ Sampler::Sampler(std::shared_ptr<Device> device, bool filtering, bool repeat, fl
 Sampler::~Sampler() {
     if (sampler)
         vkDestroySampler(d->device, sampler, nullptr);
+    if (conversion)
+        vkDestroySamplerYcbcrConversion(d->device, conversion, nullptr);
 }
 
 void Command::transition(Texture &t, VkImageLayout layout, bool read) {
@@ -459,6 +494,7 @@ void Command::transition(Texture &t, VkImageLayout layout, bool read) {
 void Command::transition(Texture &t, VkImageLayout layout, bool read, uint32_t mip, uint32_t layer, uint32_t levels,
                          uint32_t layers) {
     t.usable();
+    requireOwnership(t);
     require(!t.borrowed || (presentation && presentation->texture.get() == &t),
             "Drawable must be presented by the same command");
     require(levels && mip < t.options.mipLevels && levels <= t.options.mipLevels - mip && layers &&

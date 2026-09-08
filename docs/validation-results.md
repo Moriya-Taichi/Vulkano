@@ -84,3 +84,12 @@ Sparseまでを含むCommit `8b96ae8832bb80512954ccdac762fff12e98fd37`の[Androi
 Immutable SamplerはCombinedとSeparateの両方で、Samplerを閉じた後のGPU描画と読み戻しを確認しました。
 この環境にSYNC_FD対応がないため、GPU Signal・Export・Import・Waitの成功経路はスキップしています。
 Feature未有効時の拒否と完了済みFDの所有権操作は実行しました。
+
+
+### HardwareBufferとYCbCr
+
+外部同期までを含むCommit `979cc07ca412c09d39b97e13afe44f11f84fff29`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34228471696)が成功しました。
+HardwareBufferのImport、Feature拒否、所有権検査、RGB描画・読み戻し、外部FormatとImmutable SamplerによるSamplingのテストを追加しました。
+ローカルではKotlin/JNI 47件中36件成功・11件スキップ・失敗0件です。
+追加の2件はAndroid専用のため、ローカルでは実行していません。
+YUVのCamera/Codec画像、外部所有権BarrierのDriver上での挙動はAndroid実機での検証が必要です。

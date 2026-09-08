@@ -49,6 +49,24 @@ class CommandBuffer internal constructor(device: Device, id: Long) : Resource(de
         Native.signalExternalSemaphore(it, semaphore.handle())
     }
 
+    /**
+     * Takes image ownership from its external producer. Wait on the producer's SyncFd semaphore in
+     * this command, or ensure it has already finished. Set preserveContents=false for a fresh
+     * image.
+     */
+    fun acquireExternalTexture(texture: Texture, preserveContents: Boolean = true): Unit = access {
+        recording()
+        require(texture.device === device)
+        Native.acquireExternalTexture(it, texture.handle(), preserveContents)
+    }
+
+    /** Returns the image in GENERAL layout. Signal an external semaphore or wait for completion. */
+    fun releaseExternalTexture(texture: Texture): Unit = access {
+        recording()
+        require(texture.device === device)
+        Native.releaseExternalTexture(it, texture.handle())
+    }
+
     fun makeComputeCommandEncoder(): ComputeCommandEncoder = access {
         recording()
         ComputeCommandEncoder(this).also { encoder = it }

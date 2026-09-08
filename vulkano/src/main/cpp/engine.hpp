@@ -23,6 +23,9 @@ struct Extensions;
 struct Heap;
 struct SparseState;
 struct ExternalSemaphore;
+struct ExternalImage;
+struct Texture;
+struct Sampler;
 struct TextureBuffer;
 struct SharedEvent;
 struct CounterPool;
@@ -109,6 +112,8 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     uint32_t family = 0, timestampBits = 0, sparseFamily = 0;
     VkQueue sparseQueue = VK_NULL_HANDLE;
     uint64_t available = 0, enabled = 0, availableExtra = 0, enabledExtra = 0;
+    std::map<std::pair<uint64_t, bool>, std::weak_ptr<Texture>> importedImages;
+    std::map<std::vector<uint64_t>, std::weak_ptr<Sampler>> conversionSamplers;
     VkDeviceSize sparseVirtualBytes = 0;
     VkPhysicalDeviceFeatures coreFeatures{};
     std::shared_ptr<Extensions> extensions;
@@ -190,6 +195,7 @@ struct Texture : Resource {
     VmaAllocation allocation = VK_NULL_HANDLE;
     std::shared_ptr<Heap> heap;
     std::shared_ptr<SparseState> sparse;
+    std::shared_ptr<ExternalImage> external;
     VkFormat format;
     uint32_t width, height;
     TextureOptions options;
@@ -208,6 +214,9 @@ struct Texture : Resource {
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImageUsageFlags, Storage, TextureOptions = {},
             std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false, bool sparse = false);
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImage, VkImageView);
+    Texture(std::shared_ptr<Device>, std::shared_ptr<ExternalImage>, uint32_t, uint32_t, VkFormat, VkImageUsageFlags,
+            TextureOptions);
+    VkFormatFeatureFlags formatFeatures() const;
     bool depth() const;
     bool stencil() const;
     VkImageAspectFlags aspects() const;
@@ -231,7 +240,7 @@ struct Sampler : Resource {
     bool compare = false;
     VkSamplerYcbcrConversion conversion = VK_NULL_HANDLE;
     uint32_t descriptorCost = 1;
-    std::shared_ptr<Resource> conversionOwner;
+    explicit Sampler(std::shared_ptr<Device> device) : Resource(std::move(device)), linear(false) {}
     VkSamplerReductionMode reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
     Sampler(std::shared_ptr<Device>, bool linear, bool repeat, float anisotropy,
             VkSamplerMipmapMode mipFilter = VK_SAMPLER_MIPMAP_MODE_NEAREST, float minLod = 0,
@@ -439,6 +448,10 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
                std::array<uint32_t, 3>);
     std::vector<std::pair<std::shared_ptr<SharedEvent>, uint64_t>> eventWaits, eventSignals;
     std::vector<std::shared_ptr<ExternalSemaphore>> externalWaits, externalSignals;
+    std::unordered_map<ExternalImage *, bool> externalOwnership;
+    void acquireExternal(std::shared_ptr<Texture>, bool preserveContents);
+    void releaseExternal(std::shared_ptr<Texture>);
+    void requireOwnership(Texture &);
     void waitExternal(std::shared_ptr<ExternalSemaphore>);
     void signalExternal(std::shared_ptr<ExternalSemaphore>);
     std::vector<std::shared_ptr<CounterPool>> counters;

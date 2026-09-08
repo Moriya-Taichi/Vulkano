@@ -36,6 +36,25 @@ internal object Native {
 
     external fun readBuffer(buffer: Long, offset: Long, bytes: ByteBuffer)
 
+    external fun importHardwareBuffer(
+        device: Long,
+        buffer: Any,
+        usage: Int,
+        externalFormat: Boolean,
+        linear: Boolean,
+        model: Int,
+        range: Int,
+        externalFamily: Int,
+    ): Long
+
+    external fun hardwareBufferTextureInfo(texture: Long): IntArray
+
+    external fun hardwareBufferSampler(texture: Long): Long
+
+    external fun acquireExternalTexture(command: Long, texture: Long, preserve: Boolean)
+
+    external fun releaseExternalTexture(command: Long, texture: Long)
+
     external fun createTexture(
         device: Long,
         width: Int,

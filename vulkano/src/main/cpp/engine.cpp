@@ -1903,6 +1903,8 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
             require((schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) == bool(b.sampler),
                     "Sampled textures require a sampler; storage textures must not have one");
             const auto &t = *b.texture;
+            require(!t.external || !t.external->conversionSampler || b.sampler,
+                    "Converted images require combined image sampler descriptors");
             const uint32_t dim =
                 t.imageType() == VK_IMAGE_TYPE_1D                                                                ? 0
                 : t.imageType() == VK_IMAGE_TYPE_3D                                                              ? 2
@@ -1918,13 +1920,16 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                 require(!schema->shadow || (t.depth() && b.sampler->compare),
                         "Shadow sampling requires depth and comparison sampler");
                 same(*this, *b.sampler);
-                VkFormatProperties fp;
-                vkGetPhysicalDeviceFormatProperties(d->physical, b.texture->format, &fp);
-                require(!b.sampler->linear ||
-                            (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT),
+                const auto features = t.formatFeatures();
+                const auto expected = t.external && t.external->conversionSampler
+                                          ? t.external->conversionSampler->conversion
+                                          : VK_NULL_HANDLE;
+                require(b.sampler->conversion == expected && (!expected || schema->immutableSampler),
+                        "YCbCr textures require a matching immutable conversion sampler");
+                require(!b.sampler->linear || (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT),
                         "Texture format does not support linear filtering");
                 require(b.sampler->reductionMode == VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE ||
-                            (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT),
+                            (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT),
                         "Texture format does not support min/max filtering");
             }
         }
@@ -2675,6 +2680,8 @@ void Command::commit() {
             a->built = built;
             ++a->generation;
         }
+        for (const auto &[external, owned] : externalOwnership)
+            external->gpuOwned = owned;
         for (const auto &[texture, current] : images) {
             texture->states = current;
             texture->layout = current[0].layout;

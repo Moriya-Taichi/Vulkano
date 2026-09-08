@@ -107,6 +107,10 @@ enum class PixelFormat(
     val blockHeight: Int = 1,
     val bytesPerBlock: Int = bytesPerPixel,
 ) {
+    /** Opaque Android hardware-buffer format; only produced by importHardwareBuffer. */
+    EXTERNAL(0, 0),
+    RGB565_UNORM(4, 2),
+    RGB8_UNORM(23, 3),
     R8_UNORM(9, 1),
     R8_SNORM(10, 1),
     R8_UINT(13, 1),
@@ -154,6 +158,7 @@ enum class PixelFormat(
     RG11_B10_FLOAT(122, 4),
     RGB9_E5_FLOAT(123, 4),
     DEPTH16_UNORM(124, 2),
+    DEPTH24_UNORM(125, 4),
     DEPTH32_FLOAT(126, 4),
     STENCIL8(127, 1),
     DEPTH24_STENCIL8(129, 4),

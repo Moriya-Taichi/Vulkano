@@ -36,6 +36,164 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun hardwareBufferImportAndOwnershipRequireExternalResources(): Unit =
+        device().use { d ->
+            assertThrows(IllegalArgumentException::class.java) {
+                dev.vulkano.internal.Native.importHardwareBuffer(
+                    d.nativeHandle,
+                    Any(),
+                    4,
+                    false,
+                    false,
+                    -1,
+                    -1,
+                    -3,
+                )
+            }
+            val texture = d.makeTexture(TextureDescriptor(1, 1))
+            d.makeCommandQueue().makeCommandBuffer().use { command ->
+                assertThrows(IllegalArgumentException::class.java) {
+                    command.acquireExternalTexture(texture)
+                }
+                assertThrows(IllegalArgumentException::class.java) {
+                    command.releaseExternalTexture(texture)
+                }
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeTexture(TextureDescriptor(1, 1, PixelFormat.EXTERNAL))
+            }
+        }
+
+    @Test
+    fun hardwareBufferRgbImportTransfersOwnershipAndRetainsMemory(): Unit {
+        assumeTrue(
+            device().use { Feature.ANDROID_HARDWARE_BUFFER in it.capabilities.availableFeatures }
+        )
+        device(setOf(Feature.ANDROID_HARDWARE_BUFFER)).use { d ->
+            val buffer =
+                android.hardware.HardwareBuffer.create(
+                    2,
+                    2,
+                    android.hardware.HardwareBuffer.RGBA_8888,
+                    1,
+                    android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
+                        android.hardware.HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
+                )
+            val usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE)
+            val imported = d.importHardwareBuffer(buffer, usage)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.importHardwareBuffer(buffer, usage)
+            }
+            assertNull(imported.conversionSampler)
+            val readback = d.makeBuffer(16)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit { render(RenderPassDescriptor(listOf(ColorAttachment(imported.texture)))) }
+            }
+            buffer.close() // The native memory reference must keep this image alive.
+            d.submit {
+                acquireExternalTexture(imported.texture, preserveContents = false)
+                render(
+                    RenderPassDescriptor(
+                        listOf(
+                            ColorAttachment(
+                                imported.texture,
+                                clearColor = ClearColor(1f, 0f, 0f, 1f),
+                            )
+                        )
+                    )
+                )
+                blit { copy(imported.texture, readback) }
+                releaseExternalTexture(imported.texture)
+            }
+            assertArrayEquals(
+                ByteArray(16) { if (it % 4 == 0 || it % 4 == 3) -1 else 0 },
+                readback.readBytes(16),
+            )
+            assertThrows(IllegalArgumentException::class.java) {
+                d.submit { releaseExternalTexture(imported.texture) }
+            }
+            imported.close()
+        }
+    }
+
+    @Test
+    fun hardwareBufferExternalConversionSamplesWithImmutableSampler(): Unit {
+        val features = setOf(Feature.ANDROID_HARDWARE_BUFFER, Feature.SAMPLER_YCBCR_CONVERSION)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val buffer =
+                android.hardware.HardwareBuffer.create(
+                    2,
+                    2,
+                    android.hardware.HardwareBuffer.RGBA_8888,
+                    1,
+                    android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
+                        android.hardware.HardwareBuffer.USAGE_GPU_COLOR_OUTPUT,
+                )
+            d.importHardwareBuffer(buffer, setOf(TextureUsage.COLOR_ATTACHMENT)).use { rgb ->
+                d.submit {
+                    acquireExternalTexture(rgb.texture, false)
+                    render(
+                        RenderPassDescriptor(
+                            listOf(
+                                ColorAttachment(
+                                    rgb.texture,
+                                    clearColor = ClearColor(0f, 1f, 0f, 1f),
+                                )
+                            )
+                        )
+                    )
+                    releaseExternalTexture(rgb.texture)
+                }
+            }
+            val converted = d.importHardwareBuffer(buffer, conversion = HardwareBufferConversion())
+            assertEquals(PixelFormat.EXTERNAL, converted.texture.pixelFormat)
+            val sampler = checkNotNull(converted.conversionSampler)
+            val view = converted.texture.makeTextureView()
+            val pipeline =
+                d.makeRenderPipelineState(
+                    d.function("fullscreen.vert.spv"),
+                    d.function("sample.frag.spv"),
+                    bindings =
+                        listOf(
+                            BindingLayout(
+                                0,
+                                BindingType.SAMPLED_TEXTURE,
+                                immutableSampler = sampler,
+                            )
+                        ),
+                )
+            sampler.close()
+            buffer.close()
+            val target =
+                d.makeTexture(
+                    TextureDescriptor(
+                        2,
+                        2,
+                        usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                    )
+                )
+            val readback = d.makeBuffer(16)
+            d.submit {
+                acquireExternalTexture(converted.texture)
+                render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                    setRenderPipelineState(pipeline)
+                    setTexture(view, 0)
+                    drawPrimitives(3)
+                }
+                blit { copy(target, readback) }
+                releaseExternalTexture(converted.texture)
+            }
+            assertArrayEquals(
+                ByteArray(16) { if (it % 4 == 1 || it % 4 == 3) -1 else 0 },
+                readback.readBytes(16),
+            )
+            view.close()
+            converted.close()
+        }
+    }
+
+    @Test
     fun immutableSamplersRetainClosedSamplerAndNeedNoDynamicBinding(): Unit =
         device().use { d ->
             val texture =
