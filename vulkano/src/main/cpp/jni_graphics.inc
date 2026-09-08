@@ -15,7 +15,7 @@ JNI_METHOD(jlong, createTextureView)
 }
 JNI_METHOD(jlong, createGraphics)
 (JNIEnv *e, jobject, jlong device, jobjectArray codes, jobjectArray entries, jobjectArray constants, jintArray options,
- jintArray schema, jint push, jboolean mesh, jintArray subpasses, jint subpass) {
+ jintArray schema, jint push, jboolean mesh, jintArray subpasses, jint subpass, jboolean indirect) {
     return guard(e, [&] {
         require(codes && entries && constants && push >= 0, "Invalid graphics descriptor");
         int count = e->GetArrayLength(codes);
@@ -39,6 +39,7 @@ JNI_METHOD(jlong, createGraphics)
         require(v.size() == 49 + size_t(v[13]) * 9 + size_t(v[14]) * 3 + size_t(v[15]) * 4,
                 "Invalid graphics option lengths");
         GraphicsOptions g;
+        g.indirectBindable = indirect;
         require(subpass >= 0, "Invalid subpass index");
         g.passLayout = parseSubpassLayout(ints(e, subpasses));
         g.subpass = subpass;
@@ -176,7 +177,7 @@ JNI_METHOD(jlong, beginRenderAdvanced)
 }
 JNI_METHOD(void, drawAdvanced)
 (JNIEnv *e, jobject, jlong encoder, jlong pipeline, jlongArray bs, jbyteArray constants, jintArray counts,
- jlongArray resources, jfloatArray state) {
+ jlongArray resources, jfloatArray state, jlongArray generated) {
     return guard(e, [&] {
         auto pending = get<PendingRender>(encoder);
         pending->command->recording();
@@ -188,11 +189,20 @@ JNI_METHOD(void, drawAdvanced)
                     v[2] >= 0 && v[3] >= 0 && h[1] >= 0 && h[3] >= 0 && h[6] >= 0 && v[6] >= 0 && (v[6] > 0 || h[5]) &&
                     v[7] >= 0,
                 "Invalid draw descriptor");
-        Draw d{get<Pipeline>(pipeline), bindings(e, bs), bytes(e, constants), uint32_t(v[0]),
-               uint32_t(v[1]),          uint32_t(v[2]),  uint32_t(v[3])};
+        auto g = generatedExecution(e, generated);
+        Draw d{g ? g->layout->pipelines.front() : get<Pipeline>(pipeline),
+               bindings(e, bs),
+               bytes(e, constants),
+               uint32_t(v[0]),
+               uint32_t(v[1]),
+               uint32_t(v[2]),
+               uint32_t(v[3])};
+        d.generated = g;
         d.baseVertex = v[4];
         require(v[15] >= 0 && v[16] >= 0 && v[17] >= 0, "Invalid mesh group size");
         d.meshGroups = {uint32_t(v[15]), uint32_t(v[16]), uint32_t(v[17])};
+        if (g && d.pipeline->graphics.mesh)
+            d.meshGroups = {1, 1, 1};
         d.indexType = static_cast<VkIndexType>(v[5]);
         d.drawCount = v[6];
         d.stride = v[7];

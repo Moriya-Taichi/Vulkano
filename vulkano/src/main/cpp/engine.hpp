@@ -34,6 +34,8 @@ struct RayTracingPipeline;
 struct Command;
 struct Surface;
 struct Drawable;
+struct GeneratedLayout;
+struct GeneratedExecution;
 
 enum Feature : uint64_t {
     Anisotropy = 1,
@@ -103,7 +105,8 @@ enum ExtraFeature : uint64_t {
     SamplerYcbcr = 4,
     DrawIndirectCount = 8,
     AstcHdr = 16,
-    Pvrtc = 32
+    Pvrtc = 32,
+    DeviceGeneratedCommands = 64
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -297,7 +300,7 @@ struct SubpassLayout {
 std::shared_ptr<SubpassLayout> parseSubpassLayout(const std::vector<int> &);
 void validateSubpassLayout(Device &, const SubpassLayout &);
 struct GraphicsOptions {
-    bool mesh = false;
+    bool mesh = false, indirectBindable = false;
     std::shared_ptr<SubpassLayout> passLayout;
     uint32_t subpass = 0;
     std::shared_ptr<Shader> task;
@@ -336,12 +339,15 @@ struct Pipeline : Resource {
     std::vector<BindingLayout> bindings;
     uint32_t pushBytes;
     bool compute;
-    bool rayTracing = false;
+    bool rayTracing = false, indirectBindable = false;
+    std::vector<uint64_t> generatedStateKey;
+    std::vector<std::vector<uint64_t>> fragmentInterface;
     GraphicsOptions graphics;
     VkShaderStageFlags stages = 0;
     std::array<uint32_t, 3> localSize{1, 1, 1};
     VkFormat colorFormat = VK_FORMAT_UNDEFINED, depthFormat = VK_FORMAT_UNDEFINED;
-    Pipeline(std::shared_ptr<Device>, std::vector<BindingLayout>, uint32_t, const Shader &);
+    Pipeline(std::shared_ptr<Device>, std::vector<BindingLayout>, uint32_t, const Shader &,
+             bool indirectBindable = false);
     Pipeline(std::shared_ptr<Device>, std::vector<BindingLayout>, uint32_t, const Shader &vertex,
              const Shader &fragment, VkFormat color, VkFormat depth, bool blend, GraphicsOptions = {});
     Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b, uint32_t p)
@@ -392,6 +398,7 @@ struct Draw {
     std::shared_ptr<CounterPool> visibility;
     uint32_t visibilityIndex = 0;
     uint32_t subpass = 0;
+    std::shared_ptr<GeneratedExecution> generated;
 };
 struct Attachment {
     std::shared_ptr<Texture> texture, resolve;
@@ -469,6 +476,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     void recording() const;
     void dispatch(Dispatch);
     void render(Render);
+    void executeGenerated(std::shared_ptr<GeneratedExecution>, std::vector<Binding>, std::vector<uint8_t>);
     void copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkDeviceSize srcOffset, VkDeviceSize dstOffset,
               VkDeviceSize size);
     void copy(std::shared_ptr<Buffer>, std::shared_ptr<Texture>, VkDeviceSize offset, bool toTexture);

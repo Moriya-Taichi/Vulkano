@@ -36,6 +36,290 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun generatedCommandsRequireFeatureAndValidateTokenOffsets(): Unit =
+        device().use { d ->
+            assertThrows(IllegalArgumentException::class.java) { IndirectCommandToken.draw(2) }
+            val function = d.function("generated-worker.comp.spv")
+            val ordinary = d.makeComputePipelineState(function)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeComputePipelineState(function, supportsIndirectCommands = true)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeRenderPipelineState(
+                    RenderPipelineDescriptor(
+                        d.function("fullscreen.vert.spv"),
+                        d.function("solid.frag.spv"),
+                        supportsIndirectCommands = true,
+                    )
+                )
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeIndirectCommandLayout(
+                    listOf(ordinary),
+                    listOf(IndirectCommandToken.dispatch(0)),
+                    12,
+                )
+            }
+        }
+
+    @Test
+    fun generatedComputeSelectsPipelinesPushDataAndSequenceIndex(): Unit {
+        val limits = device().use { it.indirectCommandLimits() }
+        assumeTrue(limits != null && ShaderStage.COMPUTE in limits.pipelineBindingStages)
+        device(setOf(Feature.DEVICE_GENERATED_COMMANDS)).use { d ->
+            val pipelines =
+                listOf(2, 3).map { multiplier ->
+                    d.makeComputePipelineState(
+                        d.function(
+                            "generated-worker.comp.spv",
+                            FunctionConstants().setInt(0, multiplier),
+                        ),
+                        supportsIndirectCommands = true,
+                    )
+                }
+            val tokens =
+                listOf(
+                    IndirectCommandToken.pipeline(0),
+                    IndirectCommandToken.pushConstants(4, 4, 4),
+                    IndirectCommandToken.sequenceIndex(8, 0),
+                    IndirectCommandToken.dispatch(8),
+                )
+            val layout = d.makeIndirectCommandLayout(pipelines, tokens, 20)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeIndirectCommandLayout(pipelines, tokens, 16)
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeIndirectCommandLayout(
+                    pipelines,
+                    listOf(
+                        IndirectCommandToken.pipeline(0),
+                        IndirectCommandToken.pushConstants(4, 0, 8),
+                        IndirectCommandToken.sequenceIndex(12, 4),
+                        IndirectCommandToken.dispatch(12),
+                    ),
+                    24,
+                )
+            }
+            val writer = d.makeComputePipelineState(d.function("generated-stream.comp.spv"))
+            val usage =
+                setOf(BufferUsage.INDIRECT, BufferUsage.STORAGE, BufferUsage.SHADER_DEVICE_ADDRESS)
+            val args = d.makeBuffer(40, StorageMode.PRIVATE, usage)
+            val count = d.makeBuffer(8, StorageMode.PRIVATE, usage)
+            val output = d.makeBuffer(12)
+            for (gpuCount in listOf(0, 2)) {
+                d.submit {
+                    blit { fill(output, 0) }
+                    compute {
+                        setComputePipelineState(writer)
+                        setBuffer(args, 0)
+                        setBuffer(count, 1)
+                        setBytes(
+                            ByteBuffer.allocate(24)
+                                .order(ByteOrder.LITTLE_ENDIAN)
+                                .putInt(0)
+                                .putInt(gpuCount)
+                                .array()
+                        )
+                        dispatchThreadgroups(Size(1))
+                        resetBindings()
+                        setBuffer(output, 0)
+                        executeCommands(layout, args, 2, countBuffer = count, countOffset = 4)
+                        setComputePipelineState(pipelines[0])
+                        setBytes(
+                            ByteBuffer.allocate(8)
+                                .order(ByteOrder.LITTLE_ENDIAN)
+                                .putInt(2)
+                                .putInt(5)
+                                .array()
+                        )
+                        dispatchThreadgroups(Size(1))
+                    }
+                }
+                val result = ByteBuffer.wrap(output.readBytes(12)).order(ByteOrder.LITTLE_ENDIAN)
+                assertEquals(if (gpuCount == 0) 0 else 14, result.int)
+                assertEquals(if (gpuCount == 0) 0 else 24, result.int)
+                assertEquals(10, result.int)
+            }
+            // Layout retains closed pipeline handles; every execution has separate preprocess
+            // memory.
+            pipelines.forEach { it.close() }
+            d.makeCommandQueue().use { q ->
+                q.makeCommandBuffer().use { c ->
+                    c.compute {
+                        setBuffer(output, 0)
+                        executeCommands(layout, args, 2)
+                    }
+                    layout.close()
+                    args.close()
+                    count.close()
+                    writer.close()
+                    c.commit()
+                    assertTrue(c.waitUntilCompleted())
+                }
+            }
+            assertEquals(
+                14,
+                ByteBuffer.wrap(output.readBytes(12)).order(ByteOrder.LITTLE_ENDIAN).int,
+            )
+        }
+    }
+
+    @Test
+    fun generatedDrawingSelectsShadersAndVertexIndexBuffers(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        val limits = device().use { it.indirectCommandLimits() }
+        assumeTrue(
+            limits != null &&
+                ShaderStage.VERTEX in limits.pipelineBindingStages &&
+                ShaderStage.FRAGMENT in limits.pipelineBindingStages
+        )
+        val mesh =
+            Feature.MESH_SHADER in available && ShaderStage.MESH in limits!!.pipelineBindingStages
+        device(
+                setOf(Feature.DEVICE_GENERATED_COMMANDS) +
+                    if (mesh) setOf(Feature.MESH_SHADER) else emptySet()
+            )
+            .use { d ->
+                val usage =
+                    setOf(
+                        BufferUsage.INDIRECT,
+                        BufferUsage.STORAGE,
+                        BufferUsage.SHADER_DEVICE_ADDRESS,
+                    )
+                val args = d.makeBuffer(120, StorageMode.PRIVATE, usage)
+                val count = d.makeBuffer(8, StorageMode.PRIVATE, usage)
+                val vertices =
+                    d.makeBuffer(
+                        24,
+                        usage = setOf(BufferUsage.VERTEX, BufferUsage.SHADER_DEVICE_ADDRESS),
+                    )
+                vertices.write(floats(-1f, -1f, 3f, -1f, -1f, 3f))
+                val indices =
+                    d.makeBuffer(
+                        6,
+                        usage = setOf(BufferUsage.INDEX, BufferUsage.SHADER_DEVICE_ADDRESS),
+                    )
+                indices.write(byteArrayOf(0, 0, 1, 0, 2, 0))
+                val writer = d.makeComputePipelineState(d.function("generated-stream.comp.spv"))
+                val target =
+                    d.makeTexture(
+                        TextureDescriptor(
+                            1,
+                            1,
+                            usage =
+                                setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE),
+                        )
+                    )
+                val readback = d.makeBuffer(4)
+                val modes =
+                    listOf(1) +
+                        (if (limits!!.supportsVertexBuffers) listOf(2) else emptyList()) +
+                        (if (mesh) listOf(3) else emptyList())
+                for (mode in modes) {
+                    val pipelines =
+                        (0..1).map { channel ->
+                            d.makeRenderPipelineState(
+                                RenderPipelineDescriptor(
+                                    d.function(
+                                        if (mode == 2) "attribute.vert.spv"
+                                        else if (mode == 3) "fullscreen.mesh.spv"
+                                        else "fullscreen.vert.spv"
+                                    ),
+                                    d.function(
+                                        "generated-color.frag.spv",
+                                        FunctionConstants().setInt(0, channel),
+                                    ),
+                                    colorAttachments =
+                                        listOf(
+                                            RenderColorAttachmentDescriptor(
+                                                blendingEnabled = true,
+                                                sourceRGBBlendFactor = BlendFactor.ONE,
+                                                destinationRGBBlendFactor = BlendFactor.ONE,
+                                            )
+                                        ),
+                                    vertexBuffers =
+                                        if (mode == 2) listOf(VertexBufferLayout(0, 8))
+                                        else emptyList(),
+                                    vertexAttributes =
+                                        if (mode == 2)
+                                            listOf(VertexAttribute(0, 0, PixelFormat.RG32_FLOAT))
+                                        else emptyList(),
+                                    meshShader = mode == 3,
+                                    supportsIndirectCommands = true,
+                                )
+                            )
+                        }
+                    val tokens =
+                        listOf(
+                            IndirectCommandToken.pipeline(0),
+                            IndirectCommandToken.pushConstants(4, 0, 4),
+                        ) +
+                            when (mode) {
+                                2 ->
+                                    listOf(
+                                        IndirectCommandToken.vertexBuffer(8, 0),
+                                        IndirectCommandToken.indexBuffer(24),
+                                        IndirectCommandToken.drawIndexed(40),
+                                    )
+                                3 -> listOf(IndirectCommandToken.drawMesh(8))
+                                else -> listOf(IndirectCommandToken.draw(8))
+                            }
+                    val layout =
+                        d.makeIndirectCommandLayout(
+                            pipelines,
+                            tokens,
+                            when (mode) {
+                                2 -> 60
+                                3 -> 20
+                                else -> 24
+                            },
+                        )
+                    d.submit {
+                        compute {
+                            setComputePipelineState(writer)
+                            setBuffer(args, 0)
+                            setBuffer(count, 1)
+                            setBytes(
+                                ByteBuffer.allocate(24)
+                                    .order(ByteOrder.LITTLE_ENDIAN)
+                                    .putInt(mode)
+                                    .putInt(2)
+                                    .putLong(vertices.gpuAddress)
+                                    .putLong(indices.gpuAddress)
+                                    .array()
+                            )
+                            dispatchThreadgroups(Size(1))
+                        }
+                        render(RenderPassDescriptor(listOf(ColorAttachment(target)))) {
+                            useResource(vertices)
+                            useResource(indices)
+                            executeCommands(layout, args, 2, countBuffer = count, countOffset = 4)
+                            setRenderPipelineState(pipelines[0])
+                            setBytes(
+                                ByteBuffer.allocate(4)
+                                    .order(ByteOrder.LITTLE_ENDIAN)
+                                    .putFloat(0.25f)
+                                    .array()
+                            )
+                            if (mode == 2) {
+                                setVertexBuffer(vertices, 0)
+                                drawIndexedPrimitives(indices, 3)
+                            } else if (mode == 3) drawMeshThreadgroups(Size(1))
+                            else drawPrimitives(3)
+                        }
+                        blit { copy(target, readback) }
+                    }
+                    val actual = readback.readBytes(4)
+                    assertTrue("red mode $mode", (actual[0].toInt() and 255) in 127..129)
+                    assertTrue("green mode $mode", (actual[1].toInt() and 255) in 127..129)
+                    assertEquals(0, actual[2].toInt())
+                    layout.close()
+                    pipelines.forEach { it.close() }
+                }
+            }
+    }
+
+    @Test
     fun additionalCompressionRequiresFeature(): Unit =
         device().use { d ->
             for (format in listOf(PixelFormat.ASTC_4x4_FLOAT, PixelFormat.PVRTC1_2BPP_UNORM)) {

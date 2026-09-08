@@ -447,7 +447,7 @@ Indexed DrawのStrideは20バイト、通常Drawは16バイト、Meshは12バイ
 個数のOffsetも4バイト単位にします。
 個数Bufferに書く値は、端末の`maxDrawIndirectCount`以内にしてください。
 これらの呼び出しは`MULTI_DRAW_INDIRECT`とは別のFeatureで、同じPipelineとBindingを使います。
-PipelineやBindingそのものをGPUで選択するDevice Generated Commandsは、別の機能です。
+Pipeline、Push Constants、Vertex/Index BufferもGPUで選択する場合は、次のDevice Generated Commandsを使用します。
 
 
 ## ASTC HDRとPVRTC
@@ -463,3 +463,72 @@ Buffer転送ではVulkanの8バイトBlock配置を使い、PVRなどのファ�
 PVRTC拡張は非推奨で、既存Assetとの互換用途に使えます。
 新規のPowerVR向けTextureには、対応状況に応じてASTCやETC2を選択してください。
 この扱いは[KhronosのPVRTC拡張説明](https://docs.vulkan.org/refpages/latest/refpages/source/VK_IMG_format_pvrtc.html)に基づきます。
+
+
+## GPUによるPipelineとCommandの選択
+
+`DEVICE_GENERATED_COMMANDS`を要求すると、対応端末で`VK_EXT_device_generated_commands`を使えます。
+依存するBuffer Device Addressも有効になります。
+`indirectCommandLimits()`で対応Stage、Pipeline選択Stage、Sequence数、Stride、Token数などを確認します。
+Pipelineを選択するTokenを使う場合は、作成時に`supportsIndirectCommands = true`を指定します。
+
+```kotlin
+val first = device.makeComputePipelineState(firstFunction, supportsIndirectCommands = true)
+val second = device.makeComputePipelineState(secondFunction, supportsIndirectCommands = true)
+val layout = device.makeIndirectCommandLayout(
+    pipelines = listOf(first, second),
+    tokens = listOf(
+        IndirectCommandToken.pipeline(0),
+        IndirectCommandToken.dispatch(4),
+    ),
+    stride = 16,
+)
+val arguments = device.makeBuffer(
+    16L * capacity,
+    storageMode = StorageMode.PRIVATE,
+    usage = setOf(BufferUsage.STORAGE, BufferUsage.INDIRECT, BufferUsage.SHADER_DEVICE_ADDRESS),
+)
+// 別のCompute処理で各16バイトへPipeline番号とWorkgroup数x/y/zを書き込む。
+command.compute {
+    setBuffer(output, index = 0) // firstとsecondに共通するDescriptor Layout
+    executeCommands(layout, arguments, maxSequenceCount = capacity)
+}
+```
+
+Pipeline番号は`pipelines`の0始まりのIndexです。
+最後のTokenにDraw、DrawIndexed、Dispatch、DrawMesh、TraceRaysのいずれかを置きます。
+Pipeline Tokenは先頭に置き、Push Constants、Sequence Index、Vertex/Index BufferのTokenを間に配置できます。
+TokenのOffsetとStrideは4バイト単位です。
+`drawCount`、`drawIndexedCount`、`drawMeshCount`は、アドレスで指定する別の間接引数Bufferを使って複数のDrawを実行します。
+この場合は`supportsMultiDrawCount`を確認し、`executeCommands`へ`maxDrawCount`を指定します。
+
+| Tokenのデータ | 配置 |
+| --- | --- |
+| Pipeline | uint32 Pipeline Index |
+| Push Constants | 指定したバイト数の値 |
+| Sequence Index | 入力バイトなし。Sequence番号をPush Constantsへ書く |
+| Vertex Buffer | uint64 Address、uint32 Size、uint32 Stride |
+| Index Buffer | uint64 Address、uint32 Size、uint32 IndexType（0=UINT16、1=UINT32） |
+| Draw | uint32 Vertex Count、Instance Count、First Vertex、First Instance |
+| Indexed Draw | uint32 Index Count、Instance Count、First Index、int32 Base Vertex、uint32 First Instance |
+| Dispatch / Mesh | uint32のWorkgroup数x/y/z |
+| Count付きDraw | uint64引数Address、uint32 Stride、uint32 Count |
+| Trace Rays | VkTraceRaysIndirectCommand2KHR。`pipeline.indirectTraceArguments(size)`でも生成可能 |
+
+`countBuffer`を指定すると、GPUが書いた32ビット値をSequence数として使用できます。
+値は0から`maxSequenceCount`までにし、Bufferには`INDIRECT`と`SHADER_DEVICE_ADDRESS`を付けます。
+ComputeがこのBufferを書く場合は`STORAGE`も必要です。
+Bufferの内容に含めるVertex/Index/間接引数などのアドレスはCPUから検査できないため、範囲とUsageを守り、対象をEncoderの`useResource`で保持します。
+
+DescriptorはEncoderで設定したものを引き継ぎます。
+Push Constants未設定の場合の初期値は0で、Tokenに指定した範囲をGPUデータで上書きします。
+ShaderからResourceを動的に選ぶ場合は、Runtime Descriptor ArrayかBuffer Device Addressを使います。
+Pipeline Selectionは固定状態、Stage、Descriptor/Push Constant Layout、Fragment出力が一致するPipeline同士に制限されます。
+Pipelineを切り替えない場合は、通常のPipelineを1個指定し、Pipeline Tokenを省けます。
+
+ComputeのSequence同士には実行順序の保証がありません。
+依存する演算は別のEncoder操作に分けます。
+Graphicsでは既定でSequence順を保ち、順序が不要なら`unorderedSequences = true`を指定できます。
+この拡張の規則によりMultiviewとは組み合わせられません。
+前処理用メモリは実行ごとに確保し、Command完了まで保持します。
+[KhronosのDevice Generated Commands仕様](https://docs.vulkan.org/spec/latest/chapters/device_generated_commands/generatedcommands.html)の制約に従います。

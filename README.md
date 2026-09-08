@@ -9,7 +9,7 @@ Vulkanのメモリ確保、リソースのBinding、画像レイアウトの遷�
 | 用途 | 機能 |
 | --- | --- |
 | GPUで計算する | Compute ShaderでBuffer、Texture、Tensorを処理し、結果をCPUへ読み戻す。対応端末ではCooperative Matrixも利用する |
-| 画像を描く | MSAA、Indexed/Indirect Draw、頂点属性、MRT、Depth/Stencil、Subpass、Multiview、Shading Rate、Tessellation、Mesh Shaderを使って描画する |
+| 画像を描く | MSAA、Indexed/Indirect Draw、GPUでのCommand生成、頂点属性、MRT、Depth/Stencil、Subpass、Multiview、Shading Rate、Tessellation、Mesh Shaderを使って描画する |
 | データを転送する | Buffer、Textureの領域やMip、配列Sliceをコピーし、Mipを生成する |
 | 光線を追跡する | 対応端末でBLAS/TLASの構築、Copy、Compaction、保存・復元を行い、Ray QueryまたはRay Tracing Pipelineを実行する |
 | リソースを管理する | Texture View、Resource配列、Heap・Placement・Alias、Sparse Resource、Shared Event、Counter、Pipeline Cacheを使う |
@@ -165,4 +165,4 @@ GPUごとの実機性能は未計測です。実施済みの確認は[検証結�
 
 Vulkano本体は[Apache License 2.0](LICENSE)で提供します。Copyright 2026 Moriya-Taichi。
 
-同梱するVMA・SPIRV-Reflect・SPIR-V Headersには、それぞれのライセンスが適用されます。著作権・ライセンス表示は[third_party](vulkano/src/main/cpp/third_party/)に保持し、配布するAARとSources JARにも同梱します。
+同梱するVMA・SPIRV-Reflect・SPIR-V Headers・Vulkan-Headersには、それぞれのライセンスが適用されます。著作権・ライセンス表示は[third_party](vulkano/src/main/cpp/third_party/)に保持し、配布するAARとSources JARにも同梱します。

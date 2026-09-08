@@ -14,6 +14,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Mip生成 | generateMipmaps | Subresource別BarrierとBlit。BlitとFilterをサポートするFormat |
 | Indexed / Instanced Draw | drawIndexedPrimitives | UINT16 / UINT32、Base Vertex、First Instance |
 | Indirect Draw / Dispatch | Indirect Bufferを受けるEncoder API | Draw、Indexed Draw、Compute、Mesh。GPU側Count Bufferによる描画数指定。端末依存 |
+| GPUからのCommand生成 | makeIndirectCommandLayout / executeCommands | Pipeline選択、Push Constants、Sequence Index、Vertex/Index指定、Draw/Dispatch/Mesh/Trace。VK_EXT_device_generated_commands |
 | Vertex Descriptor | vertexBuffers / vertexAttributes | Vertex Input、頂点ごとまたはInstanceごとの入力 |
 | 複数Render Target | colorAttachments | DeviceのAttachment上限まで。Independent Blendは端末依存 |
 | Depth / Stencil | DepthStencilDescriptor | Compare、Mask、Stencil操作、Depth Bias、Depth Bounds |
@@ -51,12 +52,17 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | 機能 | 残る実装 |
 | --- | --- |
 | Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
-| GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
 | 複数Queue | 独立したQueueとQueue Family Ownership Transfer |
 | ML実行 | 専用ML EncoderやGraph実行API。TensorとCompute Shaderによる演算は実装済み |
 
 ## 組み合わせの制約
+
+Device Generated Commandsは、対応するShader StageとPipeline Binding Stageを個別に問い合わせます。
+選択先のPipelineは固定描画状態、Descriptor Layout、Push Constant Layout、Fragment出力の一致が必要です。
+このVulkan拡張ではMultiviewのView Maskを0にする必要があります。
+DescriptorのGPU選択にはRuntime ArrayやBuffer Device Addressを組み合わせます。
+前処理は各実行に固有の領域で行い、明示的な前処理結果の再利用は公開していません。
 
 SubpassはColor ResolveとMultiviewに対応します。
 Depth/Stencil ResolveとRate Mapは単一Subpassで利用でき、明示的なSubpass Layoutとの組み合わせは未実装です。

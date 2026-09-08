@@ -112,3 +112,12 @@ ASTC HDRとPVRTCのFeature拒否、HDR Sampling、PVRTC Block転送のテスト�
 ASTC HDRのFixtureはFloat16の定数色Blockで、赤成分2.0をFloat Render Targetへ保持できるかを検証します。
 ローカルDriverは両方の圧縮Featureに非対応で、成功経路の2件はスキップしています。
 Kotlin/JNIは52件中39件成功・13件スキップ・失敗0件です。
+
+
+### Device Generated Commands
+
+Vulkan-Headers 1.4.335導入までのCommit `8b3ecfb6225dc3f58bf5724e60699f47fd5bc58d`は[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34234101369)が成功しました。
+新しいToken Layout、Pipeline選択、GPU引数/Count、Compute・Indexed/Mesh描画、PipelineとBufferの保持を検証するテストを追加しました。
+Mesa 24.0.5のローカル環境ではNative 725項目、Kotlin/JNI 55件中40件成功・15件スキップ・失敗0件です。
+このDriverにはDevice Generated Commandsがないため、追加した成功経路2件はスキップしています。
+CIのMesa 25.2.8でもFeatureに応じて実行し、実行/スキップの内訳とValidation ErrorをJUnitレポートから検査します。

@@ -79,6 +79,21 @@ struct Extensions {
     uint64_t available = 0, availableExtra = 0;
     VkPhysicalDeviceTextureCompressionASTCHDRFeatures astcHdr{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXTURE_COMPRESSION_ASTC_HDR_FEATURES};
+    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT generated{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT};
+    VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT generatedProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamicState{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+    bool generatedVertexInput = false;
+    PFN_vkCmdBindVertexBuffers2 bindVertexBuffers2 = nullptr;
+    PFN_vkCreateIndirectCommandsLayoutEXT createGeneratedLayout = nullptr;
+    PFN_vkDestroyIndirectCommandsLayoutEXT destroyGeneratedLayout = nullptr;
+    PFN_vkCreateIndirectExecutionSetEXT createExecutionSet = nullptr;
+    PFN_vkDestroyIndirectExecutionSetEXT destroyExecutionSet = nullptr;
+    PFN_vkUpdateIndirectExecutionSetPipelineEXT updateExecutionSet = nullptr;
+    PFN_vkGetGeneratedCommandsMemoryRequirementsEXT generatedMemoryRequirements = nullptr;
+    PFN_vkCmdExecuteGeneratedCommandsEXT executeGenerated = nullptr;
     bool core12 = false, core13 = false;
     void *chain = nullptr;
     std::vector<VkExtensionProperties> supported;

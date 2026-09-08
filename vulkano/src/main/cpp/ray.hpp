@@ -52,6 +52,7 @@ struct RayTracingPipeline : Pipeline {
     VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{}, callable{};
     RayTracingPipeline(std::shared_ptr<Device>, std::vector<BindingLayout>, uint32_t, const std::vector<Shader> &,
                        const std::vector<VkShaderStageFlagBits> &,
-                       const std::vector<VkRayTracingShaderGroupCreateInfoKHR> &, uint32_t recursion);
+                       const std::vector<VkRayTracingShaderGroupCreateInfoKHR> &, uint32_t recursion,
+                       bool indirectBindable = false);
 };
 } // namespace vulkano

@@ -401,6 +401,36 @@ class ComputeCommandEncoder internal constructor(command: CommandBuffer) :
         pipeline = state
     }
 
+    /**
+     * GPU count must not exceed maxSequenceCount; pointed-to resources must be retained with
+     * useResource.
+     */
+    fun executeCommands(
+        layout: IndirectCommandLayout,
+        indirectBuffer: Buffer,
+        maxSequenceCount: Int,
+        offset: Long = 0,
+        countBuffer: Buffer? = null,
+        countOffset: Long = 0,
+        maxDrawCount: Int = 1,
+    ): Unit = encode {
+        require(layout.device === commandBuffer.device)
+        Native.executeGenerated(
+            it,
+            layout.arguments(
+                indirectBuffer,
+                maxSequenceCount,
+                offset,
+                countBuffer,
+                countOffset,
+                maxDrawCount,
+            ),
+            bindingData(),
+            constantData(),
+            0,
+        )
+    }
+
     fun dispatchThreadgroups(groups: Size): Unit = encode {
         val state = checkNotNull(pipeline) { "Set a compute pipeline first" }
         Native.dispatch(it, state.handle(), bindingData(), constantData(), groups.array())
@@ -517,6 +547,7 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
         meshGroups: Size? = null,
         countBuffer: Buffer? = null,
         countOffset: Long = 0,
+        generated: LongArray = longArrayOf(),
     ): Unit = encode {
         require(
             count > 0 &&
@@ -536,7 +567,9 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
         val s = scissors.firstOrNull()
         Native.drawAdvanced(
             nativeEncoder,
-            checkNotNull(pipeline) { "Set a render pipeline first" }.handle(),
+            if (generated.isEmpty())
+                checkNotNull(pipeline) { "Set a render pipeline first" }.handle()
+            else 0L,
             bindingData(),
             constantData(),
             intArrayOf(
@@ -593,6 +626,41 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
                 viewports
                     .flatMap { listOf(it.x, it.y, it.width, it.height, it.minDepth, it.maxDepth) }
                     .toFloatArray(),
+            generated,
+        )
+    }
+
+    /** Uses this encoder's descriptors and dynamic state; the layout supplies the pipeline. */
+    fun executeCommands(
+        layout: IndirectCommandLayout,
+        indirectBuffer: Buffer,
+        maxSequenceCount: Int,
+        offset: Long = 0,
+        countBuffer: Buffer? = null,
+        countOffset: Long = 0,
+        maxDrawCount: Int = 1,
+        indexBuffer: Buffer? = null,
+        indexType: IndexType = IndexType.UINT16,
+        indexBufferOffset: Long = 0,
+    ): Unit = encode {
+        require(layout.device === commandBuffer.device)
+        draw(
+            1,
+            1,
+            0,
+            0,
+            indexBuffer = indexBuffer,
+            indexType = indexType,
+            indexOffset = indexBufferOffset,
+            generated =
+                layout.arguments(
+                    indirectBuffer,
+                    maxSequenceCount,
+                    offset,
+                    countBuffer,
+                    countOffset,
+                    maxDrawCount,
+                ),
         )
     }
 

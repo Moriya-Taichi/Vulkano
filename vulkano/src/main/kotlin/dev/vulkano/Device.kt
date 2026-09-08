@@ -149,6 +149,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
         function: ShaderFunction,
         bindings: List<BindingLayout> = emptyList(),
         pushConstantBytes: Int = 0,
+        supportsIndirectCommands: Boolean = false,
     ): ComputePipelineState = access {
         require(function.library.device === this && pushConstantBytes >= 0)
         val id =
@@ -159,6 +160,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                 packLayout(bindings),
                 pushConstantBytes,
                 function.constants,
+                supportsIndirectCommands,
             )
         val size = Native.pipelineLocalSize(id)
         ComputePipelineState(this, id, Size(size[0], size[1], size[2]), size[3])
@@ -215,6 +217,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                     descriptor.meshShader,
                     descriptor.subpassLayout?.pack() ?: intArrayOf(),
                     descriptor.subpassIndex,
+                    descriptor.supportsIndirectCommands,
                 )
             RenderPipelineState(this, id, Native.pipelineLocalSize(id)[3])
         }
@@ -401,16 +404,19 @@ internal constructor(
 
 class Sampler internal constructor(device: Device, id: Long) : Resource(device, id)
 
+abstract class PipelineState internal constructor(device: Device, id: Long) : Resource(device, id)
+
 class ComputePipelineState
 internal constructor(
     device: Device,
     id: Long,
     val threadgroupSize: Size,
     val pushConstantBytes: Int,
-) : Resource(device, id)
+) : PipelineState(device, id)
 
 class RenderPipelineState
-internal constructor(device: Device, id: Long, val pushConstantBytes: Int) : Resource(device, id)
+internal constructor(device: Device, id: Long, val pushConstantBytes: Int) :
+    PipelineState(device, id)
 
 class ShaderLibrary internal constructor(internal val device: Device, spirv: ByteArray) {
     internal val code = spirv.copyOf()

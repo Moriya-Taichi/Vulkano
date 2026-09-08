@@ -19,6 +19,14 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     core12 = api >= VK_API_VERSION_1_2;
     core13 = api >= VK_API_VERSION_1_3;
     void *head = nullptr;
+    const bool dgc =
+        has(e, VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME) &&
+        (core13 || (has(e, VK_KHR_MAINTENANCE_5_EXTENSION_NAME) && has(e, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
+                    (core12 || has(e, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))));
+    if (dgc)
+        link(head, generated);
+    if (!core13 && has(e, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME))
+        link(head, dynamicState);
     link(head, ycbcr);
     if (core13 || has(e, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME))
         link(head, astcHdr);
@@ -64,6 +72,9 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
+    generatedVertexInput = core13 || dynamicState.extendedDynamicState;
+    if (generated.deviceGeneratedCommands && address.bufferDeviceAddress)
+        availableExtra |= DeviceGeneratedCommands;
     if (astcHdr.textureCompressionASTC_HDR)
         availableExtra |= AstcHdr;
     if (has(e, VK_IMG_FORMAT_PVRTC_EXTENSION_NAME))
@@ -145,6 +156,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
             available |= TaskShader;
     }
     head = nullptr;
+    if (availableExtra & DeviceGeneratedCommands)
+        link(head, generatedProperties);
     link(head, multiviewProperties);
     if (available & CooperativeMatrix)
         link(head, matrixProperties);
@@ -346,6 +359,26 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & DeviceGeneratedCommands) {
+        generated = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT};
+        generated.deviceGeneratedCommands = true;
+        link(chain, generated);
+        extensions.push_back(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
+        if (!core13) {
+            extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+            if (!core12) {
+                extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+                extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+            }
+            if (generatedVertexInput) {
+                dynamicState = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+                dynamicState.extendedDynamicState = true;
+                link(chain, dynamicState);
+                extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+            }
+        }
+    }
     if (extra & AstcHdr) {
         astcHdr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXTURE_COMPRESSION_ASTC_HDR_FEATURES};
         astcHdr.textureCompressionASTC_HDR = true;
@@ -389,6 +422,18 @@ void Extensions::load(Device &d) {
 #define GET(member, name)                                                                                              \
     member = reinterpret_cast<decltype(member)>(vkGetDeviceProcAddr(d.device, name));                                  \
     require(member, "Enabled Vulkan entry point is missing")
+    if (d.enabledExtra & DeviceGeneratedCommands) {
+        GET(createGeneratedLayout, "vkCreateIndirectCommandsLayoutEXT");
+        GET(destroyGeneratedLayout, "vkDestroyIndirectCommandsLayoutEXT");
+        GET(createExecutionSet, "vkCreateIndirectExecutionSetEXT");
+        GET(destroyExecutionSet, "vkDestroyIndirectExecutionSetEXT");
+        GET(updateExecutionSet, "vkUpdateIndirectExecutionSetPipelineEXT");
+        GET(generatedMemoryRequirements, "vkGetGeneratedCommandsMemoryRequirementsEXT");
+        GET(executeGenerated, "vkCmdExecuteGeneratedCommandsEXT");
+        if (generatedVertexInput) {
+            GET(bindVertexBuffers2, core13 ? "vkCmdBindVertexBuffers2" : "vkCmdBindVertexBuffers2EXT");
+        }
+    }
     if (d.enabledExtra & DrawIndirectCount) {
         GET(drawIndirectCount, core12 ? "vkCmdDrawIndirectCount" : "vkCmdDrawIndirectCountKHR");
         GET(drawIndexedIndirectCount, core12 ? "vkCmdDrawIndexedIndirectCount" : "vkCmdDrawIndexedIndirectCountKHR");

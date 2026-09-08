@@ -55,7 +55,7 @@ JNI_METHOD(void, buildAcceleration)(JNIEnv *e, jobject, jlong command, jlong str
 }
 JNI_METHOD(jlong, createRayPipeline)
 (JNIEnv *e, jobject, jlong device, jobjectArray codes, jobjectArray entries, jobjectArray constants, jintArray stages,
- jintArray groupArray, jint recursion, jintArray schema, jint push) {
+ jintArray groupArray, jint recursion, jintArray schema, jint push, jboolean indirect) {
     return guard(e, [&] {
         auto flags = ints(e, stages);
         auto gs = ints(e, groupArray);
@@ -89,7 +89,7 @@ JNI_METHOD(jlong, createRayPipeline)
             groups.push_back(g);
         }
         return put(std::make_shared<RayTracingPipeline>(get<Device>(device), layout(e, schema), push, shaders, sf,
-                                                        groups, recursion));
+                                                        groups, recursion, indirect));
     });
 }
 JNI_METHOD(void, traceRays)

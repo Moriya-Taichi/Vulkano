@@ -33,6 +33,9 @@ jobs:
         run: python3 tools/run-native-tests.py build/host/vulkano_tests
       - name: Build AAR, minified sample and instrumentation APK; test Kotlin through JNI
         run: ./gradlew :vulkano:assembleRelease :sample:assembleDebug :sample:assembleRelease :vulkano:assembleDebugAndroidTest :vulkano:testDebugUnitTest -Pvulkano.hostLibraryPath="$GITHUB_WORKSPACE/build/host"
+      - name: Verify GPU test results and validation output
+        if: always()
+        run: python3 tools/verify-gpu-tests.py
       - name: Build and verify Maven publication
         run: |
           ./gradlew :vulkano:generateRepo

@@ -68,6 +68,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     DRAW_INDIRECT_COUNT(8, 1),
     TEXTURE_COMPRESSION_ASTC_HDR(16, 1),
     TEXTURE_COMPRESSION_PVRTC(32, 1),
+    DEVICE_GENERATED_COMMANDS(64, 1),
 }
 
 enum class StorageMode {

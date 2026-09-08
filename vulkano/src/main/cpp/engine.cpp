@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "extensions.hpp"
+#include "generated.hpp"
 #include "heaps.hpp"
 #include "interop.hpp"
 #include "ray.hpp"
@@ -245,6 +246,7 @@ struct Module {
     uint32_t entryId = 0;
     std::vector<BindingLayout> reflectedBindings;
     std::map<uint32_t, int> inputs, outputs;
+    std::vector<std::vector<uint64_t>> outputInterface;
     uint32_t reflectedPushBytes = 0;
     std::array<uint32_t, 3> local{0, 0, 0};
     std::vector<VkSpecializationMapEntry> specEntries;
@@ -380,6 +382,26 @@ struct Module {
         if (executionModel == 4)
             for (uint32_t n = 0; n < reflectedEntry->output_variable_count; ++n)
                 interface(interface, *reflectedEntry->output_variables[n], outputs);
+        if (executionModel == 4) {
+            auto outputKey = [&](auto &&self, const SpvReflectInterfaceVariable &v,
+                                 std::vector<uint64_t> &key) -> void {
+                key.insert(key.end(),
+                           {v.location, v.component, uint32_t(v.built_in), v.decoration_flags, v.format,
+                            v.numeric.scalar.width, v.numeric.scalar.signedness, v.numeric.vector.component_count,
+                            v.numeric.matrix.column_count, v.numeric.matrix.row_count, v.array.dims_count});
+                for (uint32_t n = 0; n < v.array.dims_count; ++n)
+                    key.push_back(v.array.dims[n]);
+                key.push_back(v.member_count);
+                for (uint32_t n = 0; n < v.member_count; ++n)
+                    self(self, v.members[n], key);
+            };
+            for (uint32_t n = 0; n < reflectedEntry->output_variable_count; ++n) {
+                std::vector<uint64_t> key;
+                outputKey(outputKey, *reflectedEntry->output_variables[n], key);
+                outputInterface.push_back(std::move(key));
+            }
+            std::sort(outputInterface.begin(), outputInterface.end());
+        }
         // Public FunctionConstants stores exactly one 32-bit scalar per constant ID.
         std::map<uint32_t, uint32_t> scalarSizes, constantTypes;
         for (size_t at = 5; at < code.size(); at += code[at] >> 16) {
@@ -867,9 +889,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 6) == 0, "Unknown extended feature");
+    require((extra >> 7) == 0, "Unknown extended feature");
     require((required >> 60) == 0, "Unknown requested feature");
-    if (required & (RayQuery | RayPipeline))
+    if ((required & (RayQuery | RayPipeline)) || (extra & DeviceGeneratedCommands))
         required |= BufferAddress;
     if (required & TaskShader)
         required |= MeshShader;
@@ -1023,6 +1045,11 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
             enabledExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
         extended->enable(required, enabledExtensions, extra);
         extended->enableExtra(extra, enabledExtensions);
+        std::sort(enabledExtensions.begin(), enabledExtensions.end(),
+                  [](auto a, auto b) { return std::strcmp(a, b) < 0; });
+        enabledExtensions.erase(std::unique(enabledExtensions.begin(), enabledExtensions.end(),
+                                            [](auto a, auto b) { return std::strcmp(a, b) == 0; }),
+                                enabledExtensions.end());
         VkPhysicalDeviceFeatures enabledFeatures{};
         enabledFeatures.robustBufferAccess = f.robustBufferAccess;
         enabledFeatures.samplerAnisotropy = (required & Anisotropy) != 0;
@@ -1345,16 +1372,23 @@ void Pipeline::makeLayout() {
     layoutInfo.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(d->device, &layoutInfo, nullptr, &layout), "vkCreatePipelineLayout");
 }
-Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b, uint32_t p, const Shader &shader)
-    : Resource(std::move(device)), bindings(std::move(b)), pushBytes(p), compute(true) {
+Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b, uint32_t p, const Shader &shader,
+                   bool indirect)
+    : Resource(std::move(device)), bindings(std::move(b)), pushBytes(p), compute(true), indirectBindable(indirect) {
     try {
         stages = VK_SHADER_STAGE_COMPUTE_BIT;
+        if (indirectBindable)
+            validateIndirectPipeline(*this);
         Module module(*d, shader, 5);
         localSize = module.local;
         resolveLayout(*this, {&module});
         makeLayout();
         VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         info.layout = layout;
+        VkPipelineCreateFlags2CreateInfo flags{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
+        flags.flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT;
+        if (indirectBindable)
+            info.pNext = &flags;
         info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                       nullptr,
                       0,
@@ -1380,6 +1414,7 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
       colorFormat(color), depthFormat(depth) {
     try {
         auto &g = graphics;
+        indirectBindable = g.indirectBindable;
         const auto &l = d->properties.limits;
         if (g.passLayout) {
             validateSubpassLayout(*d, *g.passLayout);
@@ -1515,6 +1550,10 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         require(!g.viewMask || (32u - uint32_t(__builtin_clz(g.viewMask))) <=
                                    d->extensions->multiviewProperties.maxMultiviewViewCount,
                 "View mask exceeds multiview limit");
+        fragmentInterface = fs.outputInterface;
+        generatedStateKey = generatedGraphicsKey(*this);
+        if (indirectBindable)
+            validateIndirectPipeline(*this);
         Render compatibleRender;
         compatibleRender.rateMapTexelSize = g.rateMapTexelSize;
         compatibleRender.passLayout = g.passLayout;
@@ -1575,11 +1614,16 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         ds.maxDepthBounds = g.maxDepthBounds;
         ds.front = g.front;
         ds.back = g.back;
-        VkDynamicState states[] = {VK_DYNAMIC_STATE_VIEWPORT,          VK_DYNAMIC_STATE_SCISSOR,
-                                   VK_DYNAMIC_STATE_BLEND_CONSTANTS,   VK_DYNAMIC_STATE_DEPTH_BIAS,
-                                   VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_LINE_WIDTH};
+        VkDynamicState states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                   VK_DYNAMIC_STATE_SCISSOR,
+                                   VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                                   VK_DYNAMIC_STATE_DEPTH_BIAS,
+                                   VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                                   VK_DYNAMIC_STATE_LINE_WIDTH,
+                                   VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
         VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-        dyn.dynamicStateCount = 6;
+        dyn.dynamicStateCount =
+            (d->enabledExtra & DeviceGeneratedCommands) && d->extensions->generatedVertexInput && !g.mesh ? 7 : 6;
         dyn.pDynamicStates = states;
         VkPipelineFragmentShadingRateStateCreateInfoKHR rate{
             VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR};
@@ -1621,6 +1665,12 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         VkGraphicsPipelineCreateInfo i{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         if (useRate)
             i.pNext = &rate;
+        VkPipelineCreateFlags2CreateInfo flags{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
+        flags.flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT;
+        if (indirectBindable) {
+            flags.pNext = i.pNext;
+            i.pNext = &flags;
+        }
         i.stageCount = uint32_t(shaderStages.size());
         i.pStages = shaderStages.data();
         i.pVertexInputState = g.mesh ? nullptr : &vi;
@@ -1651,7 +1701,7 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
                                        const std::vector<Shader> &shaders,
                                        const std::vector<VkShaderStageFlagBits> &stageFlags,
                                        const std::vector<VkRayTracingShaderGroupCreateInfoKHR> &groups,
-                                       uint32_t recursion)
+                                       uint32_t recursion, bool indirect)
     : Pipeline(std::move(device), std::move(b), push) {
     require(d->enabled & RayPipeline, "Ray-tracing pipeline feature was not enabled");
     require(!shaders.empty() && shaders.size() == stageFlags.size() && !groups.empty(),
@@ -1659,6 +1709,8 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
     require(recursion > 0 && recursion <= d->extensions->rayProperties.maxRayRecursionDepth,
             "Ray recursion exceeds device limit");
     rayTracing = true;
+    indirectBindable = indirect;
+    generatedStateKey = {recursion};
     std::vector<std::unique_ptr<Module>> modules;
     std::vector<const Module *> reflection;
     std::vector<VkPipelineShaderStageCreateInfo> vkStages;
@@ -1729,6 +1781,12 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
     resolveLayout(*this, reflection);
     makeLayout();
     VkRayTracingPipelineCreateInfoKHR i{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+    VkPipelineCreateFlags2CreateInfo flags{VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO};
+    flags.flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT;
+    if (indirectBindable) {
+        validateIndirectPipeline(*this);
+        i.pNext = &flags;
+    }
     i.stageCount = uint32_t(vkStages.size());
     i.pStages = vkStages.data();
     i.groupCount = uint32_t(groups.size());
@@ -2064,6 +2122,29 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
     if (!constants.empty())
         vkCmdPushConstants(command, p.layout, p.stages, 0, static_cast<uint32_t>(constants.size()), constants.data());
 }
+void Command::executeGenerated(std::shared_ptr<GeneratedExecution> g, std::vector<Binding> bs,
+                               std::vector<uint8_t> constants) {
+    recording();
+    auto p = g->layout->pipelines.front();
+    require(p->compute || p->rayTracing, "Generated graphics commands require a render encoder");
+    resolveSamplers(*p, bs);
+    if (constants.empty())
+        constants.resize(p->pushBytes);
+    validateBindings(*p, bs, constants);
+    g->retain(*this);
+    for (const auto &b : bs) {
+        if (b.buffer)
+            buffers.push_back(b.buffer);
+        if (b.texel)
+            buffers.push_back(b.texel->buffer);
+    }
+    operations.push_back([g = std::move(g), p, bs = std::move(bs), constants = std::move(constants)](Command &c) {
+        c.barrier();
+        c.prepare(*p, bs, true);
+        c.bind(*p, bs, constants);
+        g->execute(c);
+    });
+}
 void Command::dispatch(Dispatch op) {
     recording();
     require(op.pipeline && op.pipeline->compute, "Compute pipeline required");
@@ -2239,7 +2320,9 @@ void Command::render(Render op) {
             require(a == b || !memoryOverlaps(*a, *b), "Render targets alias placement memory");
         }
     for (auto &draw : op.draws) {
-        require(bool(draw.pipeline), "Graphics pipeline required");
+        require(bool(draw.pipeline) && !draw.pipeline->rayTracing, "Graphics pipeline required");
+        if (draw.generated && draw.constants.empty())
+            draw.constants.resize(draw.pipeline->pushBytes);
         resolveSamplers(*draw.pipeline, draw.bindings);
     }
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
@@ -2255,6 +2338,15 @@ void Command::render(Render op) {
         }
         require(draw.pipeline && !draw.pipeline->compute, "Graphics pipeline required");
         validateBindings(*draw.pipeline, draw.bindings, draw.constants);
+        if (draw.generated) {
+            require(op.viewMask == 0, "Vulkan generated commands do not support multiview");
+            draw.generated->retain(*this);
+            const auto &g = *draw.generated->layout;
+            const bool indexed = g.action == VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT ||
+                                 g.action == VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_COUNT_EXT;
+            require(!indexed || g.indexToken || draw.indexBuffer,
+                    "Generated indexed drawing requires an index binding");
+        }
         if (op.passLayout) {
             require(
                 draw.pipeline->graphics.passLayout && draw.pipeline->graphics.passLayout->key == op.passLayout->key &&
@@ -2344,7 +2436,7 @@ void Command::render(Render op) {
             require((draw.indexBuffer->usage & VK_BUFFER_USAGE_INDEX_BUFFER_BIT) && draw.indexOffset % bytes == 0,
                     "Invalid index buffer usage/alignment");
             range(draw.indexBuffer->size, draw.indexOffset,
-                  draw.indirect ? bytes : (uint64_t(draw.firstVertex) + draw.vertices) * bytes);
+                  (draw.indirect || draw.generated) ? bytes : (uint64_t(draw.firstVertex) + draw.vertices) * bytes);
             buffers.push_back(draw.indexBuffer);
         }
         if (draw.indirect) {
@@ -2387,7 +2479,8 @@ void Command::render(Render op) {
             buffers.push_back(v.buffer);
         }
         for (const auto &v : draw.pipeline->graphics.vertexBindings)
-            require(bound.count(v.binding), "Missing vertex buffer");
+            require(bound.count(v.binding) || (draw.generated && draw.generated->layout->vertexTokens.count(v.binding)),
+                    "Missing vertex buffer");
         const auto count = draw.pipeline->graphics.viewportCount;
         require((draw.viewports.empty() || draw.viewports.size() == count) &&
                     (draw.scissors.empty() || draw.scissors.size() == count),
@@ -2504,14 +2597,26 @@ void Command::render(Render op) {
             vkCmdSetStencilReference(c.command, VK_STENCIL_FACE_FRONT_AND_BACK, draw.stencilReference);
             vkCmdSetLineWidth(c.command, draw.lineWidth);
             c.bind(*draw.pipeline, draw.bindings, draw.constants);
-            for (const auto &v : draw.vertexBuffers)
-                vkCmdBindVertexBuffers(c.command, v.index, 1, &v.buffer->buffer, &v.offset);
+            for (const auto &v : draw.vertexBuffers) {
+                if ((c.d->enabledExtra & DeviceGeneratedCommands) && c.d->extensions->generatedVertexInput) {
+                    auto schema = std::find_if(draw.pipeline->graphics.vertexBindings.begin(),
+                                               draw.pipeline->graphics.vertexBindings.end(),
+                                               [&](const auto &b) { return b.binding == v.index; });
+                    VkDeviceSize size = v.buffer->size - v.offset;
+                    VkDeviceSize stride = schema == draw.pipeline->graphics.vertexBindings.end() ? 0 : schema->stride;
+                    c.d->extensions->bindVertexBuffers2(c.command, v.index, 1, &v.buffer->buffer, &v.offset, &size,
+                                                        &stride);
+                } else
+                    vkCmdBindVertexBuffers(c.command, v.index, 1, &v.buffer->buffer, &v.offset);
+            }
             if (draw.indexBuffer)
                 vkCmdBindIndexBuffer(c.command, draw.indexBuffer->buffer, draw.indexOffset, draw.indexType);
             if (draw.visibility)
                 vkCmdBeginQuery(c.command, draw.visibility->pool, draw.visibilityIndex,
                                 (c.d->enabled & PreciseOcclusion) ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
-            if (draw.indirect) {
+            if (draw.generated) {
+                draw.generated->execute(c);
+            } else if (draw.indirect) {
                 if (draw.countBuffer) {
                     if (draw.pipeline->graphics.mesh)
                         c.d->extensions->drawMeshIndirectCount(c.command, draw.indirect->buffer, draw.indirectOffset,

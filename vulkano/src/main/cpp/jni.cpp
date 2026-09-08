@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "generated.hpp"
 #include "heaps.hpp"
 #include "interop.hpp"
 #include "ray.hpp"
@@ -361,12 +362,13 @@ JNI_METHOD(jlong, createSampler)
     });
 }
 JNI_METHOD(jlong, createComputePipeline)
-(JNIEnv *e, jobject, jlong device, jbyteArray code, jstring entry, jintArray schema, jint push, jintArray constants) {
+(JNIEnv *e, jobject, jlong device, jbyteArray code, jstring entry, jintArray schema, jint push, jintArray constants,
+ jboolean indirect) {
     return guard(e, [&] {
         require(push >= 0, "Negative push constant size");
         auto function = shader(e, code, entry);
         specialize(e, function, constants);
-        return put(std::make_shared<Pipeline>(get<Device>(device), layout(e, schema), push, function));
+        return put(std::make_shared<Pipeline>(get<Device>(device), layout(e, schema), push, function, indirect));
     });
 }
 JNI_METHOD(jlong, createRenderPipeline)
@@ -527,6 +529,7 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
     return guard(e, [&] { get<Command>(command)->present(get<Drawable>(drawable)); });
 }
 
+#include "jni_generated.inc"
 #include "jni_graphics.inc"
 
 #include "jni_ray.inc"

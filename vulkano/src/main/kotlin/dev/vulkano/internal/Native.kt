@@ -85,6 +85,26 @@ internal object Native {
         lod: FloatArray,
     ): Long
 
+    external fun createGeneratedLayout(
+        device: Long,
+        pipelines: LongArray,
+        tokens: IntArray,
+        stride: Int,
+        unordered: Boolean,
+    ): Long
+
+    external fun generatedLimits(device: Long): LongArray
+
+    external fun executeGenerated(
+        command: Long,
+        generated: LongArray,
+        bindings: LongArray,
+        constants: ByteArray,
+        kind: Int,
+    )
+
+    external fun rayTableRegions(pipeline: Long): LongArray
+
     external fun createComputePipeline(
         device: Long,
         code: ByteArray,
@@ -92,6 +112,7 @@ internal object Native {
         bindings: IntArray,
         pushBytes: Int,
         specialization: IntArray,
+        indirect: Boolean,
     ): Long
 
     external fun createRenderPipeline(
@@ -118,6 +139,7 @@ internal object Native {
         mesh: Boolean,
         subpasses: IntArray,
         subpass: Int,
+        indirect: Boolean,
     ): Long
 
     external fun createTextureView(
@@ -150,6 +172,7 @@ internal object Native {
         counts: IntArray,
         resources: LongArray,
         state: FloatArray,
+        generated: LongArray,
     )
 
     external fun dispatchIndirect(
@@ -407,6 +430,7 @@ internal object Native {
         recursion: Int,
         bindings: IntArray,
         pushBytes: Int,
+        indirect: Boolean,
     ): Long
 
     external fun traceRays(

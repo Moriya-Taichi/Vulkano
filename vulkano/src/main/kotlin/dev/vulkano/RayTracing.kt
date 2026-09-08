@@ -219,10 +219,12 @@ data class RayTracingPipelineDescriptor(
     val maxRecursionDepth: Int = 1,
     val bindings: List<BindingLayout> = emptyList(),
     val pushConstantBytes: Int = 0,
+    val supportsIndirectCommands: Boolean = false,
 )
 
 class RayTracingPipelineState
-internal constructor(device: Device, id: Long, val pushConstantBytes: Int) : Resource(device, id)
+internal constructor(device: Device, id: Long, val pushConstantBytes: Int) :
+    PipelineState(device, id)
 
 fun Device.makeRayTracingPipelineState(
     descriptor: RayTracingPipelineDescriptor
@@ -243,6 +245,7 @@ fun Device.makeRayTracingPipelineState(
             descriptor.maxRecursionDepth,
             packLayout(descriptor.bindings),
             descriptor.pushConstantBytes,
+            descriptor.supportsIndirectCommands,
         )
     RayTracingPipelineState(this, id, Native.pipelineLocalSize(id)[3])
 }
@@ -255,6 +258,36 @@ class RayTracingCommandEncoder internal constructor(command: CommandBuffer) :
         require(state.device === commandBuffer.device)
         state.handle()
         pipeline = state
+    }
+
+    /**
+     * GPU count must not exceed maxSequenceCount; pointed-to resources must be retained with
+     * useResource.
+     */
+    fun executeCommands(
+        layout: IndirectCommandLayout,
+        indirectBuffer: Buffer,
+        maxSequenceCount: Int,
+        offset: Long = 0,
+        countBuffer: Buffer? = null,
+        countOffset: Long = 0,
+        maxDrawCount: Int = 1,
+    ): Unit = encode {
+        require(layout.device === commandBuffer.device)
+        Native.executeGenerated(
+            it,
+            layout.arguments(
+                indirectBuffer,
+                maxSequenceCount,
+                offset,
+                countBuffer,
+                countOffset,
+                maxDrawCount,
+            ),
+            bindingData(),
+            constantData(),
+            2,
+        )
     }
 
     fun traceRays(size: Size): Unit = encode {
