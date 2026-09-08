@@ -234,6 +234,44 @@ internal object Native {
 
     external fun aliasResources(command: Long, before: Long, after: Long)
 
+    external fun sparseCapabilities(device: Long): LongArray
+
+    external fun sparseInfo(resource: Long): LongArray
+
+    external fun createSparseBuffer(device: Long, size: Long, usage: Int): Long
+
+    external fun createSparseTexture(
+        device: Long,
+        width: Int,
+        height: Int,
+        format: Int,
+        usage: Int,
+        options: IntArray,
+    ): Long
+
+    external fun mapSparseBuffer(
+        resource: Long,
+        page: Long,
+        count: Int,
+        resident: Boolean,
+        source: Long,
+        sourcePage: Long,
+    )
+
+    external fun mapSparseTexture(
+        resource: Long,
+        region: IntArray,
+        resident: Boolean,
+        source: Long,
+        sourceRegion: IntArray,
+    )
+
+    external fun mapSparseTail(texture: Long, layer: Int, resident: Boolean)
+
+    external fun sparseTextureResident(texture: Long, region: IntArray): Boolean
+
+    external fun sparseBufferResident(buffer: Long, page: Long, count: Int): Boolean
+
     external fun createHeap(device: Long, size: Long, storage: Int): Long
 
     external fun createHeapBuffer(heap: Long, size: Long, usage: Int, offset: Long): Long

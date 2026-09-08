@@ -1,10 +1,12 @@
 #include "engine.hpp"
 #include "heaps.hpp"
 #include "ray.hpp"
+#include "sparse.hpp"
 #include "synchronization.hpp"
 #include <cstring>
 #include <jni.h>
 #include <mutex>
+#include <set>
 #include <type_traits>
 #ifdef __ANDROID__
 #include <android/native_window_jni.h>
@@ -523,3 +525,4 @@ JNI_METHOD(void, present)(JNIEnv *e, jobject, jlong command, jlong drawable) {
 #include "jni_synchronization.inc"
 
 #include "jni_heaps.inc"
+#include "jni_sparse.inc"

@@ -21,6 +21,7 @@ int numericClass(VkFormat format);
 struct Device;
 struct Extensions;
 struct Heap;
+struct SparseState;
 struct TextureBuffer;
 struct SharedEvent;
 struct CounterPool;
@@ -89,7 +90,8 @@ enum Feature : uint64_t {
     FragmentRate = 1ull << 55,
     PrimitiveRate = 1ull << 56,
     AttachmentRate = 1ull << 57,
-    CooperativeMatrix = 1ull << 58
+    CooperativeMatrix = 1ull << 58,
+    SparseResources = 1ull << 59
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -102,8 +104,10 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
-    uint32_t family = 0, timestampBits = 0;
+    uint32_t family = 0, timestampBits = 0, sparseFamily = 0;
+    VkQueue sparseQueue = VK_NULL_HANDLE;
     uint64_t available = 0, enabled = 0;
+    VkDeviceSize sparseVirtualBytes = 0;
     VkPhysicalDeviceFeatures coreFeatures{};
     std::shared_ptr<Extensions> extensions;
     VkPhysicalDeviceProperties properties{};
@@ -153,6 +157,7 @@ struct Buffer : Resource {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     std::shared_ptr<Heap> heap;
+    std::shared_ptr<SparseState> sparse;
     VkDeviceSize size;
     VkDeviceSize heapOffset = 0, heapSpan = 0;
     VkBufferUsageFlags usage;
@@ -160,7 +165,7 @@ struct Buffer : Resource {
     bool cpuWriteOnly;
     uint32_t inFlight = 0;
     Buffer(std::shared_ptr<Device>, VkDeviceSize, VkBufferUsageFlags, Storage, bool cpuWriteOnly = false,
-           std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false);
+           std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false, bool sparse = false);
     void write(VkDeviceSize offset, const void *bytes, size_t count);
     void read(VkDeviceSize offset, void *bytes, size_t count);
     ~Buffer() override;
@@ -182,6 +187,7 @@ struct Texture : Resource {
     VkImageView view = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     std::shared_ptr<Heap> heap;
+    std::shared_ptr<SparseState> sparse;
     VkFormat format;
     uint32_t width, height;
     TextureOptions options;
@@ -198,7 +204,7 @@ struct Texture : Resource {
     std::shared_ptr<Surface> surface;
     std::shared_ptr<FrameState> frame;
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImageUsageFlags, Storage, TextureOptions = {},
-            std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false);
+            std::shared_ptr<Heap> heap = {}, VkDeviceSize heapOffset = 0, bool unbound = false, bool sparse = false);
     Texture(std::shared_ptr<Device>, uint32_t, uint32_t, VkFormat, VkImage, VkImageView);
     bool depth() const;
     bool stencil() const;

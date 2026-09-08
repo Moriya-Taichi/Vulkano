@@ -33,6 +33,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Ray Query | AccelerationStructureとCompute/Graphics Shader | VK_KHR_ray_query、BLAS/TLAS、Triangle/AABB、Build/Refit、Copy/Compaction、SerializationとBLASアドレス再配置 |
 | Ray Tracing Pipeline | RayTracingPipelineState / traceRays | Raygen、Miss、Hit、Intersection、Callable、SBT。端末依存 |
 | Heap / Placement / Alias | makeHeap / makePlacementHeap / aliasResources | VMA Pool、Memory Type・Size・Alignmentの検査、明示配置、Alias Barrier |
+| Sparse Resource | makeSparseBuffer / makeSparseTexture | Page/Tile/Mip TailのMapping、必要なMetadataの確保、Mapping共有、CPU/Shader Residency検査 |
 | Event | makeSharedEvent | Timeline Semaphore。WaitはCommandの開始前、Signalは完了時 |
 | Counter / Visibility | CounterSampleBuffer | Timestamp / Occlusion Query。精密なSample数は端末依存 |
 | Binary Archiveに相当するキャッシュ | serializePipelineCache / loadPipelineCache | DeviceとDriverに対応したPipeline Cache |
@@ -48,7 +49,6 @@ GPUのメーカー名からFeatureの有無を推定しません。
 
 | 機能 | 残る実装 |
 | --- | --- |
-| Sparse Resource | Tile/Page Mapping、Sparse QueueへのBind、Residency検査 |
 | Tile Compute | 任意Tile Kernelを実行する専用拡張。Input AttachmentによるPixel内の読み取りは実装済み |
 | GPUからのCommand生成 | PipelineやBindingもGPUで指定するDevice Generated Commands。現在はDraw/Dispatch引数の生成 |
 | Acceleration StructureのMotion Blur | Motion Blur用拡張、復元済みStructureへのRefit |
@@ -66,6 +66,11 @@ Input Attachmentには描画先と同じImage、Mip、Layer、FormatのViewを�
 
 Acceleration Structure Archiveは互換Driver向けの不透明なデータです。
 TLASの復元には、保存時のBLASアドレスから復元済みBLASへの対応表が必要です。
+Sparse TextureはSingle Sampleの2D/3D Color ImageとそのArray/Cubeに対応します。
+Sparse MappingはDeviceの先行Command完了を待ち、Sparse QueueへのBind完了後に戻ります。
+未割り当て領域の値は端末のResidency規則に従い、新規に割り当てた領域は使用前に初期化します。
+共有Mapping間のCopyには中間Buffer/Textureを使います。
+
 Cooperative MatrixはSubgroup ScopeのCompute Shaderに対応し、Shape、数値型、Saturationを端末の組み合わせと照合します。
 
 ## APIの直接の対応先がないもの

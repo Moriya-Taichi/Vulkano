@@ -12,7 +12,7 @@ Vulkanのメモリ確保、リソースのBinding、画像レイアウトの遷�
 | 画像を描く | MSAA、Indexed/Indirect Draw、頂点属性、MRT、Depth/Stencil、Subpass、Multiview、Shading Rate、Tessellation、Mesh Shaderを使って描画する |
 | データを転送する | Buffer、Textureの領域やMip、配列Sliceをコピーし、Mipを生成する |
 | 光線を追跡する | 対応端末でBLAS/TLASの構築、Copy、Compaction、保存・復元を行い、Ray QueryまたはRay Tracing Pipelineを実行する |
-| リソースを管理する | Texture View、Resource配列、Heap、Shared Event、Counter、Pipeline Cacheを使う |
+| リソースを管理する | Texture View、Resource配列、Heap・Placement・Alias、Sparse Resource、Shared Event、Counter、Pipeline Cacheを使う |
 | 端末に合わせる | 利用可能なFeature、画像形式、処理サイズの上限、メモリ情報を取得する |
 
 Android 10（API 29）以上の`arm64-v8a`・`x86_64`に対応します。Vulkan 1.1以上とGraphics・Computeを扱えるGPUが必要です。実際に利用できるかは`Device.create()`で検査します。

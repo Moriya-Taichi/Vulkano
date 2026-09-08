@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "heaps.hpp"
+#include "sparse.hpp"
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -103,7 +104,10 @@ VkImageType Texture::imageType() const {
     return options.type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
 }
 VkImageCreateFlags Texture::flags() const {
-    return VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
+    return (sparse ? (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+                      (d->coreFeatures.sparseResidencyAliased ? uint32_t(VK_IMAGE_CREATE_SPARSE_ALIASED_BIT) : 0u))
+                   : 0u) |
+           VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
            ((options.type == VK_IMAGE_VIEW_TYPE_CUBE || options.type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
                 ? uint32_t(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
                 : 0u);
@@ -179,9 +183,18 @@ uint64_t Texture::byteSize(uint32_t mip) const {
            e.depth * pixelSize();
 }
 Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags u, Storage s,
-                 TextureOptions o, std::shared_ptr<Heap> hpool, VkDeviceSize offset, bool unbound)
+                 TextureOptions o, std::shared_ptr<Heap> hpool, VkDeviceSize offset, bool unbound, bool sparseResource)
     : Resource(std::move(device)), format(f), width(w), height(h), options(o), usage(u), storage(s) {
     heap = std::move(hpool);
+    if (sparseResource) {
+        require((d->enabled & SparseResources) && !heap && storage == Storage::Private && o.samples == 1 && !depth() &&
+                    !stencil() &&
+                    (imageType() == VK_IMAGE_TYPE_2D
+                         ? d->coreFeatures.sparseResidencyImage2D
+                         : imageType() == VK_IMAGE_TYPE_3D && d->coreFeatures.sparseResidencyImage3D),
+                "Sparse single-sampled color texture residency is unavailable");
+        sparse = std::make_shared<SparseState>(d);
+    }
     heapOffset = offset;
     require(!offset || (heap && heap->placement()), "An offset requires a placement heap");
     if (heap)
@@ -255,10 +268,10 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         alloc.preferredFlags = VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
     if (heap)
         alloc.pool = heap->pool;
-    if (unbound || (heap && heap->placement())) {
+    if (unbound || sparse || (heap && heap->placement())) {
         check(vkCreateImage(d->device, &info, nullptr, &image), "create unbound image");
         try {
-            if (!unbound) {
+            if (!unbound && !sparse) {
                 bool dedicated;
                 const auto requirements = textureRequirements(*d, image, &dedicated);
                 heapSpan = heap->validate(requirements, dedicated, offset);
@@ -275,9 +288,17 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         check(vmaCreateImage(d->allocator, &info, &alloc, &image, &allocation, nullptr), "vmaCreateImage");
     try {
         states.resize(size_t(o.layers) * o.mipLevels);
-        VkMemoryPropertyFlags mf;
-        vmaGetAllocationMemoryProperties(d->allocator, heap && heap->placement() ? heap->block : allocation, &mf);
+        VkMemoryPropertyFlags mf = 0;
+        if (!sparse)
+            vmaGetAllocationMemoryProperties(d->allocator, heap && heap->placement() ? heap->block : allocation, &mf);
         lazy = (mf & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) != 0;
+        if (sparse) {
+            sparse->initialize(*this);
+            for (auto &state : states)
+                state = {VK_IMAGE_LAYOUT_GENERAL, true}; // Unbound reads follow sparse residency rules.
+            layout = VK_IMAGE_LAYOUT_GENERAL;
+            initialized = true;
+        }
         if (usage & viewUsages)
             view = imageView(*this, f, o.type, 0, o.mipLevels, 0, o.layers);
     } catch (...) {
@@ -565,6 +586,8 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
     validRegion(*source, a);
     validRegion(*dest, b);
     const bool sameImage = source->image == dest->image;
+    require(!sparseMemoryOverlaps(*source, *dest),
+            "Copies between shared sparse mappings require an intermediate image");
     require(sameImage || !memoryOverlaps(*source, *dest), "Image copy aliases physical memory");
     if (sameImage && source->baseMip + a.mip == dest->baseMip + b.mip) {
         auto overlap = [](uint64_t a, uint64_t an, uint64_t b, uint64_t bn) { return a < b + bn && b < a + an; };

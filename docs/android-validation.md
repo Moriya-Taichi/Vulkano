@@ -55,3 +55,6 @@ adb shell getconf PAGE_SIZE
 ```
 
 16 KB端末では`PAGE_SIZE`が`16384`になります。AAR/APK内の各ABIの`libvulkano.so`について、`llvm-readelf -lW`でLOADセグメントのAlignmentが`0x4000`以上になっていることも確認します。[Androidのページサイズ対応](https://developer.android.com/guide/practices/page-sizes)
+
+Sparse対応端末ではPage/TileのMap/Unmap、Mapping共有、Mip Tail、Shader Residencyのテストも実行します。
+Placement HeapはAlignmentと領域の検査、Alias Barrier後の描画結果を確認します。

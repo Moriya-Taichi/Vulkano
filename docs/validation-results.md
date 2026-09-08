@@ -63,3 +63,15 @@ Placement BufferのAlias、非重複領域へのCopy、TextureのAlias切り替�
 配置範囲、Alignment、重複Copy、未初期化Textureの読み取りも検査しています。
 ローカル結果はKotlin/JNI 38件中32件成功、6件スキップ、失敗0件です。
 Android CIで見つかったC++17のLambda Captureを修正し、再ビルドの対象にしています。
+
+### Sparse Resourceと追加CI
+
+Placement Heapまでを含むCommit `26205c84ad781aca67429af248e5f109298dd2b6`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34224756190)が成功しました。
+AAR、Debug/Release Sample、Instrumentation APK、Kotlin/JNIテスト、Maven配布物の検証を含みます。
+Android実機での実行結果は含みません。
+
+その後、SparseのFeature未有効時の拒否、Buffer PageのMap/Unmapと共有、Texture Tile/Mip TailとShader Residencyのテストを追加しました。
+ローカルではKotlin/JNI 41件中33件成功、8件スキップ、失敗0件です。
+追加のスキップはSparse BufferとSparse Textureの2件で、使用したLavapipeがSparse Residencyに対応しないためです。
+Sparse Shaderはglslcでコンパイルし、spirv-valで検証しました。
+Native回帰テスト724項目も成功しました。

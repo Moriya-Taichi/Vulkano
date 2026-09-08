@@ -1,0 +1,11 @@
+#version 450
+#extension GL_ARB_sparse_texture2 : require
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 1) buffer Result { uint resident; uint value; } result;
+void main() {
+    vec4 pixel;
+    int code = sparseTexelFetchARB(source, ivec2(0), 0, pixel);
+    result.resident = sparseTexelsResidentARB(code) ? 1u : 0u;
+    result.value = uint(round(pixel.r * 255.0));
+}

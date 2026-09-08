@@ -1,4 +1,5 @@
 #include "heaps.hpp"
+#include "sparse.hpp"
 #include <algorithm>
 #include <limits>
 namespace vulkano {
@@ -94,6 +95,8 @@ static Placement placement(Resource &r) {
     return {};
 }
 bool memoryOverlaps(Resource &a, Resource &b) {
+    if (sparseMemoryOverlaps(a, b))
+        return true;
     const auto x = placement(a), y = placement(b);
     return x.heap && x.heap == y.heap && x.offset < y.offset + y.size && y.offset < x.offset + x.size;
 }

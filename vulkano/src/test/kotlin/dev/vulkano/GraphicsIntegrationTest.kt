@@ -36,6 +36,139 @@ class GraphicsIntegrationTest {
     }
 
     @Test
+    fun sparseResourcesRequireExplicitFeature(): Unit =
+        device().use { d ->
+            val caps = d.sparseCapabilities()
+            assertEquals(
+                Feature.SPARSE_RESOURCES in d.capabilities.availableFeatures,
+                caps.supported,
+            )
+            assertThrows(IllegalArgumentException::class.java) { d.makeSparseBuffer(4096) }
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeSparseTexture(TextureDescriptor(32, 32))
+            }
+        }
+
+    @Test
+    fun sparseBufferMappingCopyAndUnmap(): Unit {
+        assumeTrue(device().use { it.sparseCapabilities().let { c -> c.supported && c.buffers } })
+        device(setOf(Feature.SPARSE_RESOURCES)).use { d ->
+            val source = d.makeSparseBuffer(1024 * 1024)
+            assertFalse(source.isResident(0))
+            assertEquals(0L, source.allocatedBytes)
+            source.setResident(0)
+            assertTrue(source.isResident(0))
+            val output = d.makeBuffer(4)
+            d.submit {
+                blit {
+                    fill(source.buffer, 53, length = 4)
+                    copy(source.buffer, output, length = 4)
+                }
+            }
+            assertArrayEquals(ByteArray(4) { 53 }, output.readBytes(4))
+            if (d.sparseCapabilities().aliasedMappings) {
+                val alias = d.makeSparseBuffer(1024 * 1024)
+                alias.copyMappings(source, 0, 0)
+                source.setResident(0, resident = false)
+                source.close()
+                d.submit { blit { copy(alias.buffer, output, length = 4) } }
+                assertArrayEquals(ByteArray(4) { 53 }, output.readBytes(4))
+                alias.close()
+            } else {
+                source.setResident(0, resident = false)
+                assertFalse(source.isResident(0))
+                assertEquals(0L, source.allocatedBytes)
+            }
+        }
+    }
+
+    @Test
+    fun sparseTextureTilesTailAndShaderResidency(): Unit {
+        assumeTrue(
+            device().use { it.sparseCapabilities().let { c -> c.supported && c.textures2D } }
+        )
+        device(setOf(Feature.SPARSE_RESOURCES)).use { d ->
+            val descriptor =
+                TextureDescriptor(
+                    512,
+                    512,
+                    mipLevels = 10,
+                    usage =
+                        setOf(
+                            TextureUsage.TRANSFER_SOURCE,
+                            TextureUsage.TRANSFER_DESTINATION,
+                            TextureUsage.SAMPLED,
+                        ),
+                )
+            val sparse = d.makeSparseTexture(descriptor)
+            val output = d.makeBuffer(4)
+            val upload =
+                d.makeBuffer(512 * 512 * 4).apply { write(ByteArray(512 * 512 * 4) { 41 }) }
+            if (sparse.mipTailFirstLevel > 0) {
+                val region =
+                    TextureRegion(
+                        size =
+                            Size(
+                                minOf(512, sparse.tileSize.width),
+                                minOf(512, sparse.tileSize.height),
+                            )
+                    )
+                assertFalse(sparse.isResident(region))
+                sparse.setResident(region)
+                assertTrue(sparse.isResident(region))
+                assertTrue(sparse.allocatedBytes > sparse.metadataBytes)
+                d.submit {
+                    blit {
+                        copy(upload, sparse.texture, region)
+                        copy(sparse.texture, output, TextureRegion(size = Size(1, 1)))
+                    }
+                }
+                assertArrayEquals(ByteArray(4) { 41 }, output.readBytes(4))
+                if (d.sparseCapabilities().shaderResidency) {
+                    val result = d.makeBuffer(8)
+                    val pipeline = d.makeComputePipelineState(d.function("sparse.comp.spv"))
+                    d.submit {
+                        compute {
+                            setComputePipelineState(pipeline)
+                            setTexture(sparse.texture, 0, d.makeSampler())
+                            setBuffer(result, 1)
+                            dispatchThreads(Size(1))
+                        }
+                    }
+                    val values = ByteBuffer.wrap(result.readBytes(8)).order(ByteOrder.nativeOrder())
+                    assertEquals(1, values.int)
+                    assertEquals(41, values.int)
+                }
+                if (d.sparseCapabilities().aliasedMappings) {
+                    val alias = d.makeSparseTexture(descriptor)
+                    alias.copyMappings(sparse, region, region)
+                    sparse.setResident(region, false)
+                    d.submit {
+                        blit { copy(alias.texture, output, TextureRegion(size = Size(1, 1))) }
+                    }
+                    assertArrayEquals(ByteArray(4) { 41 }, output.readBytes(4))
+                    alias.close()
+                } else sparse.setResident(region, false)
+            }
+            if (sparse.mipTailFirstLevel < descriptor.mipLevels) {
+                sparse.setMipTailResident()
+                val tail = TextureRegion(size = Size(1, 1), level = 9)
+                d.submit {
+                    blit {
+                        copy(upload, sparse.texture, tail)
+                        copy(sparse.texture, output, tail)
+                    }
+                }
+                assertArrayEquals(ByteArray(4) { 41 }, output.readBytes(4))
+                assertTrue(sparse.isResident(tail))
+                sparse.setMipTailResident(resident = false)
+                assertFalse(sparse.isResident(tail))
+            }
+            assertEquals(sparse.metadataBytes, sparse.allocatedBytes)
+        }
+    }
+
+    @Test
     fun placedBuffersAliasAndRejectInvalidRanges(): Unit =
         device().use { d ->
             val requirements = d.heapBufferRequirements(64)

@@ -322,3 +322,35 @@ command.render(RenderPassDescriptor(listOf(ColorAttachment(second))))
 異なる画像間で内容を引き継ぐことはできません。
 Shared Placement BufferへのCPUアクセスは、DeviceのGPU Commandが完了した状態で行います。
 Heapを閉じた後も、作成済みResourceが割り当てを保持します。
+
+## Sparse Resource
+
+`SPARSE_RESOURCES`を有効化し、`sparseCapabilities()`でBuffer、2D/3D Texture、Shader Residency、Mapping共有の対応を確認します。
+各Residency機能は端末がサポートするものだけが有効になります。
+
+```kotlin
+val device = Device.create(setOf(Feature.SPARSE_RESOURCES))
+val sparse = device.makeSparseBuffer(16L * 1024 * 1024)
+sparse.setResident(firstPage = 0, pageCount = 2)
+command.blit { fill(sparse.buffer, 0, length = sparse.pageSize * 2) }
+// Submit and wait before consuming initialized values.
+command.commit()
+command.waitUntilCompleted()
+sparse.setResident(firstPage = 0, pageCount = 2, resident = false)
+```
+
+Textureでは`tileSize`に沿ったTexel領域を`setResident`に渡します。
+端のTileは画像サイズまでの部分領域を指定できます。
+`mipTailFirstLevel`以降は`setMipTailResident`で管理します。
+`singleMipTail`の場合はSlice 0が全Layerを表し、それ以外は各Sliceを指定します。
+必要なMetadataは自動的に確保されます。
+`allocatedBytes`はMetadataを含む現在の割り当て量です。
+
+`isResident`はCPU側のMappingを問い合わせます。
+Shader側は対応端末でSPIR-V Sparse Residency命令を使えます。
+`copyMappings`は同じ物理Page/Tileを共有するため、元のResourceを閉じてもコピー先が割り当てを保持します。
+同じ共有Mappingへの読み書きにはCommand間の同期が必要です。
+新規Pageの内容や、Strict Residencyのない端末の未割り当て領域の値には依存しないでください。
+
+Mapping操作は先行Commandの完了を待つ同期APIです。
+Frameの描画中に頻繁に呼ぶことを避け、Region単位でまとめて更新します。

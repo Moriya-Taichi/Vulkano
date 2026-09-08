@@ -61,6 +61,7 @@ enum class Feature(internal val bit: Long) {
     PRIMITIVE_SHADING_RATE(1L shl 56),
     ATTACHMENT_SHADING_RATE(1L shl 57),
     COOPERATIVE_MATRIX(1L shl 58),
+    SPARSE_RESOURCES(1L shl 59),
 }
 
 enum class StorageMode {

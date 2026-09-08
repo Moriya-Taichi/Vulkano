@@ -51,7 +51,9 @@ DescriptorのCommand内再利用、Shared Bufferの常時マッピング、画�
 `makeHeap()`は容量を固定したVMA Poolを作成します。
 Heapから作ったBufferとTextureはHeapのNative参照を保持し、GPU処理が終わるまで割り当てを解放しません。
 Shared HeapはBuffer用、Private Heapは互換メモリ種別のBufferとTexture用です。
-明示的な配置オフセットやSparse Mappingは現在のHeap APIにはありません。
+Placement Heapは`makePlacementHeap`で作成し、Resourceの配置を`offset`で指定します。
+重なるResourceの切り替えには`aliasResources`を使い、切り替え後のTextureを全面的に初期化してください。
+Sparse ResourceのPage/Tile/Mip Tailは独立したMapping APIで管理します。
 
 `makeSharedEvent()`はTimeline Semaphoreを使います。
 CommandのWaitは最初のGPU操作より前に記録し、SignalはCommand全体の完了時に発生します。

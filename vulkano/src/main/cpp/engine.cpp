@@ -2,6 +2,7 @@
 #include "extensions.hpp"
 #include "heaps.hpp"
 #include "ray.hpp"
+#include "sparse.hpp"
 #include "spirv-reflect/spirv_reflect.h"
 #include "synchronization.hpp"
 #include <algorithm>
@@ -409,6 +410,14 @@ struct Module {
             uint64_t requiredFeature = 0;
             VkSubgroupFeatureFlags subgroupOperation = 0;
             switch (cap) {
+            case SpvCapabilitySparseResidency:
+                require(d.coreFeatures.shaderResourceResidency, "Sparse shader residency was not enabled");
+                requiredFeature = SparseResources;
+                break;
+            case SpvCapabilityMinLod:
+                require(d.coreFeatures.shaderResourceMinLod, "Shader minimum LOD was not enabled");
+                requiredFeature = SparseResources;
+                break;
             case SpvCapabilityCooperativeMatrixKHR:
                 require(executionModel == 5, "Cooperative matrix is exposed in compute shaders");
                 validateCooperativeShader(d, shader, local);
@@ -856,7 +865,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware) {
-    require((required >> 59) == 0, "Unknown requested feature");
+    require((required >> 60) == 0, "Unknown requested feature");
     if (required & (RayQuery | RayPipeline))
         required |= BufferAddress;
     if (required & TaskShader)
@@ -963,6 +972,8 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         if (!(f.shaderUniformBufferArrayDynamicIndexing && f.shaderSampledImageArrayDynamicIndexing &&
               f.shaderStorageBufferArrayDynamicIndexing && f.shaderStorageImageArrayDynamicIndexing))
             available &= ~DynamicIndexing;
+        if (f.sparseBinding && (f.sparseResidencyBuffer || f.sparseResidencyImage2D || f.sparseResidencyImage3D))
+            available |= SparseResources;
         auto extended = std::make_shared<Extensions>();
         extended->inspect(physical, std::min(props.apiVersion, app.apiVersion), exts);
         available |= extended->available;
@@ -979,6 +990,16 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         });
         if (it == families.end())
             continue;
+        auto sparseQueue = std::find_if(families.begin(), families.end(), [](const auto &q) {
+            return q.queueCount && (q.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT);
+        });
+        if (it->queueFlags & VK_QUEUE_SPARSE_BINDING_BIT)
+            sparseQueue = it;
+        if (sparseQueue == families.end())
+            available &= ~SparseResources;
+        if ((required & available) != required)
+            continue;
+        result->sparseFamily = sparseQueue == families.end() ? 0 : uint32_t(sparseQueue - families.begin());
         result->physical = physical;
         result->properties = props;
         result->properties.apiVersion = std::min(props.apiVersion, app.apiVersion);
@@ -1006,6 +1027,15 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
 #define X(name, field) enabledFeatures.field = (required & name) != 0;
 #include "core_features.inc"
 #undef X
+        if (required & SparseResources) {
+            enabledFeatures.sparseBinding = f.sparseBinding;
+            enabledFeatures.sparseResidencyBuffer = f.sparseResidencyBuffer;
+            enabledFeatures.sparseResidencyImage2D = f.sparseResidencyImage2D;
+            enabledFeatures.sparseResidencyImage3D = f.sparseResidencyImage3D;
+            enabledFeatures.sparseResidencyAliased = f.sparseResidencyAliased;
+            enabledFeatures.shaderResourceResidency = f.shaderResourceResidency;
+            enabledFeatures.shaderResourceMinLod = f.shaderResourceMinLod;
+        }
         result->coreFeatures = enabledFeatures;
         VkPhysicalDeviceShaderFloat16Int8Features enableF16{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
@@ -1028,12 +1058,18 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
         deviceInfo.pNext = &enableStorage;
         deviceInfo.pEnabledFeatures = &enabledFeatures;
         deviceInfo.queueCreateInfoCount = 1;
-        deviceInfo.pQueueCreateInfos = &queueInfo;
+        std::array<VkDeviceQueueCreateInfo, 2> queues{queueInfo, queueInfo};
+        queues[1].queueFamilyIndex = result->sparseFamily;
+        if ((required & SparseResources) && result->sparseFamily != result->family)
+            deviceInfo.queueCreateInfoCount = 2;
+        deviceInfo.pQueueCreateInfos = queues.data();
         deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
         deviceInfo.ppEnabledExtensionNames = enabledExtensions.data();
         check(vkCreateDevice(physical, &deviceInfo, nullptr, &result->device), "vkCreateDevice");
         extended->load(*result);
         vkGetDeviceQueue(result->device, result->family, 0, &result->queue);
+        if (required & SparseResources)
+            vkGetDeviceQueue(result->device, result->sparseFamily, 0, &result->sparseQueue);
         vkGetPhysicalDeviceMemoryProperties(physical, &result->memory);
         VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         properties2.pNext = &result->subgroup;
@@ -1093,7 +1129,7 @@ void Device::waitIdle() {
 }
 
 Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsageFlags flags, Storage mode,
-               bool writeOnly, std::shared_ptr<Heap> h, VkDeviceSize offset, bool unbound)
+               bool writeOnly, std::shared_ptr<Heap> h, VkDeviceSize offset, bool unbound, bool sparseResource)
     : Resource(std::move(device)), size(length), usage(flags), storage(mode), cpuWriteOnly(writeOnly) {
     heap = std::move(h);
     if (heap)
@@ -1114,6 +1150,28 @@ Buffer::Buffer(std::shared_ptr<Device> device, VkDeviceSize length, VkBufferUsag
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = size;
     info.usage = usage;
+    if (sparseResource) {
+        require((d->enabled & SparseResources) && d->coreFeatures.sparseResidencyBuffer && !heap &&
+                    storage == Storage::Private &&
+                    !(usage & (VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                               VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR)),
+                "Sparse buffer residency is unavailable or has unsupported usage");
+        info.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+        if (d->coreFeatures.sparseResidencyAliased)
+            info.flags |= VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;
+        require(size <= d->properties.limits.sparseAddressSpaceSize, "Sparse buffer exceeds address space limit");
+        check(vkCreateBuffer(d->device, &info, nullptr, &buffer), "create sparse buffer");
+        try {
+            sparse = std::make_shared<SparseState>(d, buffer);
+        } catch (...) {
+            vkDestroyBuffer(d->device, buffer, nullptr);
+            buffer = VK_NULL_HANDLE;
+            throw;
+        }
+        return;
+    }
     heapOffset = offset;
     require(!offset || (heap && heap->placement()), "An offset requires a placement heap");
     if (unbound || (heap && heap->placement())) {
@@ -2441,6 +2499,7 @@ void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkD
                    VkDeviceSize size) {
     recording();
     require(src && dst, "Buffers are required");
+    require(!sparseMemoryOverlaps(*src, *dst), "Copies between shared sparse mappings require an intermediate buffer");
     same(*this, *src);
     same(*this, *dst);
     range(src->size, so, size);
