@@ -152,6 +152,11 @@ int main() try {
         first->wait();
     }
     std::cout << "Device: " << d->properties.deviceName << '\n';
+    if (d->availableExtra & VertexDivisor)
+        std::cout << "Instance divisor backend: " << (d->extensions->vertexDivisorKHR ? "KHR" : "EXT")
+                  << ", max step rate " << d->extensions->vertexDivisorProperties.maxVertexAttribDivisor
+                  << ", nonzero first instance " << d->extensions->vertexDivisorProperties.supportsNonZeroFirstInstance
+                  << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
     rejects([&] { Device::create(1ull << 63, false, true); }, "Unknown feature must fail");
     rejects([&] { Device::create(0, false, true, 1ull << 63); }, "Unknown extended feature must fail");

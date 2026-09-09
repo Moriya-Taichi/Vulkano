@@ -1,4 +1,4 @@
-# 検証結果 — 2026-09-07
+# 検証結果
 
 ## Scalar定数・Step Rate・Texture Aspectの検証（2026-09-09）
 
@@ -14,7 +14,9 @@ Validation ErrorとSynchronization Hazardは検出されていません。
 
 6種類の追加ShaderはVulkan 1.1向けにコンパイルし、SPIR-V検証を通過しました。
 Step RateのEXT経路はローカルGPUで実行しました。
-KHR経路、両ABIのAndroidビルド、既存のRay Tracing・Sparse・Generated Commandsとの回帰はPRのCIで確認します。
+Android CIの検証項目には、両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物と、既存のRay Tracing・Sparse・Generated CommandsのGPU回帰を含みます。
+Step RateのKHR/EXTの選択、Rate上限、Nonzero First Instanceの対応はNative検証ログに出力します。
+各Commitの実行結果は[PR #7のChecks](https://github.com/Moriya-Taichi/Vulkano/pull/7/checks)で確認できます。
 Mali・PowerVR・Adreno・Xclipse実機での性能測定は含みません。
 
 ## 最新の追加検証（2026-09-08）
