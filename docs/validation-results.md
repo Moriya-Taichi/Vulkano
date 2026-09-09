@@ -14,6 +14,8 @@ Validation ErrorとSynchronization Hazardは検出されていません。
 
 6種類の追加ShaderはVulkan 1.1向けにコンパイルし、SPIR-V検証を通過しました。
 Step RateのEXT経路はローカルGPUで実行しました。
+Commit `28f25f17358bac085ce0ffb2081c5f523b75cbac`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34301961837)ではKHR経路を確認しました。
+このCI DriverはNonzero First Instanceを非対応と報告するため、通常・Indexed Drawでの拒否も回帰テストに含めています。
 Android CIの検証項目には、両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物と、既存のRay Tracing・Sparse・Generated CommandsのGPU回帰を含みます。
 Step RateのKHR/EXTの選択、Rate上限、Nonzero First Instanceの対応はNative検証ログに出力します。
 各Commitの実行結果は[PR #7のChecks](https://github.com/Moriya-Taichi/Vulkano/pull/7/checks)で確認できます。

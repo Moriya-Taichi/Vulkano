@@ -228,6 +228,14 @@ class GraphicsIntegrationTest {
                         assertEquals(255, bytes[i * 4 + 2].toInt() and 255)
                         assertEquals(0, bytes[i * 4].toInt() and 255)
                     }
+                } else if (rate != 1L) {
+                    for (indexed in listOf(false, true)) assertThrows(IllegalArgumentException::class.java) {
+                        d.submit { render(RenderPassDescriptor(ColorAttachment(texture))) {
+                            setRenderPipelineState(pipeline); setVertexBuffer(colors, 0)
+                            if (indexed) drawIndexedPrimitives(indices, 6, instanceCount = 2, firstInstance = 2)
+                            else drawPrimitives(6, instanceCount = 2, firstInstance = 2)
+                        } }
+                    }
                 }
             }
             if (caps.maxStepRate < 0xffffffffL) assertThrows(IllegalArgumentException::class.java) {
