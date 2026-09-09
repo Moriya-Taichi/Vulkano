@@ -842,6 +842,7 @@ static SpvReflectResult ParseNodes(SpvReflectPrvParser* p_parser) {
       case SpvOpTypeQueue:
       case SpvOpTypePipe:
       case SpvOpTypeAccelerationStructureKHR:
+      case SpvOpTypeTensorARM:
       case SpvOpTypeRayQueryKHR:
       case SpvOpTypeHitObjectNV:
       case SpvOpTypeCooperativeMatrixNV:
@@ -2024,6 +2025,17 @@ static SpvReflectResult ParseType(SpvReflectPrvParser* p_parser, SpvReflectPrvNo
       case SpvOpTypeAccelerationStructureKHR: {
         p_type->type_flags |= SPV_REFLECT_TYPE_FLAG_EXTERNAL_ACCELERATION_STRUCTURE;
       } break;
+      case SpvOpTypeTensorARM: {
+        p_type->type_flags |= SPV_REFLECT_TYPE_FLAG_EXTERNAL_TENSOR;
+        uint32_t element_type_id = (uint32_t)INVALID_VALUE;
+        IF_READU32(result, p_parser, p_node->word_offset + 2, element_type_id);
+        SpvReflectPrvNode* p_next_node = FindNode(p_parser, element_type_id);
+        if (IsNotNull(p_next_node)) {
+          result = ParseType(p_parser, p_next_node, NULL, p_module, p_type);
+        } else {
+          result = SPV_REFLECT_RESULT_ERROR_SPIRV_INVALID_ID_REFERENCE;
+        }
+      } break;
     }
 
     if (result == SPV_REFLECT_RESULT_SUCCESS) {
@@ -2138,7 +2150,8 @@ static SpvReflectResult ParseDescriptorBindings(SpvReflectPrvParser* p_parser, S
     SpvReflectPrvNode* p_node = &(p_parser->nodes[i]);
     if ((p_node->op != SpvOpVariable) ||
         ((p_node->storage_class != SpvStorageClassUniform) && (p_node->storage_class != SpvStorageClassStorageBuffer) &&
-         (p_node->storage_class != SpvStorageClassUniformConstant))) {
+         (p_node->storage_class != SpvStorageClassUniformConstant) &&
+         (p_node->storage_class != SpvStorageClassTileAttachmentQCOM))) {
       continue;
     }
     if ((p_node->decorations.set.value == INVALID_VALUE) || (p_node->decorations.binding.value == INVALID_VALUE)) {
@@ -2173,7 +2186,8 @@ static SpvReflectResult ParseDescriptorBindings(SpvReflectPrvParser* p_parser, S
     SpvReflectPrvNode* p_node = &(p_parser->nodes[i]);
     if ((p_node->op != SpvOpVariable) ||
         ((p_node->storage_class != SpvStorageClassUniform) && (p_node->storage_class != SpvStorageClassStorageBuffer) &&
-         (p_node->storage_class != SpvStorageClassUniformConstant))) {
+         (p_node->storage_class != SpvStorageClassUniformConstant) &&
+         (p_node->storage_class != SpvStorageClassTileAttachmentQCOM))) {
       continue;
     }
     if ((p_node->decorations.set.value == INVALID_VALUE) || (p_node->decorations.binding.value == INVALID_VALUE)) {
@@ -2373,6 +2387,9 @@ static SpvReflectResult ParseDescriptorType(SpvReflectShaderModule* p_module) {
         case SPV_REFLECT_TYPE_FLAG_EXTERNAL_ACCELERATION_STRUCTURE: {
           p_descriptor->descriptor_type = SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         } break;
+        case SPV_REFLECT_TYPE_FLAG_EXTERNAL_TENSOR: {
+          p_descriptor->descriptor_type = SPV_REFLECT_DESCRIPTOR_TYPE_TENSOR_ARM;
+        } break;
       }
     }
 
@@ -2387,6 +2404,7 @@ static SpvReflectResult ParseDescriptorType(SpvReflectShaderModule* p_module) {
         p_descriptor->resource_type = SPV_REFLECT_RESOURCE_FLAG_SRV;
         break;
       case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case SPV_REFLECT_DESCRIPTOR_TYPE_TENSOR_ARM:
         p_descriptor->resource_type = SPV_REFLECT_RESOURCE_FLAG_UAV;
         break;
       case SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:

@@ -15,7 +15,7 @@ android {
     defaultConfig {
         minSdk = 29
         consumerProguardFiles("consumer-rules.pro")
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "dev.vulkano.GpuTestRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
     }
@@ -28,6 +28,7 @@ android {
     sourceSets {
         getByName("test").resources.srcDir("../tests/shaders")
         getByName("androidTest").assets.srcDir("../tests/shaders")
+        getByName("androidTest").java.srcDir("src/test/kotlin")
     }
     testOptions.unitTests.all {
         providers.gradleProperty("vulkano.hostLibraryPath").orNull?.let { path ->
@@ -70,7 +71,7 @@ if (centralRelease) {
 
 val licenseResources = tasks.register<Sync>("prepareLicenseResources") {
     from("src/main/cpp/third_party") {
-        include("README.md", "VMA-LICENSE.txt", "SPIRV-Headers-LICENSE.txt", "spirv-reflect/LICENSE")
+        include("README.md", "VMA-LICENSE.txt", "SPIRV-Headers-LICENSE.txt", "spirv-reflect/LICENSE", "vulkan-headers/README.md", "vulkan-headers/LICENSES/*.txt")
     }
     from(rootProject.file("LICENSE")) { rename { "Vulkano-LICENSE" } }
     into(layout.buildDirectory.dir("generated/licenseResources/META-INF/licenses/vulkano"))

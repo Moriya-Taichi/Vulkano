@@ -1,0 +1,26 @@
+; Native graph identity. Literal opcodes keep older SPIR-V assemblers usable.
+!131089 1
+!131089 4174
+!131089 4191
+!327690 "SPV_ARM_tensors"
+!327690 "SPV_ARM_graph"
+!196622 0 1
+!262215 %destination 34 0
+!262215 %destination 33 1
+!262165 %uint 32 0
+!196630 %float 32
+!262187 %uint %zero 0
+!262187 %uint %rank 2
+!262187 %uint %height 2
+!262187 %uint %width 3
+!262172 %shapeType %uint %rank
+!327724 %shapeType %shape %height %width
+!331843 %tensor %float %rank %shape
+!262176 %pointer 0 %tensor
+!262203 %pointer %destination 0
+!266325 %tensor %weight 7
+!266334 %graphType 0 %tensor
+!200791 %graphType %graph
+!200793 %weight %zero
+!69722 
+!331862 %graph "main" %destination

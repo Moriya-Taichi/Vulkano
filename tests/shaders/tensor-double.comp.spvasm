@@ -1,0 +1,85 @@
+; Tensor shader: each raw word count/opcode is explicit so older assemblers
+; do not absorb an unknown opcode into the preceding instruction.
+; OpCapability Shader
+!131089 1
+; OpCapability !4174
+!131089 !4174
+; OpExtension "SPV_ARM_tensors"
+!327690 "SPV_ARM_tensors"
+; OpMemoryModel Logical GLSL450
+!196622 0 1
+; OpEntryPoint GLCompute %main "main" %gid %source %destination
+!524303 5 %main "main" %gid %source %destination
+; OpExecutionMode %main LocalSize 1 1 1
+!393232 %main 17 1 1 1
+; OpDecorate %gid BuiltIn GlobalInvocationId
+!262215 %gid 11 28
+; OpDecorate %source DescriptorSet 0
+!262215 %source 34 0
+; OpDecorate %source Binding 0
+!262215 %source 33 0
+; OpDecorate %source NonWritable
+!196679 %source 24
+; OpDecorate %destination DescriptorSet 0
+!262215 %destination 34 0
+; OpDecorate %destination Binding 1
+!262215 %destination 33 1
+; OpDecorate %destination NonReadable
+!196679 %destination 25
+; OpDecorate %height SpecId 0
+!262215 %height 1 0
+; %void = OpTypeVoid
+!131091 %void
+; %fn = OpTypeFunction %void
+!196641 %fn %void
+; %uint = OpTypeInt 32 0
+!262165 %uint 32 0
+; %float = OpTypeFloat 32
+!196630 %float 32
+; %uvec3 = OpTypeVector %uint 3
+!262167 %uvec3 %uint 3
+; %inputVector = OpTypePointer Input %uvec3
+!262176 %inputVector 1 %uvec3
+; %gid = OpVariable %inputVector Input
+!262203 %inputVector %gid 1
+; %rank = OpConstant %uint 2
+!262187 %uint %rank 2
+; %height = OpSpecConstant %uint 2
+!262194 %uint %height 2
+; %width = OpConstant %uint 3
+!262187 %uint %width 3
+; %coordinatesType = OpTypeArray %uint %rank
+!262172 %coordinatesType %uint %rank
+; %shape = OpSpecConstantComposite %coordinatesType %height %width
+!327731 %coordinatesType %shape %height %width
+!331843 %tensor %float %rank %shape
+; %tensorPointer = OpTypePointer UniformConstant %tensor
+!262176 %tensorPointer 0 %tensor
+; %source = OpVariable %tensorPointer UniformConstant
+!262203 %tensorPointer %source 0
+; %destination = OpVariable %tensorPointer UniformConstant
+!262203 %tensorPointer %destination 0
+; %main = OpFunction %void None %fn
+!327734 %void %main 0 %fn
+; %entry = OpLabel
+!131320 %entry
+; %position = OpLoad %uvec3 %gid
+!262205 %uvec3 %position %gid
+; %x = OpCompositeExtract %uint %position 0
+!327761 %uint %x %position 0
+; %y = OpCompositeExtract %uint %position 1
+!327761 %uint %y %position 1
+; %coordinates = OpCompositeConstruct %coordinatesType %y %x
+!327760 %coordinatesType %coordinates %y %x
+; %input = OpLoad %tensor %source
+!262205 %tensor %input %source
+!331844 %float %value %input %coordinates
+; %result = OpFAdd %float %value %value
+!327809 %float %result %value %value
+; %output = OpLoad %tensor %destination
+!262205 %tensor %output %destination
+!266309 %output %coordinates %result
+; OpReturn
+!65789 
+; OpFunctionEnd
+!65592 

@@ -1,4 +1,8 @@
 #include "engine.hpp"
+#include "tensors.hpp"
+#include "graphs.hpp"
+#include "ray.hpp"
+#include "spirv-reflect/spirv_reflect.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -29,10 +33,133 @@ std::shared_ptr<Texture> texture(const std::shared_ptr<Device>& d, VkImageUsageF
 }
 }
 int main() try {
+    {
+        AccelerationInstance instance;
+        instance.transform = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
+        instance.transformEnd = instance.transform;
+        instance.transformEnd.matrix[0][3] = 4;
+        instance.customIndex = 0x123456; instance.mask = 0x89; instance.recordOffset = 0xabcdef;
+        const uint64_t address = 0x123456789abcdef0ull;
+        const auto staticInstance = packMotionInstance(instance, address);
+        expect(staticInstance.type == VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_STATIC_NV &&
+                   staticInstance.flags == 0 && staticInstance.data.staticInstance.accelerationStructureReference == address,
+               "Static motion instance ABI and address");
+        instance.motionType = VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_MATRIX_MOTION_NV;
+        const auto matrix = packMotionInstance(instance, address).data.matrixMotionInstance;
+        expect(matrix.transformT0.matrix[0][3] == 0 && matrix.transformT1.matrix[0][3] == 4 &&
+                   matrix.instanceCustomIndex == 0x123456 && matrix.mask == 0x89 &&
+                   matrix.instanceShaderBindingTableRecordOffset == 0xabcdef && matrix.accelerationStructureReference == address,
+               "Matrix motion endpoints and bit fields");
+        instance.transformEnd.matrix[0][0] = 0;
+        rejects([&] { packMotionInstance(instance, address); }, "Singular motion matrix must fail");
+        instance.motionType = VK_ACCELERATION_STRUCTURE_MOTION_INSTANCE_TYPE_SRT_MOTION_NV;
+        instance.srtStart.sx = instance.srtStart.sy = instance.srtStart.sz = instance.srtStart.qw = 1;
+        instance.srtEnd = instance.srtStart; instance.srtEnd.tx = 4;
+        const auto srt = packMotionInstance(instance, address).data.srtMotionInstance;
+        expect(srt.transformT0.tx == 0 && srt.transformT1.tx == 4 && srt.transformT1.qw == 1 &&
+                   srt.accelerationStructureReference == address, "SRT motion ABI and endpoints");
+        instance.srtEnd.qw = 2;
+        rejects([&] { packMotionInstance(instance, address); }, "Non-unit motion quaternion must fail");
+        instance.srtEnd.qw = 1; instance.mask = 256;
+        rejects([&] { packMotionInstance(instance, address); }, "Motion instance bit-field overflow must fail");
+    }
+    {
+        auto tensorShader = shader("tensor-double.comp.spv");
+        SpvReflectShaderModule module{};
+        expect(spvReflectCreateShaderModule(tensorShader.code.size() * 4, tensorShader.code.data(), &module) == SPV_REFLECT_RESULT_SUCCESS,
+               "Tensor shader reflection");
+        expect(module.descriptor_binding_count == 2, "Tensor descriptors must both be reflected");
+        Device limits;
+        limits.enabledExtra = TensorResources;
+        limits.extensions = std::make_shared<Extensions>();
+        limits.extensions->tensor.shaderTensorAccess = true;
+        auto &p = limits.extensions->tensorProperties;
+        p.shaderTensorSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+        p.maxTensorDimensionCount = 8; p.maxPerDimensionTensorElements = 1024;
+        p.maxTensorShaderAccessArrayLength = 16; p.maxTensorShaderAccessSize = 64;
+        for (uint32_t i = 0; i < 2; ++i) {
+            const auto &reflected = module.descriptor_bindings[i];
+            expect(reflected.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_TENSOR_ARM && reflected.count == 1 && reflected.accessed,
+                   "Tensor descriptor type and access");
+            BindingLayout binding{reflected.binding, VK_DESCRIPTOR_TYPE_TENSOR_ARM};
+            binding.stages = VK_SHADER_STAGE_COMPUTE_BIT;
+            reflectTensorBinding(limits, tensorShader, reflected.spirv_id, binding);
+            expect(binding.storageFormat == VK_FORMAT_R32_SFLOAT && binding.tensorRank == 2 && binding.tensorDimensions == std::vector<int64_t>{2, 3},
+                   "Tensor shader format, rank and shape");
+            auto specialized = tensorShader; specialized.constants[0] = 1;
+            binding.tensorDimensions.clear();
+            reflectTensorBinding(limits, specialized, reflected.spirv_id, binding);
+            expect(binding.tensorDimensions == std::vector<int64_t>{1, 3}, "Tensor shape specialization");
+        }
+        spvReflectDestroyShaderModule(&module);
+        const auto graph = reflectGraph(limits, shader("graph-identity.spv"));
+        expect(graph.bindings.size() == 2 && graph.constants.empty() && !graph.specialization,
+               "Graph identity interfaces and constants");
+        for (const auto &b : graph.bindings)
+            expect(b.storageFormat == VK_FORMAT_R32_SFLOAT && b.tensorDimensions == std::vector<int64_t>{2, 3},
+                   "Graph tensor type and shape reflection");
+        const auto constantGraph = reflectGraph(limits, shader("graph-constant.spv"));
+        expect(constantGraph.bindings.size() == 1 && constantGraph.bindings[0].binding == 1 && constantGraph.constants.count(7),
+               "Graph weights use graph constant identifiers");
+        auto malformed = shader("graph-identity.spv"); malformed.entry = "missing";
+        rejects([&] { reflectGraph(limits, malformed); }, "Missing graph entry point must fail");
+        malformed = shader("graph-identity.spv"); malformed.code.back() = malformed.code[3] + 1;
+        rejects([&] { reflectGraph(limits, malformed); }, "Invalid graph interface ID must fail");
+        malformed = shader("graph-identity.spv"); malformed.code[5] = 0;
+        rejects([&] { reflectGraph(limits, malformed); }, "Zero-word graph instruction must fail");
+    }
+    for (const char* name : {"tile-loop.comp.spv", "tile-area.comp.spv", "tile-read.frag.spv"}) {
+        const auto code = shader(name).code;
+        SpvReflectShaderModule module{};
+        expect(spvReflectCreateShaderModule(code.size() * 4, code.data(), &module) == SPV_REFLECT_RESULT_SUCCESS,
+               "Tile shader SPIR-V reflection");
+        expect(module.descriptor_binding_count == 1, "Tile attachment descriptor must be reflected");
+        const auto &binding = module.descriptor_bindings[0];
+        expect(binding.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE && binding.binding == 0 &&
+                   binding.set == 0 && binding.count == 1 && binding.accessed,
+               "Tile attachment type, binding and static access");
+        expect(binding.image.dim == SpvDim2D && binding.image.image_format == SpvImageFormatRgba8,
+               "Tile image format reflection");
+        expect(module.entry_points[0].descriptor_set_count == 1, "Tile attachment belongs to the entry point");
+        spvReflectDestroyShaderModule(&module);
+    }
     auto d = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
+    if (d->available & Timeline) {
+        // Exercise the actual graph submission/semaphore machinery with transfers
+        // on a normal Vulkan queue. This verifies ordering, not graph GPU support.
+        auto ordered = Device::create(Timeline, std::getenv("VULKANO_VALIDATION") != nullptr, true);
+        ordered->enabledExtra |= DataGraph;
+        ordered->queues[0].properties.queueFlags = VK_QUEUE_DATA_GRAPH_BIT_ARM;
+        auto source = buffer(ordered, 16), middle = buffer(ordered, 16), output = buffer(ordered, 16);
+        auto first = std::make_shared<Command>(ordered);
+        first->buffers = {source, middle};
+        first->operations.push_back([source](Command &c) { vkCmdFillBuffer(c.command, source->buffer, 0, 16, 0x13572468); });
+        first->operations.push_back([source, middle](Command &c) {
+            VkBufferCopy copy{0, 0, 16}; vkCmdCopyBuffer(c.command, source->buffer, middle->buffer, 1, &copy);
+        });
+        first->commit();
+        auto second = std::make_shared<Command>(ordered);
+        second->buffers = {middle, output};
+        second->operations.push_back([middle, output](Command &c) {
+            VkBufferCopy copy{0, 0, 16}; vkCmdCopyBuffer(c.command, middle->buffer, output->buffer, 1, &copy);
+        });
+        second->commit(); second->wait();
+        uint32_t actual[4]{}; output->read(0, actual, sizeof(actual));
+        expect(std::all_of(actual, actual + 4, [](auto n) { return n == 0x13572468; }),
+               "Graph segment and cross-submission timeline memory visibility");
+        expect(first->graphSegments.size() == 2 && second->graphSegments.size() == 1 && ordered->graphOrder[0].value == 3,
+               "Graph dispatches split into ordered timeline submissions");
+        first->wait();
+    }
     std::cout << "Device: " << d->properties.deviceName << '\n';
+    if (d->availableExtra & VertexDivisor)
+        std::cout << "Instance divisor backend: " << (d->extensions->vertexDivisorKHR ? "KHR" : "EXT")
+                  << ", max step rate " << d->extensions->vertexDivisorProperties.maxVertexAttribDivisor
+                  << ", nonzero first instance " << d->extensions->vertexDivisorProperties.supportsNonZeroFirstInstance
+                  << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
-    rejects([&] { Device::create(1u << 30, false, true); }, "Unknown feature must fail");
+    rejects([&] { Device::create(1ull << 63, false, true); }, "Unknown feature must fail");
+    rejects([&] { Device::create(0, false, true, 1ull << 63); }, "Unknown extended feature must fail");
     {
         auto rdna = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true);
         auto upload = std::make_shared<Buffer>(rdna, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Storage::Shared, true);

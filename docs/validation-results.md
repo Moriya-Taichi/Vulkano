@@ -1,4 +1,68 @@
-# 検証結果 — 2026-09-07
+# 検証結果
+
+## Scalar定数・Step Rate・Texture Aspectの検証（2026-09-09）
+
+ローカルのLavapipe（Mesa 24.0.5、LLVM 17）ではNative 763件、Kotlin/JNI 95件中63件成功・32件スキップ・失敗0件です。
+追加したGPUテスト9件とHalf変換のAPIテスト1件は、すべて実行に成功しました。
+Validation ErrorとSynchronization Hazardは検出されていません。
+
+- Function Constantsの符号付き・符号なし8/16/64ビット値、Half/Double、Boolean、Function作成時の値の複製、幅違い・未宣言IDの拒否を検証しました。
+- Step Rateの0/1/2と符号なし32ビット最大値を通常・Indexed・Indirect Drawで読み戻し、First Instanceと組み合わせた入力、Feature未有効・上限超過の拒否を検証しました。
+- Format・Usage・Private/Memorylessを組み合わせた照会結果を、各Sample Countでの実際のTexture作成と照合しました。
+- Depth24/Stencil8とDepth32/Stencil8の個別転送、Mip・SliceのView、符号なしStencil Sampling、Subpass入力を検証しました。
+- Texture間Copy、片方のAspectの保持、初期化前の読み取り、Discard、閉じた元Textureの保持、送信失敗時の状態保全を検証しました。
+
+6種類の追加ShaderはVulkan 1.1向けにコンパイルし、SPIR-V検証を通過しました。
+Step RateのEXT経路はローカルGPUで実行しました。
+Commit `28f25f17358bac085ce0ffb2081c5f523b75cbac`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34301961837)ではKHR経路を確認しました。
+このCI DriverはNonzero First Instanceを非対応と報告するため、通常・Indexed Drawでの拒否も回帰テストに含めています。
+Android CIの検証項目には、両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物と、既存のRay Tracing・Sparse・Generated CommandsのGPU回帰を含みます。
+Step RateのKHR/EXTの選択、Rate上限、Nonzero First Instanceの対応はNative検証ログに出力します。
+各Commitの実行結果は[PR #7のChecks](https://github.com/Moriya-Taichi/Vulkano/pull/7/checks)で確認できます。
+Commit `bc88d4762047f27a5acadd59388ee6af4dff79a8`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34301543106)も成功しました。
+Native 763件、Kotlin/JNI 95件中71件成功・24件スキップ・失敗0件です。
+今回追加したGPU実行9件はCIでも成功しました。
+両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物、全ShaderのSPIR-Vを検証し、Validation ErrorとSynchronization Hazardはありません。
+
+Mali・PowerVR・Adreno・Xclipse実機での性能測定は含みません。
+
+## 最新の追加検証（2026-09-08）
+
+Tensorを追加したCommit `1a7e8252f774800c235051ad68776bb74cd1c571`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34253108051)が成功しました。
+Nativeは748件、Kotlin/JNIは68件中52件成功・16件スキップ・失敗0件です。
+Tensor ShaderのSPIR-V検証、AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物の検証を含みます。
+専用TensorのGPU実行2件と独立QueueのGPU実行3件は、CIのGPUが非対応のためスキップしています。
+
+その後のML Graph追加では、ローカルでNative 757件、Kotlin/JNI 73件中47件成功・26件スキップ・失敗0件を確認しました。
+Validation ErrorとSynchronization Hazardは検出されていません。
+Graphの入力・出力・WeightsのReflection、型とShape、壊れたSPIR-Vの拒否を検査しています。
+ML専用Queue向けのコマンド分割とTimeline Semaphoreの処理は、通常のVulkan Queue上でBuffer転送を使って実行し、複数のSubmissionをまたぐ読み戻しが一致しました。
+これは同期処理の検証であり、ML演算をGPUで実行した結果ではありません。
+ML Graphの連続実行、Weights、Cache復元のGPUテスト3件は、ローカルGPUが非対応のためスキップしています。
+ML Graphを含むCommit `c09bb43086960be71ecfa930771837136c7b3ff4`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34255853251)も成功しました。
+Native 757件、Kotlin/JNI 73件中54件成功・19件スキップ・失敗0件です。
+GraphのIdentity・Constantの2種類のSPIR-V、AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物を検証しました。
+ML GraphのGPU実行3件はCIでも非対応によるスキップで、Validation ErrorとSynchronization Hazardは検出されていません。
+
+Motion BlurとRefit入力差し替えの追加後は、ローカルNative 763件、Kotlin/JNI 79件中49件成功・30件スキップ・失敗0件です。
+Motion ShaderはコンパイルとSPIR-V検証に成功し、Matrix/SRTの配置・数値検査を実行しました。
+Motionの頂点・Matrix・SRTのGPUテスト3件と、コピー・圧縮・復元した加速構造のRefitテスト1件は、ローカルGPUが非対応のためスキップしています。
+Refitのテストには、入力差し替え、同一Command内の再更新、閉じた入力Bufferの保持、送信失敗時の状態保全を含みます。
+Validation ErrorとSynchronization Hazardは検出されていません。
+
+Motion BlurとRefitを含むCommit `3eb240d217786d5e7cd7b3d71c3afb2ff90304ca`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34259072369)も成功しました。
+Native 763件、Kotlin/JNI 79件中57件成功・22件スキップ・失敗0件です。
+コピー・圧縮・復元した加速構造へのRefit、入力差し替え、送信失敗時の状態保全はCIのGPUで実行して成功しました。
+MotionのGPUテスト3件はCIでも非対応によるスキップです。
+AAR両ABI、R8 Sample、Instrumentation APK、Maven成果物を検証し、Validation ErrorとSynchronization Hazardは検出されていません。
+
+続いて、明示的なSubpassとDepth/Stencil Resolve・Rate Mapの組み合わせを追加しました。
+ローカルではNative 763件、Kotlin/JNI 85件中53件成功・32件スキップ・失敗0件です。
+Depth・StencilのResolveを後続Subpassから読み取り、未使用のSubpassを挟むAttachment保持とMultiviewを検証しました。
+Color ResolveとDepth/Stencil Resolveを同じRender Pass内で使い、画素単位で結果が一致しました。
+同じSubpassでResolve先を入力にする構成と、Layoutに必要なResolve先が不足する構成を拒否しました。
+Rate MapのみのSubpassと、Depth Resolve・Rate Mapを同時に使うGPUテストは、ローカルGPUが非対応のためスキップしています。
+Validation ErrorとSynchronization Hazardは検出されていません。
 
 この変更では次を確認しました。
 
@@ -36,3 +100,127 @@ NativeではShared/Private間の転送、複数Compute Dispatchの依存関係�
 - Kotlin/JNI GPU統合テスト6件、APIテスト2件成功。スキップなし。Upload CPU read拒否とGPU結果の一致を含む。
 - 両ABIのRelease AAR、サンプルDebug / Release APKのビルド成功。
 - Xclipse実機の性能とNon-coherentメモリは未検証。Wave幅や専用VRAMを仮定していない。
+
+## 機能拡張の検証（2026-09-08）
+
+[PR #7](https://github.com/Moriya-Taichi/Vulkano/pull/7)の初回コミット`65ecae7`はAndroid CIが成功しました。
+両ABIのAAR、Debug/Releaseのサンプル、Instrumentation APK、JNIテスト、Maven公開用成果物を検証しています。
+Instrumentation APKの端末での実行は含みません。
+
+ローカルではLavapipe（Mesa 24.0.5、LLVM 17）とValidation Layerを使っています。
+MSAAとColor/Depth Resolve、Indexed/Indirect Draw、MRT、Vertex Input、Mip生成、Array/View、Texture Buffer、Function Constants、Timeline Event、Counter、Heap、Pipeline Cache、整数ClearをGPU出力と照合しました。
+Tessellation、Mesh、Multiview、Runtime Descriptor Array、Shading Rate、Ray TracingはFeatureに応じて実行するテストです。
+Ray QueryとRay Tracing PipelineはこのローカルDriverでは非対応のため、成功経路を実行していません。
+
+ローカルのKotlin/JNIテストは36件中30件成功、6件スキップです。
+スキップはPipeline Shading Rate、Rate Map、Ray Tracing Pipeline、AS Copy/Compaction、AS Archive、Cooperative Matrixです。
+Ray Queryの成功経路は、非対応時の拒否を確認する分岐に入るため実行していません。
+Tensor View、SubpassのMemoryless/MSAA/Depth入力、Color Resolve、Multiview、Swizzleの結果を追加で照合しています。
+新しいSurfaceの取得待ちとNative Handleの破棄経路は、Androidでの実行確認が必要です。
+
+Nativeの既存724チェックも保持しています。
+新機能のMali、PowerVR、Adreno、Xclipse上での性能、電力、Driver固有の挙動は実機未検証です。
+
+### Placement Heap
+
+Placement BufferのAlias、非重複領域へのCopy、TextureのAlias切り替えとRGB読み戻しを追加しました。
+配置範囲、Alignment、重複Copy、未初期化Textureの読み取りも検査しています。
+ローカル結果はKotlin/JNI 38件中32件成功、6件スキップ、失敗0件です。
+Android CIで見つかったC++17のLambda Captureを修正し、再ビルドの対象にしています。
+
+### Sparse Resourceと追加CI
+
+Placement Heapまでを含むCommit `26205c84ad781aca67429af248e5f109298dd2b6`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34224756190)が成功しました。
+AAR、Debug/Release Sample、Instrumentation APK、Kotlin/JNIテスト、Maven配布物の検証を含みます。
+Android実機での実行結果は含みません。
+
+その後、SparseのFeature未有効時の拒否、Buffer PageのMap/Unmapと共有、Texture Tile/Mip TailとShader Residencyのテストを追加しました。
+ローカルではKotlin/JNI 41件中33件成功、8件スキップ、失敗0件です。
+追加のスキップはSparse BufferとSparse Textureの2件で、使用したLavapipeがSparse Residencyに対応しないためです。
+Sparse Shaderはglslcでコンパイルし、spirv-valで検証しました。
+Native回帰テスト724項目も成功しました。
+
+### 外部同期とImmutable Sampler
+
+Sparseまでを含むCommit `8b96ae8832bb80512954ccdac762fff12e98fd37`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34226576729)が成功しました。
+その後、外部SYNC_FDとImmutable Samplerを追加しました。
+ローカルではNative 725項目、Kotlin/JNI 44件中35件成功・9件スキップ・失敗0件です。
+Immutable SamplerはCombinedとSeparateの両方で、Samplerを閉じた後のGPU描画と読み戻しを確認しました。
+この環境にSYNC_FD対応がないため、GPU Signal・Export・Import・Waitの成功経路はスキップしています。
+Feature未有効時の拒否と完了済みFDの所有権操作は実行しました。
+
+
+### HardwareBufferとYCbCr
+
+外部同期までを含むCommit `979cc07ca412c09d39b97e13afe44f11f84fff29`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34228471696)が成功しました。
+HardwareBufferのImport、Feature拒否、所有権検査、RGB描画・読み戻し、外部FormatとImmutable SamplerによるSamplingのテストを追加しました。
+ローカルではKotlin/JNI 47件中36件成功・11件スキップ・失敗0件です。
+追加の2件はAndroid専用のため、ローカルでは実行していません。
+YUVのCamera/Codec画像、外部所有権BarrierのDriver上での挙動はAndroid実機での検証が必要です。
+
+
+### GPU側Count Bufferによる間接描画
+
+HardwareBufferまでを含むCommit `ecd71b3ecd0e033b194f9bae0eb9083dec60c2b4`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34230869015)が成功しました。
+GPUがPrivate Bufferへ書いた引数・描画数を使い、通常・Indexed・Mesh Drawを検証するテストを追加しました。
+ローカルDriverはMesh Shaderにも対応しており、3種類ともGPU出力の照合に成功しました。
+0件、上限でのClamp、Count Offset、Stride、Buffer範囲とFeature拒否を確認しています。
+ローカルではNative 725項目、Kotlin/JNI 49件中38件成功・11件スキップ・失敗0件です。
+Validation LayerのエラーとSync Hazardは検出されませんでした。
+
+
+### ASTC HDRとPVRTC
+
+GPU側Count Bufferまでを含むCommit `b78e7c66326a8c18d24034ad0badd87398abb165`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34232325538)が成功しました。
+ASTC HDRとPVRTCのFeature拒否、HDR Sampling、PVRTC Block転送のテストを追加しました。
+ASTC HDRのFixtureはFloat16の定数色Blockで、赤成分2.0をFloat Render Targetへ保持できるかを検証します。
+ローカルDriverは両方の圧縮Featureに非対応で、成功経路の2件はスキップしています。
+Kotlin/JNIは52件中39件成功・13件スキップ・失敗0件です。
+
+
+### Device Generated Commands
+
+Vulkan-Headers 1.4.335導入までのCommit `8b3ecfb6225dc3f58bf5724e60699f47fd5bc58d`は[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34234101369)が成功しました。
+新しいToken Layout、Pipeline選択、GPU引数/Count、Compute・Indexed/Mesh描画、PipelineとBufferの保持を検証するテストを追加しました。
+Mesa 24.0.5のローカル環境ではNative 725項目、Kotlin/JNI 55件中40件成功・15件スキップ・失敗0件です。
+このDriverにはDevice Generated Commandsがないため、追加した成功経路2件はスキップしています。
+CIのMesa 25.2.8でもFeatureに応じて実行し、実行/スキップの内訳をJUnitレポートから検査します。
+
+
+### Tile Shadingと検証レイヤーの更新
+
+Vulkan-ValidationLayersをヘッダーと同じ1.4.335に固定しました。
+Commit `d4438da`のCIではKotlin/JNI 55件中47件が実行に成功し、Device Generated Commands、Ray Tracing、Sparseの成功経路も動作しました。
+ただしJNIの標準出力に4件のValidation Errorがあり、この結果を検証完了とは扱いません。
+必要なMaintenance5の有効化、頂点入力がないPipelineのDynamic Stride、Generated MeshのTask Featureを修正しました。
+JUnitのXMLだけではJNIの標準出力を取り込めないため、Gradle全体のログも検査するようにしました。
+
+Tile AttachmentのSPIR-V ReflectionをNativeで検査し、Tile機能の拒否、通常/間接Tile Dispatch、Area Dispatch、Fragment Tile Readのテストを追加しました。
+ローカルではNative 740項目、Kotlin/JNI 59件中41件成功・18件スキップ・失敗0件です。
+Tile Shadingに非対応のDriverなので、TileのGPU実行3件はスキップしています。
+TileのSPIR-VはCIで同じ固定版のSPIRV-Toolsを使って検証します。
+
+Commit `10c8d10`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34243153938)は成功しました。
+Native 740項目、Kotlin/JNI 59件中48件成功・11件スキップ・失敗0件です。
+Device Generated Commands、Ray Tracing、Sparseの成功経路が動作し、Gradle全体のログにもValidation ErrorとSync Hazardはありませんでした。
+3種類のTile Shaderも固定版のSPIRV-Toolsで検証に成功しました。
+TileのGPU実行は対応Driverがないためスキップしています。
+
+### 独立Queue
+
+Queue選択、単一Queueの順序維持、QueueごとのCommand Pool、複数FamilyでのResource共有とTimeline依存関係を追加しました。
+Queue間でのTexture転送、Counterの保持、Pool再利用、連続Signalの順序を検証するテストを用意しています。
+ローカルではNative 740項目、Kotlin/JNI 63件中42件成功・21件スキップ・失敗0件です。
+このDriverには独立Queueがないため、追加したQueue間実行の3件はスキップしています。
+
+Commit `f9c246a`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34247040339)も成功しました。
+Native 740項目、Kotlin/JNI 63件中49件成功・14件スキップ・失敗0件です。
+CIにも独立Queueがないため、Queue間実行の3件はスキップしています。
+
+### 専用Tensor
+
+TensorのSPIR-V Reflection、Scalar Format、Rank、Shape、Function ConstantsをNativeで検査しました。
+TensorのCPU/GPUアクセス、配置変換、Shader実行、解放済みResourceの保持を確認するテストを追加しています。
+ローカルではNative 748項目、Kotlin/JNI 68件中45件成功・23件スキップ・失敗0件です。
+Tensor対応のDriverがないため、専用Tensorの転送とShader実行の2件はスキップしています。
+Tensor Featureが未有効の場合の拒否、KotlinでのShape/Strideの検査、Synchronization2でのBuffer転送は実行に成功しました。

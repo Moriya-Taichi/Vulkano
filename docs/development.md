@@ -16,7 +16,7 @@
 
 Android StudioのSDK ManagerなどでSDK・NDK・CMakeを用意し、SDKのパスを`ANDROID_HOME`または`local.properties`の`sdk.dir`で指定します。
 
-VMAとSPIRV-Reflectは固定したバージョンを同梱しています。バージョンとライセンスは[third_partyの説明](../vulkano/src/main/cpp/third_party/README.md)に記載しています。
+VMA、SPIRV-Reflect、Vulkan-HeadersのC APIは固定したバージョンを同梱しています。バージョンとライセンスは[third_partyの説明](../vulkano/src/main/cpp/third_party/README.md)に記載しています。
 
 ## AARとサンプル
 
@@ -37,7 +37,7 @@ AARは`vulkano/build/outputs/aar/vulkano-release.aar`に生成されます。ソ
 # Kotlinの契約テスト。通常はGPU統合テストをスキップ
 ./gradlew :vulkano:testDebugUnitTest
 
-# 接続したAndroid端末でJNI経由のComputeを検証
+# 接続したAndroid端末で共通の描画・Compute・Resourceテストを検証
 ./gradlew :vulkano:connectedDebugAndroidTest
 ```
 
@@ -51,6 +51,10 @@ python3 tools/run-native-tests.py build/host/vulkano_tests
 ```
 
 Validation LayerとソフトウェアICDが必要です。複数ICDがある場合は`VK_ICD_FILENAMES`を設定してください。CIはシェーダーの検証、同期検証を有効にしたNative Test、Kotlin経由のGPU Test、AAR、難読化したサンプルAPK、Instrumentation APKのビルドを行います。
+
+CIのValidation Layerは同梱ヘッダーに合わせてVulkan-ValidationLayers v1.4.335を使用します。
+初回に公式ソースと固定された依存関係からビルドし、以降はInstall済みファイルをキャッシュします。
+古いLayerはDevice Generated Commandsなどの新しい構造体を認識せず、正しい問い合わせもエラーとして報告するため、実機検証でも新しいLayerを使用してください。
 
 NDK r28とAGP 8.9を使用し、共有ライブラリは16 KBで配置します。[Androidの16 KBページ対応](https://developer.android.com/guide/practices/page-sizes)
 
