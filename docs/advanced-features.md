@@ -163,6 +163,7 @@ Zero Divisorを要求すると通常のDivisorも有効にします。
 頂点ごとの入力では`stepRate = 1`のみを受け付けます。
 
 Rateの上限は`support.maxStepRate`で確認します。
+`stepRate`はLongで受け取り、Vulkanの符号なし32ビット範囲と端末の上限を検査します。
 `firstInstance`は属性Bufferの開始要素も指定し、ゼロRateの場合もその開始要素を使用します。
 `support.supportsNonZeroFirstInstance`がfalseの端末では、Rateが1以外のDrawの`firstInstance`を0にします。
 この制約はIndirect DrawとGPU生成Commandの内容にも適用されます。

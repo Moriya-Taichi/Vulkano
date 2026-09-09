@@ -188,11 +188,12 @@ class GraphicsIntegrationTest {
                 putInt(6); putInt(4); putInt(0); putInt(0); flip()
             })
             val result = d.makeBuffer(16)
-            fun pipeline(rate: Int) = d.makeRenderPipelineState(RenderPipelineDescriptor(
+            fun pipeline(rate: Long) = d.makeRenderPipelineState(RenderPipelineDescriptor(
                 d.function("instance-divisor.vert.spv"), d.function("instance-divisor.frag.spv"),
                 vertexBuffers = listOf(VertexBufferLayout(0, 16, VertexStepFunction.PER_INSTANCE, rate)),
                 vertexAttributes = listOf(VertexAttribute(0, 0, PixelFormat.RGBA32_FLOAT))))
-            val rates = listOf(1, 2) + if (caps.supportsZeroStepRate) listOf(0) else emptyList()
+            val rates = listOf(1L, 2L) + (if (caps.supportsZeroStepRate) listOf(0L) else emptyList()) +
+                (if (caps.maxStepRate > Int.MAX_VALUE) listOf(caps.maxStepRate) else emptyList())
             for (rate in rates) pipeline(rate).use { pipeline ->
                 for (mode in 0..2) {
                     d.submit {
@@ -208,13 +209,13 @@ class GraphicsIntegrationTest {
                     }
                     val bytes = result.readBytes(16)
                     repeat(4) { i ->
-                        val element = if (rate == 0) 0 else i / rate
+                        val element = if (rate == 0L) 0 else (i / rate).toInt()
                         repeat(3) { channel -> assertEquals(if (element == channel || element == 3) 255 else 0,
                             bytes[i * 4 + channel].toInt() and 255) }
                         assertEquals(255, bytes[i * 4 + 3].toInt() and 255)
                     }
                 }
-                if (rate != 1 && caps.supportsNonZeroFirstInstance) {
+                if (rate != 1L && caps.supportsNonZeroFirstInstance) {
                     d.submit {
                         render(RenderPassDescriptor(ColorAttachment(texture))) {
                             setRenderPipelineState(pipeline); setVertexBuffer(colors, 0)
@@ -229,20 +230,23 @@ class GraphicsIntegrationTest {
                     }
                 }
             }
-            if (caps.maxStepRate < Int.MAX_VALUE) assertThrows(IllegalArgumentException::class.java) {
-                pipeline(caps.maxStepRate.toInt() + 1)
+            if (caps.maxStepRate < 0xffffffffL) assertThrows(IllegalArgumentException::class.java) {
+                pipeline(caps.maxStepRate + 1)
             }
         }
     }
 
     @Test fun customInstanceStepRatesRequireEnabledFeatures(): Unit = device().use { d ->
-        for (rate in listOf(0, 2)) assertThrows(IllegalArgumentException::class.java) {
+        for (rate in listOf(0L, 2L)) assertThrows(IllegalArgumentException::class.java) {
             d.makeRenderPipelineState(RenderPipelineDescriptor(
                 d.function("instance-divisor.vert.spv"), d.function("instance-divisor.frag.spv"),
                 vertexBuffers = listOf(VertexBufferLayout(0, 16, VertexStepFunction.PER_INSTANCE, rate)),
                 vertexAttributes = listOf(VertexAttribute(0, 0, PixelFormat.RGBA32_FLOAT))))
         }
         assertThrows(IllegalArgumentException::class.java) { VertexBufferLayout(0, 16, stepRate = 2) }
+        for (rate in listOf(-1L, 0x100000000L)) assertThrows(IllegalArgumentException::class.java) {
+            VertexBufferLayout(0, 16, VertexStepFunction.PER_INSTANCE, rate)
+        }
     }
 
     @Test fun textureFormatQueriesMatchAllocationsAndReportCombinationLimits(): Unit = device().use { d ->

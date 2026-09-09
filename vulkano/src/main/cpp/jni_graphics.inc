@@ -111,8 +111,7 @@ JNI_METHOD(jlong, createGraphics)
                                 static_cast<VkBlendOp>(v[at + 7]), VkColorComponentFlags(v[at + 8])});
         }
         for (int n = 0; n < v[14]; ++n, at += 4) {
-            require(v[at] >= 0 && v[at + 1] >= 0 && v[at + 3] >= 0 &&
-                        (v[at + 2] == VK_VERTEX_INPUT_RATE_INSTANCE || v[at + 3] == 1),
+            require(v[at] >= 0 && v[at + 1] >= 0 && (v[at + 2] == VK_VERTEX_INPUT_RATE_INSTANCE || v[at + 3] == 1),
                     "Invalid vertex layout");
             g.vertexBindings.push_back(
                 {uint32_t(v[at]), uint32_t(v[at + 1]), static_cast<VkVertexInputRate>(v[at + 2])});

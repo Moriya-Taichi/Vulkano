@@ -7,7 +7,7 @@
 Validation ErrorとSynchronization Hazardは検出されていません。
 
 - Function Constantsの符号付き・符号なし8/16/64ビット値、Half/Double、Boolean、Function作成時の値の複製、幅違い・未宣言IDの拒否を検証しました。
-- Step Rateの0/1/2を通常・Indexed・Indirect Drawで読み戻し、First Instanceと組み合わせた入力、Feature未有効・上限超過の拒否を検証しました。
+- Step Rateの0/1/2と符号なし32ビット最大値を通常・Indexed・Indirect Drawで読み戻し、First Instanceと組み合わせた入力、Feature未有効・上限超過の拒否を検証しました。
 - Format・Usage・Private/Memorylessを組み合わせた照会結果を、各Sample Countでの実際のTexture作成と照合しました。
 - Depth24/Stencil8とDepth32/Stencil8の個別転送、Mip・SliceのView、符号なしStencil Sampling、Subpass入力を検証しました。
 - Texture間Copy、片方のAspectの保持、初期化前の読み取り、Discard、閉じた元Textureの保持、送信失敗時の状態保全を検証しました。
@@ -17,6 +17,11 @@ Step RateのEXT経路はローカルGPUで実行しました。
 Android CIの検証項目には、両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物と、既存のRay Tracing・Sparse・Generated CommandsのGPU回帰を含みます。
 Step RateのKHR/EXTの選択、Rate上限、Nonzero First Instanceの対応はNative検証ログに出力します。
 各Commitの実行結果は[PR #7のChecks](https://github.com/Moriya-Taichi/Vulkano/pull/7/checks)で確認できます。
+Commit `bc88d4762047f27a5acadd59388ee6af4dff79a8`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34301543106)も成功しました。
+Native 763件、Kotlin/JNI 95件中71件成功・24件スキップ・失敗0件です。
+今回追加したGPU実行9件はCIでも成功しました。
+両ABIのAAR、R8 Sample、Instrumentation APK、Maven成果物、全ShaderのSPIR-Vを検証し、Validation ErrorとSynchronization Hazardはありません。
+
 Mali・PowerVR・Adreno・Xclipse実機での性能測定は含みません。
 
 ## 最新の追加検証（2026-09-08）

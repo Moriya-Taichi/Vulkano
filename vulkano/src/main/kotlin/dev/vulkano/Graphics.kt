@@ -114,11 +114,14 @@ data class VertexBufferLayout(
     val stride: Int,
     val stepFunction: VertexStepFunction = VertexStepFunction.PER_VERTEX,
     /** Instances sharing each element; zero reuses the first element for every instance. */
-    val stepRate: Int = 1,
+    val stepRate: Long = 1,
 ) {
     init {
         require(index >= 0 && stride >= 0)
-        require(stepRate >= 0 && (stepFunction == VertexStepFunction.PER_INSTANCE || stepRate == 1))
+        require(
+            stepRate in 0..0xffffffffL &&
+                (stepFunction == VertexStepFunction.PER_INSTANCE || stepRate == 1L)
+        )
     }
 }
 
@@ -303,7 +306,7 @@ data class RenderPipelineDescriptor(
                 ) +
                 colorAttachments.flatMap { it.pack() } +
                 vertexBuffers.flatMap {
-                    listOf(it.index, it.stride, it.stepFunction.ordinal, it.stepRate)
+                    listOf(it.index, it.stride, it.stepFunction.ordinal, it.stepRate.toInt())
                 } +
                 vertexAttributes.flatMap {
                     listOf(it.location, it.bufferIndex, it.format.vk, it.offset)
