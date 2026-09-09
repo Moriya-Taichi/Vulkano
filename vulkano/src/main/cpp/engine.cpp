@@ -290,8 +290,7 @@ struct Module {
     std::vector<std::vector<uint64_t>> outputInterface;
     uint32_t reflectedPushBytes = 0;
     std::array<uint32_t, 3> local{0, 0, 0};
-    std::vector<VkSpecializationMapEntry> specEntries;
-    std::vector<uint32_t> specData;
+    SpecializationData specializationData;
     VkSpecializationInfo specialization{};
     Module(Device &device, const Shader &shader, uint32_t executionModel) : d(device) {
         const auto &code = shader.code;
@@ -375,7 +374,7 @@ struct Module {
                     if (spec != ids.end()) {
                         auto v = shader.constants.find(spec->second);
                         if (v != shader.constants.end())
-                            value = v->second;
+                            value = v->second.uint32();
                     }
                     values[code[i + 2]] = value;
                 }
@@ -473,31 +472,8 @@ struct Module {
             }
             std::sort(outputInterface.begin(), outputInterface.end());
         }
-        // Public FunctionConstants stores exactly one 32-bit scalar per constant ID.
-        std::map<uint32_t, uint32_t> scalarSizes, constantTypes;
-        for (size_t at = 5; at < code.size(); at += code[at] >> 16) {
-            const auto op = code[at] & 0xffff, words = code[at] >> 16;
-            if (op == SpvOpTypeBool && words == 2)
-                scalarSizes[code[at + 1]] = 4;
-            if ((op == SpvOpTypeInt || op == SpvOpTypeFloat) && words >= 3)
-                scalarSizes[code[at + 1]] = code[at + 2] / 8;
-            if ((op == SpvOpSpecConstant || op == SpvOpSpecConstantTrue || op == SpvOpSpecConstantFalse) && words >= 3)
-                constantTypes[code[at + 2]] = code[at + 1];
-        }
-        for (const auto &[id, value] : shader.constants) {
-            bool found = false;
-            for (uint32_t n = 0; n < reflection.spec_constant_count; ++n)
-                if (reflection.spec_constants[n].constant_id == id) {
-                    auto type = constantTypes.find(reflection.spec_constants[n].spirv_id);
-                    require(type != constantTypes.end() && scalarSizes[type->second] == 4,
-                            "Function constant must be a 32-bit scalar");
-                    found = true;
-                }
-            require(found, "Unknown specialization constant ID");
-            specEntries.push_back({id, uint32_t(specData.size() * 4), 4});
-            specData.push_back(value);
-        }
-        specialization = {uint32_t(specEntries.size()), specEntries.data(), specData.size() * 4, specData.data()};
+        specializationData = SpecializationData(shader);
+        specialization = specializationData.info();
         bool hasSubgroups = false, hasSmallArithmetic = false;
         for (uint32_t i = 0; i < reflection.capability_count; ++i) {
             const auto cap = reflection.capabilities[i].value;
@@ -999,7 +975,9 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 13) == 0, "Unknown extended feature");
+    require((extra >> 15) == 0, "Unknown extended feature");
+    if (extra & VertexZeroDivisor)
+        extra |= VertexDivisor;
     if (extra & RayMotionBlur)
         required |= RayPipeline;
     if (extra & DataGraph) {
@@ -1664,6 +1642,17 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
             require(bindingIds.insert(v.binding).second && v.binding < l.maxVertexInputBindings &&
                         v.stride <= l.maxVertexInputBindingStride && v.inputRate <= VK_VERTEX_INPUT_RATE_INSTANCE,
                     "Invalid vertex buffer layout");
+        std::set<uint32_t> divisorBindings;
+        for (const auto &v : g.vertexDivisors) {
+            auto binding = std::find_if(g.vertexBindings.begin(), g.vertexBindings.end(),
+                                        [&](const auto &b) { return b.binding == v.binding; });
+            require(divisorBindings.insert(v.binding).second && binding != g.vertexBindings.end() &&
+                        binding->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE,
+                    "Step rate requires a unique instance buffer binding");
+            require((d->enabledExtra & VertexDivisor) && (v.divisor || (d->enabledExtra & VertexZeroDivisor)) &&
+                        v.divisor <= d->extensions->vertexDivisorProperties.maxVertexAttribDivisor,
+                    "Vertex step rate exceeds enabled device support");
+        }
         for (const auto &a : g.attributes) {
             VkFormatProperties fp;
             vkGetPhysicalDeviceFormatProperties(d->physical, a.format, &fp);
@@ -1752,6 +1741,12 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
         vi.pVertexBindingDescriptions = g.vertexBindings.data();
         vi.vertexAttributeDescriptionCount = uint32_t(g.attributes.size());
         vi.pVertexAttributeDescriptions = g.attributes.data();
+        VkPipelineVertexInputDivisorStateCreateInfoKHR divisors{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_KHR};
+        divisors.vertexBindingDivisorCount = uint32_t(g.vertexDivisors.size());
+        divisors.pVertexBindingDivisors = g.vertexDivisors.data();
+        if (!g.vertexDivisors.empty())
+            vi.pNext = &divisors;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         ia.topology = g.topology;
         ia.primitiveRestartEnable = g.primitiveRestart;
@@ -2148,7 +2143,7 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                     "Invalid input attachment binding");
             same(*this, *b.texture);
             b.texture->usable();
-            require(numericClass(b.texture->format) == schema->numericType,
+            require(b.texture->viewNumericClass() == schema->numericType,
                     "Input attachment numeric type differs from shader");
         } else if (schema->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
             require(b.sampler && !b.texture && !b.buffer && !b.texel && !b.acceleration, "Sampler binding required");
@@ -2178,7 +2173,7 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
             require(b.texture && !b.buffer, "Binding requires a texture");
             same(*this, *b.texture);
             b.texture->usable();
-            require(numericClass(b.texture->format) == schema->numericType, "Texture numeric type differs from shader");
+            require(b.texture->viewNumericClass() == schema->numericType, "Texture numeric type differs from shader");
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                                  schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
             require(sampled || (b.texture->options.mipLevels == 1 && (schema->storageFormat == VK_FORMAT_UNDEFINED ||
@@ -2203,7 +2198,7 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                         schema->multisampled == (t.options.samples > 1),
                     "Shader image type does not match texture view");
             if (b.sampler) {
-                require(!schema->shadow || (t.depth() && b.sampler->compare),
+                require(!schema->shadow || (t.viewAspects() == VK_IMAGE_ASPECT_DEPTH_BIT && b.sampler->compare),
                         "Shadow sampling requires depth and comparison sampler");
                 same(*this, *b.sampler);
                 const auto features = t.formatFeatures();
@@ -2212,7 +2207,8 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
                                           : VK_NULL_HANDLE;
                 require(b.sampler->conversion == expected && (!expected || schema->immutableSampler),
                         "YCbCr textures require a matching immutable conversion sampler");
-                require(!b.sampler->linear || (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT),
+                require(!b.sampler->linear || (t.viewAspects() != VK_IMAGE_ASPECT_STENCIL_BIT &&
+                                               (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)),
                         "Texture format does not support linear filtering");
                 require(b.sampler->reductionMode == VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE ||
                             (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT),
@@ -2241,7 +2237,7 @@ void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, b
                 continue;
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                                  schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            transition(*b.texture, layout, !compute || sampled);
+            transition(*b.texture, layout, !compute || sampled, b.texture->viewAspects());
             if (compute && !sampled)
                 markInitialized(*b.texture, true);
         }
@@ -2773,6 +2769,12 @@ void Command::render(Render op) {
                         draw.vertices && draw.instances && draw.firstVertex <= UINT32_MAX - draw.vertices &&
                         draw.firstInstance <= UINT32_MAX - draw.instances,
                     "Invalid draw counts");
+        if (!draw.indirect && !draw.generated && draw.firstInstance &&
+            !d->extensions->vertexDivisorProperties.supportsNonZeroFirstInstance)
+            require(std::none_of(draw.pipeline->graphics.vertexDivisors.begin(),
+                                 draw.pipeline->graphics.vertexDivisors.end(),
+                                 [](const auto &v) { return v.divisor != 1; }),
+                    "This device requires firstInstance zero with a custom instance step rate");
         std::set<uint32_t> bound;
         for (const auto &v : draw.vertexBuffers) {
             require(bool(v.buffer) && bound.insert(v.index).second, "Invalid/duplicate vertex binding");
@@ -3208,7 +3210,7 @@ void Command::commit() {
         for (const auto &[texture, current] : images) {
             texture->states = current;
             texture->layout = current[0].layout;
-            texture->initialized = current[0].initialized;
+            texture->initialized = (current[0].initialized & texture->aspects()) == texture->aspects();
         }
         d->pending.push_back(self);
         if (presentation) {

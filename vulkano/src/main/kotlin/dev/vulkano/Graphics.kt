@@ -113,10 +113,26 @@ data class VertexBufferLayout(
     val index: Int,
     val stride: Int,
     val stepFunction: VertexStepFunction = VertexStepFunction.PER_VERTEX,
+    /** Instances sharing each element; zero reuses the first element for every instance. */
+    val stepRate: Int = 1,
 ) {
     init {
         require(index >= 0 && stride >= 0)
+        require(stepRate >= 0 && (stepFunction == VertexStepFunction.PER_INSTANCE || stepRate == 1))
     }
+}
+
+/** Physical limits; custom rates still require the corresponding enabled Feature. */
+data class VertexInputCapabilities(
+    val maxStepRate: Long,
+    val supportsZeroStepRate: Boolean,
+    /** Applies when stepRate differs from one, including indirect draw command contents. */
+    val supportsNonZeroFirstInstance: Boolean,
+)
+
+fun Device.vertexInputCapabilities(): VertexInputCapabilities = access {
+    val p = dev.vulkano.internal.Native.vertexInputCapabilities(nativeHandle)
+    VertexInputCapabilities(p[0], p[1] != 0L, p[2] != 0L)
 }
 
 data class VertexAttribute(
@@ -286,7 +302,9 @@ data class RenderPipelineDescriptor(
                     else ShadingRateCombiner.KEEP.ordinal,
                 ) +
                 colorAttachments.flatMap { it.pack() } +
-                vertexBuffers.flatMap { listOf(it.index, it.stride, it.stepFunction.ordinal) } +
+                vertexBuffers.flatMap {
+                    listOf(it.index, it.stride, it.stepFunction.ordinal, it.stepRate)
+                } +
                 vertexAttributes.flatMap {
                     listOf(it.location, it.bufferIndex, it.format.vk, it.offset)
                 })
@@ -315,12 +333,39 @@ data class Origin(val x: Int = 0, val y: Int = 0, val z: Int = 0) {
     }
 }
 
+enum class TextureAspect(internal val bit: Int) {
+    COLOR(1),
+    DEPTH(2),
+    STENCIL(4),
+}
+
+/** Buffer-copy element size. Depth24 occupies four bytes; its unused eight bits are ignored. */
+fun PixelFormat.bytesPerPixel(aspect: TextureAspect): Int {
+    require(!isCompressed && this != PixelFormat.EXTERNAL)
+    return when (aspect) {
+        TextureAspect.COLOR -> {
+            require(!isDepth && !isStencil)
+            bytesPerPixel
+        }
+        TextureAspect.DEPTH -> {
+            require(isDepth)
+            if (this == PixelFormat.DEPTH16_UNORM) 2 else 4
+        }
+        TextureAspect.STENCIL -> {
+            require(isStencil)
+            1
+        }
+    }
+}
+
 data class TextureRegion(
     val origin: Origin = Origin(),
     val size: Size,
     val level: Int = 0,
     val slice: Int = 0,
     val sliceCount: Int = 1,
+    /** Null uses the view's selected aspect, or all aspects for an unqualified texture. */
+    val aspect: TextureAspect? = null,
 ) {
     init {
         require(level >= 0 && slice >= 0 && sliceCount > 0)
@@ -337,23 +382,8 @@ data class TextureRegion(
             size.width,
             size.height,
             size.depth,
+            aspect?.bit ?: 0,
         )
-}
-
-/** Scalar 32-bit function constants keyed by the SPIR-V constant_id decoration. */
-class FunctionConstants {
-    private val values = sortedMapOf<Int, Int>()
-
-    fun setInt(index: Int, value: Int) = apply {
-        require(index >= 0)
-        values[index] = value
-    }
-
-    fun setFloat(index: Int, value: Float) = setInt(index, value.toRawBits())
-
-    fun setBoolean(index: Int, value: Boolean) = setInt(index, if (value) 1 else 0)
-
-    internal fun pack() = values.flatMap { listOf(it.key, it.value) }.toIntArray()
 }
 
 fun Device.depthStencilResolveSupport(): DepthStencilResolveSupport = access {

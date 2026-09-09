@@ -12,7 +12,7 @@ Vulkanのメモリ確保、リソースのBinding、画像レイアウトの遷�
 | GPUで計算する | Compute ShaderでBuffer、Texture、Tensorを処理し、結果をCPUへ読み戻す。対応端末ではCooperative Matrixも利用する |
 | MLを実行する | 対応端末で専用Tensor、SPIR-V Graph、Weights、Function Constants、Graphの連続実行・Cache復元を利用する |
 | 画像を描く | Tile Compute、MSAA、Indexed/Indirect Draw、GPUでのCommand生成、頂点属性、MRT、Depth/Stencil、Subpass、Multiview、Shading Rate、Tessellation、Mesh Shaderを使って描画する |
-| データを転送する | Buffer、Textureの領域やMip、配列Sliceをコピーし、Mipを生成する |
+| データを転送する | Buffer、Textureの領域・Depth/Stencil・Mip・配列Sliceをコピーし、Mipを生成する |
 | 光線を追跡する | 対応端末でBLAS/TLASの構築・Refit・Copy・Compaction・保存と復元、Ray Query、Ray Tracing Pipeline、Motion Blurを利用する |
 | リソースを管理する | Texture View、Resource配列、Heap・Placement・Alias、Sparse Resource、独立Queue、Shared Event、Counter、Pipeline Cacheを使う |
 | 端末に合わせる | 利用可能なFeature、画像形式、処理サイズの上限、メモリ情報を取得する |

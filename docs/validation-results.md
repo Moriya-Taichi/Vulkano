@@ -1,5 +1,22 @@
 # 検証結果 — 2026-09-07
 
+## Scalar定数・Step Rate・Texture Aspectの検証（2026-09-09）
+
+ローカルのLavapipe（Mesa 24.0.5、LLVM 17）ではNative 763件、Kotlin/JNI 95件中63件成功・32件スキップ・失敗0件です。
+追加したGPUテスト9件とHalf変換のAPIテスト1件は、すべて実行に成功しました。
+Validation ErrorとSynchronization Hazardは検出されていません。
+
+- Function Constantsの符号付き・符号なし8/16/64ビット値、Half/Double、Boolean、Function作成時の値の複製、幅違い・未宣言IDの拒否を検証しました。
+- Step Rateの0/1/2を通常・Indexed・Indirect Drawで読み戻し、First Instanceと組み合わせた入力、Feature未有効・上限超過の拒否を検証しました。
+- Format・Usage・Private/Memorylessを組み合わせた照会結果を、各Sample Countでの実際のTexture作成と照合しました。
+- Depth24/Stencil8とDepth32/Stencil8の個別転送、Mip・SliceのView、符号なしStencil Sampling、Subpass入力を検証しました。
+- Texture間Copy、片方のAspectの保持、初期化前の読み取り、Discard、閉じた元Textureの保持、送信失敗時の状態保全を検証しました。
+
+6種類の追加ShaderはVulkan 1.1向けにコンパイルし、SPIR-V検証を通過しました。
+Step RateのEXT経路はローカルGPUで実行しました。
+KHR経路、両ABIのAndroidビルド、既存のRay Tracing・Sparse・Generated Commandsとの回帰はPRのCIで確認します。
+Mali・PowerVR・Adreno・Xclipse実機での性能測定は含みません。
+
 ## 最新の追加検証（2026-09-08）
 
 Tensorを追加したCommit `1a7e8252f774800c235051ad68776bb74cd1c571`の[Android CI](https://github.com/Moriya-Taichi/Vulkano/actions/runs/34253108051)が成功しました。

@@ -117,6 +117,108 @@ TensorのBlitは同じDimensionsを持つ全体のCopyに対応し、LinearとOp
 Copyは型変換を行わず、Bit Patternを保持します。
 VulkanのTensor Copyは部分領域に対応しないため、部分的な更新や型変換にはShaderのTensor演算を使用します。
 
+## Function Constantsの型
+
+`FunctionConstants`はSPIR-Vの`constant_id`に対応するScalar値を設定します。
+値は`makeFunction`で複製され、その後に元の定数を変更しても作成済みのFunctionには影響しません。
+
+| ShaderのScalar型 | Kotlin API |
+| --- | --- |
+| 符号付き8/16/32/64ビット整数 | `setByte` / `setShort` / `setInt` / `setLong` |
+| 符号なし8/16/32/64ビット整数 | `setUByte` / `setUShort` / `setUInt` / `setULong` |
+| 16ビット浮動小数点 | `setHalf` / `setHalfBits` |
+| 32/64ビット浮動小数点 | `setFloat` / `setDouble` |
+| Boolean | `setBoolean` |
+
+```kotlin
+val constants = FunctionConstants()
+    .setHalf(0, 1.5f)
+    .setULong(1, 0xfedcba9876543210uL)
+val function = library.makeFunction(constants = constants)
+```
+
+Shader側にも同じIDとバイト数のScalar型を宣言します。
+`setHalf`はFloatをIEEE 754 binary16へ最近接・偶数丸めで変換します。
+`setHalfBits`ではNaNのPayloadを含む16ビット列をそのまま指定できます。
+VulkanのBoolean特殊化値は4バイトです。
+Shaderの8/16/64ビット演算には、対応する`SHADER_INT8`、`SHADER_INT16`、`SHADER_INT64`、`SHADER_FLOAT16`、`SHADER_FLOAT64`をDevice作成時に要求します。
+[特殊化定数のサイズ規則](https://docs.vulkan.org/refpages/latest/refpages/source/VkSpecializationMapEntry.html)に従い、幅の違う値と未宣言のIDはPipeline作成時に拒否します。
+
+## InstanceのStep Rate
+
+```kotlin
+val device = Device.create(setOf(Feature.VERTEX_ATTRIBUTE_DIVISOR))
+val support = device.vertexInputCapabilities()
+val instances = VertexBufferLayout(
+    index = 1, stride = 16,
+    stepFunction = VertexStepFunction.PER_INSTANCE,
+    stepRate = 2,
+)
+```
+
+この例では連続する2個のInstanceが同じ頂点属性の要素を使用します。
+`stepRate = 1`は既定値で、追加Featureを必要としません。
+`stepRate = 0`はすべてのInstanceで同じ要素を使用し、`VERTEX_ATTRIBUTE_ZERO_DIVISOR`が必要です。
+Zero Divisorを要求すると通常のDivisorも有効にします。
+頂点ごとの入力では`stepRate = 1`のみを受け付けます。
+
+Rateの上限は`support.maxStepRate`で確認します。
+`firstInstance`は属性Bufferの開始要素も指定し、ゼロRateの場合もその開始要素を使用します。
+`support.supportsNonZeroFirstInstance`がfalseの端末では、Rateが1以外のDrawの`firstInstance`を0にします。
+この制約はIndirect DrawとGPU生成Commandの内容にも適用されます。
+[KHR版](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_vertex_attribute_divisor.html)を優先して有効にし、対応端末ではEXT版も使用できます。
+
+## 画像形式とMSAAの照会
+
+```kotlin
+val support = checkNotNull(device.textureFormatCapabilities(
+    PixelFormat.RGBA8_UNORM,
+    usage = setOf(TextureUsage.COLOR_ATTACHMENT),
+    storageMode = StorageMode.MEMORYLESS,
+))
+val sampleCount = support.sampleCounts.filter { it <= 4 }.max()
+```
+
+Format・Usage・Texture Type・Storage Modeを組み合わせて照会し、非対応ならnullを返します。
+`maxSize`、`maxMipLevels`、`maxArrayLength`、`maxResourceBytes`はその組み合わせの物理上限です。
+`features`ではFormatのLinear Filter、Blit、Storage Atomic、Color Blendなどを確認できます。
+実際のTextureで使う操作は、作成時のUsageにも含めます。
+`requiredFeatures`は確保前に有効化するFeatureであり、照会自体はDeviceの設定を変更しません。
+上限は空きメモリ量を表すものではありません。
+既存の`supportsTexture(descriptor)`では寸法、Mip、Layer、Sample Countまでまとめて検査します。
+
+## DepthとStencilの個別転送・View
+
+`DEPTH24_STENCIL8`と`DEPTH32_FLOAT_STENCIL8`は、`TextureAspect.DEPTH`と`TextureAspect.STENCIL`で別々に転送できます。
+Bufferには対応するTransfer Usageを指定し、Textureには転送方向とSamplingなどの用途を含めます。
+
+```kotlin
+val stencilView = depthStencil.makeTextureView(aspect = TextureAspect.STENCIL)
+command.blit {
+    copy(stencilUpload, depthStencil, TextureRegion(
+        size = Size(width, height), aspect = TextureAspect.STENCIL,
+    ))
+    copy(stencilView, readback)
+}
+```
+
+Depth16は2バイト、Depth24/Depth32は4バイト、Stencilは1バイトの要素としてBufferを用意します。
+`pixelFormat.bytesPerPixel(aspect)`で要素サイズを取得できます。
+Depth24は下位24ビットを使用し、残りの8ビットは比較しません。
+Buffer Offsetは4バイト境界に揃え、`rowLength`と`imageHeight`は選択AspectのTexel数で指定します。
+Depthの値は0〜1の範囲にします。
+[Buffer/Image Copy](https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferImageCopy.html)では1回に1つのAspectを指定するため、混合FormatのBuffer転送ではAspectを明示します。
+Texture同士のCopyでは同じFormat・Aspectを指定し、Aspectを指定しない元Texture同士ならDepthとStencilの両方をコピーします。
+
+ViewのAspectは子Viewと既定の転送にも引き継がれます。
+SamplingではDepthを浮動小数点、Stencilを符号なし整数のShader入力にBindingします。
+StencilのSampled ViewにはNearest Filterを使用します。
+同じ混合Formatを維持したStencil Viewは`usubpassInput`にもBindingできます。
+
+初期化状態はMip・Slice・Aspectごとに保持します。
+片方への転送後も、もう片方の内容と初期化状態を維持し、送信に失敗したCommandの状態変更は反映しません。
+AttachmentのClear・Load・Store・DiscardはFormat全体に適用されます。
+
 ## MSAAとIndexed Draw
 
 ```kotlin

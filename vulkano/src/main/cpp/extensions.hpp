@@ -2,6 +2,11 @@
 #include "engine.hpp"
 namespace vulkano {
 struct Extensions {
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR vertexDivisor{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR};
+    VkPhysicalDeviceVertexAttributeDivisorPropertiesKHR vertexDivisorProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_KHR, nullptr, 1, VK_TRUE};
+    bool vertexDivisorKHR = false;
     VkPhysicalDeviceSynchronization2Features sync2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};
     PFN_vkCmdPipelineBarrier2 pipelineBarrier2 = nullptr;
     VkPhysicalDeviceTensorFeaturesARM tensor{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TENSOR_FEATURES_ARM};

@@ -15,7 +15,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Indexed / Instanced Draw | drawIndexedPrimitives | UINT16 / UINT32、Base Vertex、First Instance |
 | Indirect Draw / Dispatch | Indirect Bufferを受けるEncoder API | Draw、Indexed Draw、Compute、Mesh。GPU側Count Bufferによる描画数指定。端末依存 |
 | GPUからのCommand生成 | makeIndirectCommandLayout / executeCommands | Pipeline選択、Push Constants、Sequence Index、Vertex/Index指定、Draw/Dispatch/Mesh/Trace。VK_EXT_device_generated_commands |
-| Vertex Descriptor | vertexBuffers / vertexAttributes | Vertex Input、頂点ごとまたはInstanceごとの入力 |
+| Vertex Descriptor | vertexBuffers / vertexAttributes | Vertex Input、頂点・Instanceごとの入力、stepRate。任意のRateとZero RateはKHR/EXT拡張が必要 |
 | 複数Render Target | colorAttachments | DeviceのAttachment上限まで。Independent Blendは端末依存 |
 | Depth / Stencil | DepthStencilDescriptor | Compare、Mask、Stencil操作、Depth Bias、Depth Bounds |
 | Rasterization | RenderPipelineDescriptor | Primitive、Cull、Winding、Wireframe、Clip/Clamp、Sample Mask、Sample Shading |
@@ -24,12 +24,13 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Subpass / Input Attachment | RenderPassLayout / nextSubpass | Color/Depth/Stencil/MSAA入力、Color/Depth/Stencil Resolve、Rate Map、Attachment保持、BY_REGION依存関係 |
 | Tile Compute / Tile Attachment | perTile / dispatchTileThreadgroups / dispatchTile | VK_QCOM_tile_shading。色・深度・Stencil・Input・SampledのFeature、Apron、Tile内Barrier |
 | Multiview / Layer出力 | viewMask / renderTargetArrayLength | Vertex/Fragment Multiview、配列Attachment、Layer出力Feature |
+| 画像形式の照会 | textureFormatCapabilities / supportsTexture | Format・Usage・Type・Storageの組み合わせ、Sample Count、Mip・Layer・サイズ上限、Format Feature |
 | Texture | TextureDescriptor | 1D、2D、3D、Array、Cube、Mip、MSAA、Float/Integer、ASTC LDR/HDR、ETC/EAC、BC、PVRTC |
-| Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Swizzle、Usage制限、VkBufferView |
+| Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Depth/Stencil Aspect、Swizzle、Usage制限、VkBufferView |
 | Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color、Immutable Sampler |
-| 転送 | Blit Encoder | Buffer、Texture領域、Mip、Slice、Fill |
+| 転送 | Blit Encoder | Buffer、Texture領域、Depth/Stencilの個別転送、Mip、Slice、Fill |
 | Argument Bufferに相当する配列 | BindingLayout / arrayElement | 固定Descriptor Array、端末依存のRuntime Array、BDAによる間接参照 |
-| Function Constants | FunctionConstants | 32ビットのSpecialization Constants |
+| Function Constants | FunctionConstants | 8/16/32/64ビット整数、Half/Float/Double、BooleanのSpecialization Constants |
 | Tessellation | Control / Evaluation Function | 端末依存。Patch Primitive |
 | Object / Mesh Shader | objectFunction / meshShader | VK_EXT_mesh_shader。Task Shaderは別Feature |
 | Ray Query | AccelerationStructureとCompute/Graphics Shader | VK_KHR_ray_query、BLAS/TLAS、Triangle/AABB、Build/Refit、Copy/Compaction、SerializationとBLASアドレス再配置 |
@@ -70,6 +71,9 @@ Depth/Stencil Resolveを実行するSubpassを指定し、その結果を後続S
 ResolveのModeはLayoutとDepth Attachmentで一致させます。
 同じSubpassでResolve先をInput Attachmentとして読む構成は受け付けません。
 Input Attachmentには描画先と同じImage、Mip、Layer、FormatのViewを指定します。
+混合Depth/Stencil FormatのStencil入力には、`TextureAspect.STENCIL`のViewと整数型のShader入力を使用します。
+Textureの初期化状態はMip・Layer・Aspectごとに管理し、未初期化またはDiscardしたAspectの読み取りを拒否します。
+Attachment操作はFormat全体を使用し、DepthとStencilで別々のLoad/Storeや同時Read/WriteのLayoutを選ぶAPIは公開していません。
 同じSubpassで同じAttachmentへ書き込みながらInput Attachmentとして読む構成は受け付けません。
 一般のStorage Resourceについては、Draw間の任意の依存関係を自動で推定しません。
 

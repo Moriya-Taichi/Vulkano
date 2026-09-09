@@ -1,7 +1,7 @@
 // Included after the shared JNI registry and exception/array helpers.
 JNI_METHOD(jlong, createTextureView)
 (JNIEnv *e, jobject, jlong id, jint format, jint type, jint mip, jint levels, jint layer, jint layers, jint usage,
- jintArray components) {
+ jintArray components, jint aspect) {
     return guard(e, [&] {
         require(mip >= 0 && levels > 0 && layer >= 0 && layers > 0 && type >= 0 && type <= 6, "Invalid view range");
         auto swizzle = ints(e, components);
@@ -10,7 +10,16 @@ JNI_METHOD(jlong, createTextureView)
             get<Texture>(id), static_cast<VkFormat>(format), static_cast<VkImageViewType>(type), mip, levels, layer,
             layers, usage,
             VkComponentMapping{VkComponentSwizzle(swizzle[0]), VkComponentSwizzle(swizzle[1]),
-                               VkComponentSwizzle(swizzle[2]), VkComponentSwizzle(swizzle[3])}));
+                               VkComponentSwizzle(swizzle[2]), VkComponentSwizzle(swizzle[3])},
+            VkImageAspectFlags(aspect)));
+    });
+}
+JNI_METHOD(jlongArray, vertexInputCapabilities)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto d = get<Device>(id);
+        auto &p = d->extensions->vertexDivisorProperties;
+        return longs(e, {jlong(p.maxVertexAttribDivisor), jlong((d->availableExtra & VertexZeroDivisor) != 0),
+                         jlong(p.supportsNonZeroFirstInstance)});
     });
 }
 JNI_METHOD(jlong, createGraphics)
@@ -37,7 +46,7 @@ JNI_METHOD(jlong, createGraphics)
         }
         auto v = ints(e, options);
         require(v.size() >= 49 && v[13] >= 0 && v[14] >= 0 && v[15] >= 0, "Invalid graphics options");
-        require(v.size() == 49 + size_t(v[13]) * 9 + size_t(v[14]) * 3 + size_t(v[15]) * 4,
+        require(v.size() == 49 + size_t(v[13]) * 9 + size_t(v[14]) * 4 + size_t(v[15]) * 4,
                 "Invalid graphics option lengths");
         GraphicsOptions g;
         auto tile = ints(e, tileOptions);
@@ -101,10 +110,14 @@ JNI_METHOD(jlong, createGraphics)
                                 static_cast<VkBlendFactor>(v[at + 5]), static_cast<VkBlendFactor>(v[at + 6]),
                                 static_cast<VkBlendOp>(v[at + 7]), VkColorComponentFlags(v[at + 8])});
         }
-        for (int n = 0; n < v[14]; ++n, at += 3) {
-            require(v[at] >= 0 && v[at + 1] >= 0, "Invalid vertex layout");
+        for (int n = 0; n < v[14]; ++n, at += 4) {
+            require(v[at] >= 0 && v[at + 1] >= 0 && v[at + 3] >= 0 &&
+                        (v[at + 2] == VK_VERTEX_INPUT_RATE_INSTANCE || v[at + 3] == 1),
+                    "Invalid vertex layout");
             g.vertexBindings.push_back(
                 {uint32_t(v[at]), uint32_t(v[at + 1]), static_cast<VkVertexInputRate>(v[at + 2])});
+            if (v[at + 3] != 1)
+                g.vertexDivisors.push_back({uint32_t(v[at]), uint32_t(v[at + 3])});
         }
         for (int n = 0; n < v[15]; ++n, at += 4) {
             require(v[at] >= 0 && v[at + 1] >= 0 && v[at + 3] >= 0, "Invalid attribute");

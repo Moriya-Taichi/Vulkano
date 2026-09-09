@@ -64,6 +64,9 @@ std::vector<uint64_t> generatedGraphicsKey(const Pipeline &p) {
     k.push_back(g.vertexBindings.size());
     for (const auto &v : g.vertexBindings)
         k.insert(k.end(), {v.binding, v.stride, v.inputRate});
+    k.push_back(g.vertexDivisors.size());
+    for (const auto &v : g.vertexDivisors)
+        k.insert(k.end(), {v.binding, v.divisor});
     k.push_back(g.attributes.size());
     for (const auto &a : g.attributes)
         k.insert(k.end(), {a.location, a.binding, a.format, a.offset});

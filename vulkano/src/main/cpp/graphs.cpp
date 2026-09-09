@@ -127,18 +127,12 @@ GraphPipeline::GraphPipeline(std::shared_ptr<Device> device, uint32_t queue, Sha
         VkShaderModuleCreateInfo module{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         module.codeSize = shader.code.size() * 4;
         module.pCode = shader.code.data();
-        std::vector<VkSpecializationMapEntry> specializationEntries;
-        std::vector<uint32_t> specializationValues;
-        for (auto [id, value] : shader.constants) {
-            specializationEntries.push_back({id, uint32_t(specializationValues.size() * 4), 4});
-            specializationValues.push_back(value);
-        }
-        VkSpecializationInfo specialization{uint32_t(specializationEntries.size()), specializationEntries.data(),
-                                            specializationValues.size() * 4, specializationValues.data()};
+        SpecializationData specializationData(shader);
+        const auto specialization = specializationData.info();
         VkDataGraphPipelineShaderModuleCreateInfoARM source{
             VK_STRUCTURE_TYPE_DATA_GRAPH_PIPELINE_SHADER_MODULE_CREATE_INFO_ARM, &module};
         source.pName = shader.entry.c_str();
-        source.pSpecializationInfo = specializationEntries.empty() ? nullptr : &specialization;
+        source.pSpecializationInfo = specializationData.entries.empty() ? nullptr : &specialization;
         source.constantCount = uint32_t(constantInfos.size());
         source.pConstants = constantInfos.data();
         VkDataGraphPipelineIdentifierCreateInfoARM cached{

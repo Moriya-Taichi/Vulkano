@@ -55,7 +55,7 @@ void reflectTensorBinding(Device &d, const Shader &shader, uint32_t variable, Bi
             return {};
         if (auto spec = specialization.find(id); spec != specialization.end())
             if (auto value = shader.constants.find(spec->second); value != shader.constants.end())
-                return value->second;
+                return value->second.bits;
         require((n[0] >> 16) >= 4, "Malformed tensor scalar constant");
         auto t = node(n[1]);
         if ((t[0] & 0xffff) != SpvOpTypeInt)

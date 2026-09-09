@@ -93,7 +93,7 @@ GraphInterface reflectGraph(Device &d, const Shader &shader) {
                     "Graph array length must be a literal or direct function constant");
             binding.count = length[3];
             if (specs.count(type[3]) && shader.constants.count(specs[type[3]]))
-                binding.count = shader.constants.at(specs[type[3]]);
+                binding.count = shader.constants.at(specs[type[3]]).uint32();
             require(binding.count, "Graph tensor array must not be empty");
         } else
             require((type[0] & 0xffff) == SpvOpTypeTensorARM,

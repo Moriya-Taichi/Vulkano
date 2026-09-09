@@ -35,6 +35,297 @@ class GraphicsIntegrationTest {
         }
     }
 
+    @Test fun depthStencilAspectsTransferIndependentlyAcrossMipViews(): Unit = device().use { d ->
+        val usage = setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION, TextureUsage.SAMPLED)
+        val sampler = d.makeSampler(SamplerDescriptor(linearFiltering = false))
+        val sampleDepth = d.makeComputePipelineState(d.function("sample-depth-aspect.comp.spv"))
+        val sampleStencil = d.makeComputePipelineState(d.function("sample-stencil-aspect.comp.spv"))
+        var checked = 0
+        for (format in listOf(PixelFormat.DEPTH24_STENCIL8, PixelFormat.DEPTH32_FLOAT_STENCIL8)) {
+            val descriptor = TextureDescriptor(4, 4, format, usage, mipLevels = 2,
+                arrayLength = 2, textureType = TextureType.TYPE_2D_ARRAY)
+            if (!d.supportsTexture(descriptor)) continue
+            checked++
+            val root = d.makeTexture(descriptor)
+            fun view(aspect: TextureAspect) = root.makeTextureView(textureType = TextureType.TYPE_2D,
+                level = 1, levelCount = 1, slice = 1, sliceCount = 1, aspect = aspect)
+            val depth = view(TextureAspect.DEPTH)
+            val stencil = view(TextureAspect.STENCIL)
+            val expectedDepth = listOf(0.125f, 0.25f, 0.5f, 0.75f)
+            val packed = expectedDepth.map { if (format == PixelFormat.DEPTH24_STENCIL8)
+                (it * 16777215f).toInt() else it.toRawBits() }
+            val upload = d.makeBuffer(20).apply { write(ByteBuffer.allocateDirect(20).order(ByteOrder.nativeOrder()).apply {
+                putInt(0x12345678); packed.forEach { putInt(it) }; flip()
+            }) }
+            val result = d.makeBuffer(24)
+            // A four-byte buffer offset must work even for the eight-byte combined D32/S8 format.
+            d.submit {
+                blit { copy(upload, depth, sourceOffset = 4); copy(depth, result, destinationOffset = 4) }
+            }
+            val transferred = ByteBuffer.wrap(result.readBytes(20)).order(ByteOrder.nativeOrder()).apply { position(4) }
+            packed.forEach { assertEquals(it, if (format == PixelFormat.DEPTH24_STENCIL8) transferred.int and 0xffffff else transferred.int) }
+            assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(stencil, result) } } }
+            d.submit { compute {
+                setComputePipelineState(sampleDepth); setTexture(depth, 0, sampler); setBuffer(result, 1)
+                dispatchThreads(Size(2, 2))
+            } }
+            val sampledDepth = ByteBuffer.wrap(result.readBytes(16)).order(ByteOrder.nativeOrder())
+            expectedDepth.forEach { assertEquals(it, sampledDepth.float, 0.000001f) }
+            val expectedStencil = listOf(7, 63, 129, 251)
+            val padded = d.makeBuffer(12).apply { write(ByteArray(12) { i -> when (i) {
+                4 -> 7; 5 -> 63; 8 -> 129.toByte(); 9 -> 251.toByte(); else -> 0
+            } }) }
+            d.submit {
+                blit { copy(padded, root, TextureRegion(size = Size(2, 2), level = 1, slice = 1,
+                    aspect = TextureAspect.STENCIL), sourceOffset = 4, rowLength = 4) }
+                compute {
+                    setComputePipelineState(sampleStencil); setTexture(stencil, 0, sampler); setBuffer(result, 1)
+                    dispatchThreads(Size(2, 2))
+                }
+            }
+            val sampledStencil = ByteBuffer.wrap(result.readBytes(16)).order(ByteOrder.nativeOrder())
+            expectedStencil.forEach { assertEquals(it, sampledStencil.int) }
+            assertThrows(IllegalArgumentException::class.java) { d.submit { compute {
+                setComputePipelineState(sampleDepth); setTexture(stencil, 0, sampler); setBuffer(result, 1)
+                dispatchThreads(Size(2, 2))
+            } } }
+            // A stencil upload preserves the previously written depth aspect.
+            d.submit { blit { copy(depth, result) } }
+            val preserved = ByteBuffer.wrap(result.readBytes(16)).order(ByteOrder.nativeOrder())
+            packed.forEach { assertEquals(it, if (format == PixelFormat.DEPTH24_STENCIL8) preserved.int and 0xffffff else preserved.int) }
+            // Views of views inherit the selected aspect and retain the original image.
+            val child = stencil.makeTextureView()
+            root.close(); stencil.close(); depth.close()
+            d.submit { blit { copy(child, result) } }
+            assertArrayEquals(expectedStencil.map { it.toByte() }.toByteArray(), result.readBytes(4))
+            assertThrows(IllegalArgumentException::class.java) {
+                child.makeTextureView(aspect = TextureAspect.COLOR)
+            }
+        }
+        assertTrue("At least one packed depth/stencil format must support transfer and sampling", checked > 0)
+    }
+
+    @Test fun aspectCopiesAndFailedSubmissionsPreserveInitialization(): Unit = device().use { d ->
+        val descriptor = TextureDescriptor(2, 2, PixelFormat.DEPTH32_FLOAT_STENCIL8,
+            setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION))
+        assumeTrue(d.supportsTexture(descriptor))
+        val source = d.makeTexture(descriptor)
+        val destination = d.makeTexture(descriptor)
+        val upload = d.makeBuffer(16).apply { write(floats(0.25f, 0.25f, 0.25f, 0.25f)) }
+        val stencilUpload = d.makeBuffer(4).apply { write(byteArrayOf(1, 2, 3, 4)) }
+        val output = d.makeBuffer(16)
+        val depth = TextureRegion(size = Size(2, 2), aspect = TextureAspect.DEPTH)
+        val stencil = depth.copy(aspect = TextureAspect.STENCIL)
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit {
+            copy(upload, source, depth); copy(source, output, stencil)
+        } } }
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(source, output, depth) } } }
+        d.submit { blit { copy(upload, source, depth); copy(source, destination, depth, depth); copy(destination, output, depth) } }
+        assertEquals(0.25f, ByteBuffer.wrap(output.readBytes(4)).order(ByteOrder.nativeOrder()).float, 0f)
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(destination, output, stencil) } } }
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(source, destination, depth, stencil) } } }
+        d.submit { blit {
+            copy(stencilUpload, source, stencil); copy(source, destination); copy(destination, output, stencil)
+        } }
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), output.readBytes(4))
+        // Packed buffer copies still require an explicit aspect.
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(source, output) } } }
+        val small = d.makeBuffer(3)
+        assertThrows(IllegalArgumentException::class.java) { d.submit { blit { copy(source, small, stencil) } } }
+    }
+
+    @Test fun combinedStencilViewReadsSubpassInputAndDiscardedAspectsAreRejected(): Unit = device().use { d ->
+        val format = PixelFormat.DEPTH32_FLOAT_STENCIL8
+        val descriptor = TextureDescriptor(2, 2, format, setOf(TextureUsage.DEPTH_ATTACHMENT,
+            TextureUsage.INPUT_ATTACHMENT, TextureUsage.TRANSFER_SOURCE))
+        assumeTrue(d.supportsTexture(descriptor))
+        val depthStencil = d.makeTexture(descriptor)
+        val stencil = depthStencil.makeTextureView(aspect = TextureAspect.STENCIL)
+        val color = d.makeTexture(TextureDescriptor(2, 2,
+            usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE)))
+        val layout = RenderPassLayout(listOf(PixelFormat.RGBA8_UNORM), listOf(
+            RenderSubpass(emptyList(), usesDepthAttachment = true), RenderSubpass(listOf(0), listOf(1))), depthFormat = format)
+        val pipeline = d.makeRenderPipelineState(RenderPipelineDescriptor(d.function("fullscreen.vert.spv"),
+            d.function("input_stencil.frag.spv"), subpassLayout = layout, subpassIndex = 1))
+        val output = d.makeBuffer(16)
+        d.submit {
+            render(RenderPassDescriptor(listOf(ColorAttachment(color)),
+                DepthAttachment(depthStencil, storeAction = StoreAction.STORE, clearStencil = 37), subpassLayout = layout)) {
+                nextSubpass(); setRenderPipelineState(pipeline); setTexture(stencil, 0); drawPrimitives(3)
+            }
+            blit { copy(color, output) }
+        }
+        assertArrayEquals(ByteArray(16) { when (it % 4) { 0 -> 37; 3 -> 255.toByte(); else -> 0 } }, output.readBytes(16))
+        d.submit { blit { copy(stencil, output) } }
+        assertArrayEquals(ByteArray(4) { 37 }, output.readBytes(4))
+        d.submit { render(RenderPassDescriptor(listOf(ColorAttachment(color)),
+            DepthAttachment(depthStencil, storeAction = StoreAction.DONT_CARE))) {} }
+        for (aspect in listOf(TextureAspect.DEPTH, TextureAspect.STENCIL))
+            assertThrows(IllegalArgumentException::class.java) { d.submit { blit {
+                copy(depthStencil, output, TextureRegion(size = Size(2, 2), aspect = aspect))
+            } } }
+    }
+
+    @Test fun instanceStepRatesRepeatAttributesForDirectIndexedAndIndirectDraws(): Unit {
+        val available = device().use { it.capabilities.availableFeatures }
+        assumeTrue(Feature.VERTEX_ATTRIBUTE_DIVISOR in available)
+        val features = if (Feature.VERTEX_ATTRIBUTE_ZERO_DIVISOR in available)
+            setOf(Feature.VERTEX_ATTRIBUTE_ZERO_DIVISOR) else setOf(Feature.VERTEX_ATTRIBUTE_DIVISOR)
+        device(features).use { d ->
+            assertTrue(Feature.VERTEX_ATTRIBUTE_DIVISOR in d.capabilities.enabledFeatures)
+            val caps = d.vertexInputCapabilities()
+            assertTrue(caps.maxStepRate >= 2)
+            val texture = d.makeTexture(TextureDescriptor(4, 1,
+                usage = setOf(TextureUsage.COLOR_ATTACHMENT, TextureUsage.TRANSFER_SOURCE)))
+            val colors = d.makeBuffer(64, usage = setOf(BufferUsage.VERTEX))
+            colors.write(floats(1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 0f, 0f, 1f, 1f, 1f, 1f, 1f, 1f))
+            val indices = d.makeBuffer(12, usage = setOf(BufferUsage.INDEX))
+            indices.write(ByteBuffer.allocateDirect(12).order(ByteOrder.nativeOrder()).apply {
+                repeat(6) { putShort(it.toShort()) }; flip()
+            })
+            val indirect = d.makeBuffer(16, usage = setOf(BufferUsage.INDIRECT))
+            indirect.write(ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder()).apply {
+                putInt(6); putInt(4); putInt(0); putInt(0); flip()
+            })
+            val result = d.makeBuffer(16)
+            fun pipeline(rate: Int) = d.makeRenderPipelineState(RenderPipelineDescriptor(
+                d.function("instance-divisor.vert.spv"), d.function("instance-divisor.frag.spv"),
+                vertexBuffers = listOf(VertexBufferLayout(0, 16, VertexStepFunction.PER_INSTANCE, rate)),
+                vertexAttributes = listOf(VertexAttribute(0, 0, PixelFormat.RGBA32_FLOAT))))
+            val rates = listOf(1, 2) + if (caps.supportsZeroStepRate) listOf(0) else emptyList()
+            for (rate in rates) pipeline(rate).use { pipeline ->
+                for (mode in 0..2) {
+                    d.submit {
+                        render(RenderPassDescriptor(ColorAttachment(texture))) {
+                            setRenderPipelineState(pipeline); setVertexBuffer(colors, 0)
+                            when (mode) {
+                                0 -> drawPrimitives(6, instanceCount = 4)
+                                1 -> drawIndexedPrimitives(indices, 6, instanceCount = 4)
+                                else -> drawPrimitives(indirect)
+                            }
+                        }
+                        blit { copy(texture, result) }
+                    }
+                    val bytes = result.readBytes(16)
+                    repeat(4) { i ->
+                        val element = if (rate == 0) 0 else i / rate
+                        repeat(3) { channel -> assertEquals(if (element == channel || element == 3) 255 else 0,
+                            bytes[i * 4 + channel].toInt() and 255) }
+                        assertEquals(255, bytes[i * 4 + 3].toInt() and 255)
+                    }
+                }
+                if (rate != 1 && caps.supportsNonZeroFirstInstance) {
+                    d.submit {
+                        render(RenderPassDescriptor(ColorAttachment(texture))) {
+                            setRenderPipelineState(pipeline); setVertexBuffer(colors, 0)
+                            drawPrimitives(6, instanceCount = 2, firstInstance = 2)
+                        }
+                        blit { copy(texture, result) }
+                    }
+                    val bytes = result.readBytes(16)
+                    for (i in 2..3) {
+                        assertEquals(255, bytes[i * 4 + 2].toInt() and 255)
+                        assertEquals(0, bytes[i * 4].toInt() and 255)
+                    }
+                }
+            }
+            if (caps.maxStepRate < Int.MAX_VALUE) assertThrows(IllegalArgumentException::class.java) {
+                pipeline(caps.maxStepRate.toInt() + 1)
+            }
+        }
+    }
+
+    @Test fun customInstanceStepRatesRequireEnabledFeatures(): Unit = device().use { d ->
+        for (rate in listOf(0, 2)) assertThrows(IllegalArgumentException::class.java) {
+            d.makeRenderPipelineState(RenderPipelineDescriptor(
+                d.function("instance-divisor.vert.spv"), d.function("instance-divisor.frag.spv"),
+                vertexBuffers = listOf(VertexBufferLayout(0, 16, VertexStepFunction.PER_INSTANCE, rate)),
+                vertexAttributes = listOf(VertexAttribute(0, 0, PixelFormat.RGBA32_FLOAT))))
+        }
+        assertThrows(IllegalArgumentException::class.java) { VertexBufferLayout(0, 16, stepRate = 2) }
+    }
+
+    @Test fun textureFormatQueriesMatchAllocationsAndReportCombinationLimits(): Unit = device().use { d ->
+        for (format in listOf(PixelFormat.RGBA8_UNORM, PixelFormat.DEPTH32_FLOAT, PixelFormat.STENCIL8)) {
+            val depth = format.isDepth || format.isStencil
+            val usage = setOf(if (depth) TextureUsage.DEPTH_ATTACHMENT else TextureUsage.COLOR_ATTACHMENT)
+            for (storage in listOf(StorageMode.PRIVATE, StorageMode.MEMORYLESS)) {
+                val caps = d.textureFormatCapabilities(format, usage, storageMode = storage) ?: continue
+                assertTrue(caps.maxSize.width >= 4 && caps.maxMipLevels > 0 && caps.maxResourceBytes > 0)
+                assertTrue((if (depth) TextureFormatFeature.DEPTH_STENCIL_ATTACHMENT else TextureFormatFeature.COLOR_ATTACHMENT) in caps.features)
+                for (samples in caps.sampleCounts) {
+                    val descriptor = TextureDescriptor(4, 4, format, usage, storage, sampleCount = samples)
+                    assertTrue(d.supportsTexture(descriptor)); d.makeTexture(descriptor).close()
+                }
+                assertFalse(d.supportsTexture(TextureDescriptor(caps.maxSize.width + 1, 1, format, usage, storage)))
+            }
+        }
+        val color = checkNotNull(d.textureFormatCapabilities(PixelFormat.RGBA8_UNORM))
+        assertTrue(TextureFormatFeature.LINEAR_FILTER in color.features)
+        assertFalse(d.supportsTexture(TextureDescriptor(4, 2, textureType = TextureType.TYPE_1D)))
+        assertFalse(d.supportsTexture(TextureDescriptor(4, 4, arrayLength = 2)))
+        assertFalse(d.supportsTexture(TextureDescriptor(4, 2, arrayLength = 6, textureType = TextureType.CUBE)))
+        assertNull(d.textureFormatCapabilities(PixelFormat.RGBA8_UNORM, setOf(TextureUsage.SHADING_RATE_ATTACHMENT)))
+        val bc = d.textureFormatCapabilities(PixelFormat.BC1_RGBA_UNORM)
+        if (Feature.TEXTURE_COMPRESSION_BC in d.capabilities.availableFeatures && bc != null)
+            assertTrue(Feature.TEXTURE_COMPRESSION_BC in bc.requiredFeatures)
+        else assertNull(bc)
+    }
+
+    @Test fun functionConstantsPreserveSmallScalarWidths(): Unit {
+        val features = setOf(Feature.SHADER_INT8, Feature.SHADER_INT16, Feature.SHADER_FLOAT16)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val constants = FunctionConstants().setByte(0, -101).setUByte(1, 231u)
+                .setShort(2, -30001).setUShort(3, 65530u).setHalf(4, 1.5f).setBoolean(5, false)
+            val function = d.function("specialization-small.comp.spv", constants)
+            constants.setByte(0, 0) // ShaderFunction owns the snapshot used to create its pipeline.
+            val pipeline = d.makeComputePipelineState(function)
+            val result = d.makeBuffer(24)
+            d.submit { compute {
+                setComputePipelineState(pipeline); setBuffer(result, 0); dispatchThreads(Size(1))
+            } }
+            val bytes = ByteBuffer.wrap(result.readBytes(24)).order(ByteOrder.nativeOrder())
+            assertEquals(-101, bytes.int); assertEquals(231, bytes.int)
+            assertEquals(-30001, bytes.int); assertEquals(65530, bytes.int)
+            assertEquals(1.5f, bytes.float, 0f); assertEquals(77, bytes.int)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeComputePipelineState(d.function("specialization-small.comp.spv", FunctionConstants().setFloat(4, 1.5f)))
+            }
+        }
+    }
+
+    @Test fun functionConstantsPreserveWideIntegersAndDouble(): Unit {
+        val features = setOf(Feature.SHADER_INT64, Feature.SHADER_FLOAT64)
+        assumeTrue(device().use { it.capabilities.availableFeatures.containsAll(features) })
+        device(features).use { d ->
+            val constants = FunctionConstants().setBoolean(0, true).setLong(1, -4294967301L)
+                .setULong(2, 0xfedcba9876543210uL).setDouble(3, 1.23456789012345)
+            val pipeline = d.makeComputePipelineState(d.function("specialization-wide.comp.spv", constants))
+            val result = d.makeBuffer(28)
+            d.submit { compute {
+                setComputePipelineState(pipeline); setBuffer(result, 0); dispatchThreads(Size(1))
+            } }
+            val bytes = ByteBuffer.wrap(result.readBytes(28)).order(ByteOrder.nativeOrder())
+            assertEquals(1, bytes.int)
+            assertEquals(-4294967294L, bytes.long)
+            assertEquals(0xfedcba9876543213uL.toLong(), bytes.long)
+            assertEquals(1.23456789012345 + 0.5, bytes.double, 0.0)
+            assertThrows(IllegalArgumentException::class.java) {
+                d.makeComputePipelineState(d.function("specialization-wide.comp.spv", FunctionConstants().setInt(1, 1)))
+            }
+        }
+    }
+
+    @Test fun functionConstantsRejectWrongWidthAndUnknownId(): Unit = device().use { d ->
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("specialized.comp.spv", FunctionConstants().setLong(0, 7)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("specialized.comp.spv", FunctionConstants().setInt(99, 7)))
+        }
+    }
+
     @Test
     fun machineLearningEncoderRequiresEnabledGraphQueue(): Unit = device().use { d ->
         d.makeCommandQueue().use { q -> q.makeCommandBuffer().use { c ->

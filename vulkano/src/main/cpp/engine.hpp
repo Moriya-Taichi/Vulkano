@@ -115,7 +115,9 @@ enum ExtraFeature : uint64_t {
     Synchronization2 = 512,
     TensorResources = 1024,
     DataGraph = 2048,
-    RayMotionBlur = 4096
+    RayMotionBlur = 4096,
+    VertexDivisor = 8192,
+    VertexZeroDivisor = 16384
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -221,13 +223,15 @@ struct FrameState {
 };
 struct ImageState {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    bool initialized = false;
+    VkImageAspectFlags initialized = 0;
 };
 struct TextureOptions {
     uint32_t depth = 1, mipLevels = 1, layers = 1;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageViewType type = VK_IMAGE_VIEW_TYPE_2D;
 };
+VkImageType textureImageType(VkImageViewType);
+VkImageCreateFlags textureImageFlags(VkImageViewType);
 struct Texture : Resource {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -242,6 +246,7 @@ struct Texture : Resource {
     uint32_t baseMip = 0, baseLayer = 0;
     std::shared_ptr<Texture> parent;
     VkComponentMapping components{};
+    VkImageAspectFlags viewAspect = 0;
     std::vector<ImageState> states;
     std::map<std::tuple<uint32_t, uint32_t, uint32_t>, VkImageView> attachmentViews;
     VkImageUsageFlags usage;
@@ -259,12 +264,17 @@ struct Texture : Resource {
     bool depth() const;
     bool stencil() const;
     VkImageAspectFlags aspects() const;
+    VkImageAspectFlags viewAspects() const;
+    VkImageAspectFlags transferAspects(VkImageAspectFlags requested = 0) const;
+    uint32_t transferPixelSize(VkImageAspectFlags) const;
+    int viewNumericClass() const;
     VkExtent3D extent(uint32_t mip = 0) const;
     VkImageType imageType() const;
     VkImageCreateFlags flags() const;
     Texture &root() { return parent ? parent->root() : *this; }
     Texture(std::shared_ptr<Texture>, VkFormat, VkImageViewType, uint32_t mip, uint32_t mipCount, uint32_t layer,
-            uint32_t layerCount, VkImageUsageFlags viewUsage = 0, VkComponentMapping swizzle = {});
+            uint32_t layerCount, VkImageUsageFlags viewUsage = 0, VkComponentMapping swizzle = {},
+            VkImageAspectFlags aspect = 0);
     VkImageView attachmentView(uint32_t mip, uint32_t layer, uint32_t layers = 1);
     uint32_t blockWidth() const;
     uint32_t blockHeight() const;
@@ -311,10 +321,26 @@ struct BindingLayout {
         return uint64_t(count) * (immutableSampler ? immutableSampler->descriptorCost : 1);
     }
 };
+struct FunctionConstant {
+    uint64_t bits = 0;
+    uint32_t bytes = 4;
+    FunctionConstant(uint64_t value = 0, uint32_t width = 4) : bits(value), bytes(width) {}
+    uint32_t uint32() const {
+        require(bytes <= 4 && bits <= UINT32_MAX, "Specialized dimension must fit a 32-bit scalar");
+        return static_cast<uint32_t>(bits);
+    }
+};
 struct Shader {
     std::vector<uint32_t> code;
     std::string entry = "main";
-    std::map<uint32_t, uint32_t> constants;
+    std::map<uint32_t, FunctionConstant> constants;
+};
+struct SpecializationData {
+    std::vector<VkSpecializationMapEntry> entries;
+    std::vector<uint8_t> data;
+    SpecializationData() = default;
+    explicit SpecializationData(const Shader &);
+    VkSpecializationInfo info() const { return {uint32_t(entries.size()), entries.data(), data.size(), data.data()}; }
 };
 void validateCooperativeShader(Device &, const Shader &, const std::array<uint32_t, 3> &);
 struct SubpassDescription {
@@ -350,6 +376,7 @@ struct GraphicsOptions {
     bool depthWrite = true, depthTest = true, depthClamp = false, alphaToCoverage = false;
     VkCompareOp depthCompare = VK_COMPARE_OP_LESS;
     std::vector<VkVertexInputBindingDescription> vertexBindings;
+    std::vector<VkVertexInputBindingDivisorDescriptionKHR> vertexDivisors;
     std::vector<VkVertexInputAttributeDescription> attributes;
     std::vector<VkFormat> colors;
     std::vector<VkPipelineColorBlendAttachmentState> blends;
@@ -479,6 +506,7 @@ struct ImageRegion {
     uint32_t mip = 0, layer = 0, layers = 1;
     VkOffset3D origin{};
     VkExtent3D size{};
+    VkImageAspectFlags aspect = 0;
 };
 struct Command : Resource, std::enable_shared_from_this<Command> {
     enum class State { Recording, Submitted, Completed, Failed };
@@ -553,11 +581,12 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     bool wait(uint64_t timeout = UINT64_MAX);
     void barrier();
     void alias(std::shared_ptr<Resource>, std::shared_ptr<Resource>);
-    void transition(Texture &, VkImageLayout, bool read);
-    void transition(Texture &, VkImageLayout, bool read, uint32_t mip, uint32_t layer, uint32_t levels,
-                    uint32_t layers);
+    void transition(Texture &, VkImageLayout, bool read, VkImageAspectFlags readAspects = 0);
+    void transition(Texture &, VkImageLayout, bool read, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers,
+                    VkImageAspectFlags readAspects = 0);
     void markInitialized(Texture &, bool);
-    void markInitialized(Texture &, bool, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers);
+    void markInitialized(Texture &, bool, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers,
+                         VkImageAspectFlags aspects = 0);
     void validateBindings(const Pipeline &, const std::vector<Binding> &, const std::vector<uint8_t> &);
     void bind(const Pipeline &, const std::vector<Binding> &, const std::vector<uint8_t> &);
     void prepare(const Pipeline &, const std::vector<Binding> &, bool compute);

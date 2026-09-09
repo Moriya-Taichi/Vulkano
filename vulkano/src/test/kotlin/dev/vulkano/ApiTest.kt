@@ -4,6 +4,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
+    @Test fun halfConstantsRoundTiesAndPreserveSpecialValues() {
+        fun bits(value: Float) = FunctionConstants().setHalf(0, value).pack()[2]
+        assertEquals(0x3c00, bits(1.00048828125f))
+        assertEquals(0x3c02, bits(1.00146484375f))
+        assertEquals(1, bits(Math.scalb(1f, -24)))
+        assertEquals(0, bits(Math.scalb(1f, -25)))
+        assertEquals(2, bits(Math.scalb(3f, -25)))
+        assertEquals(0x8000, bits(-0f))
+        assertEquals(0x7bff, bits(65504f))
+        assertEquals(0x7c00, bits(65520f))
+        assertEquals(0xfc00, bits(Float.NEGATIVE_INFINITY))
+        assertTrue(bits(Float.NaN) and 0x7c00 == 0x7c00)
+        assertTrue(bits(Float.NaN) and 0x3ff != 0)
+        assertEquals(0x7e15, FunctionConstants().setHalfBits(0, 0x7e15).pack()[2])
+        val constants = FunctionConstants().setUInt(0, UInt.MAX_VALUE).setULong(1, ULong.MAX_VALUE)
+        val first = constants.pack()
+        constants.setInt(0, 0)
+        assertArrayEquals(intArrayOf(0, 4, -1, 0, 1, 8, -1, -1), first)
+    }
     @Test fun subpassResolveInputsMustFollowTheirProducer() {
         val layout = RenderPassLayout(listOf(PixelFormat.RGBA8_UNORM), listOf(
             RenderSubpass(listOf(0), usesDepthAttachment = true, resolveDepthStencil = true),

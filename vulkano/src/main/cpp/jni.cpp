@@ -190,22 +190,26 @@ TextureOptions textureOptions(JNIEnv *e, jintArray a) {
 }
 void specialize(JNIEnv *e, Shader &s, jintArray a) {
     auto v = ints(e, a);
-    require(v.size() % 2 == 0, "Invalid function constants");
-    for (size_t i = 0; i < v.size(); i += 2) {
-        require(v[i] >= 0, "Negative constant id");
-        s.constants[v[i]] = v[i + 1];
+    require(v.size() % 4 == 0, "Invalid function constants");
+    for (size_t i = 0; i < v.size(); i += 4) {
+        require(v[i] >= 0 && (v[i + 1] == 1 || v[i + 1] == 2 || v[i + 1] == 4 || v[i + 1] == 8),
+                "Invalid function constant ID or size");
+        const uint64_t bits = uint32_t(v[i + 2]) | (uint64_t(uint32_t(v[i + 3])) << 32);
+        require(s.constants.emplace(uint32_t(v[i]), FunctionConstant(bits, uint32_t(v[i + 1]))).second,
+                "Duplicate function constant ID");
     }
 }
 ImageRegion imageRegion(JNIEnv *e, jintArray a) {
     auto v = ints(e, a);
-    require(v.size() == 9, "Invalid image region");
+    require(v.size() == 10, "Invalid image region");
     for (auto n : v)
         require(n >= 0, "Negative image region");
     return {uint32_t(v[0]),
             uint32_t(v[1]),
             uint32_t(v[2]),
             {v[3], v[4], v[5]},
-            {uint32_t(v[6]), uint32_t(v[7]), uint32_t(v[8])}};
+            {uint32_t(v[6]), uint32_t(v[7]), uint32_t(v[8])},
+            uint32_t(v[9])};
 }
 struct PendingRender : Resource {
     std::shared_ptr<Command> command;
@@ -329,28 +333,28 @@ JNI_METHOD(jlong, createTexture)
 JNI_METHOD(jboolean, textureIsLazy)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] { return get<Texture>(id)->lazy; });
 }
-JNI_METHOD(jboolean, supportsTexture)
-(JNIEnv *e, jobject, jlong id, jint w, jint h, jint format, jint usage, jintArray options) {
+JNI_METHOD(jlongArray, textureFormatCapabilities)
+(JNIEnv *e, jobject, jlong id, jint format, jint type, jint usage) {
     return guard(e, [&] {
-        auto o = textureOptions(e, options);
+        require(type >= 0 && type <= 6 && format != VK_FORMAT_UNDEFINED && usage > 0 &&
+                    !(usage & ~(255u | VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)),
+                "Invalid texture format query");
         auto d = get<Device>(id);
+        if ((usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR) && !(d->available & AttachmentRate))
+            return longs(e, {});
         VkImageFormatProperties p{};
-        const auto type = o.type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D
-                          : (o.type == VK_IMAGE_VIEW_TYPE_1D || o.type == VK_IMAGE_VIEW_TYPE_1D_ARRAY)
-                              ? VK_IMAGE_TYPE_1D
-                              : VK_IMAGE_TYPE_2D;
-        const VkImageCreateFlags flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
-                                         ((o.type == VK_IMAGE_VIEW_TYPE_CUBE || o.type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
-                                              ? uint32_t(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-                                              : 0u);
-        auto r = vkGetPhysicalDeviceImageFormatProperties(d->physical, static_cast<VkFormat>(format), type,
-                                                          VK_IMAGE_TILING_OPTIMAL, usage, flags, &p);
+        auto viewType = VkImageViewType(type);
+        auto r =
+            vkGetPhysicalDeviceImageFormatProperties(d->physical, VkFormat(format), textureImageType(viewType),
+                                                     VK_IMAGE_TILING_OPTIMAL, usage, textureImageFlags(viewType), &p);
         if (r == VK_ERROR_FORMAT_NOT_SUPPORTED)
-            return false;
-        check(r, "query texture support");
-        return w > 0 && h > 0 && static_cast<uint32_t>(w) <= p.maxExtent.width &&
-               static_cast<uint32_t>(h) <= p.maxExtent.height && o.depth <= p.maxExtent.depth &&
-               o.mipLevels <= p.maxMipLevels && o.layers <= p.maxArrayLayers && (p.sampleCounts & o.samples);
+            return longs(e, {});
+        check(r, "query texture format capabilities");
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(d->physical, VkFormat(format), &fp);
+        return longs(e, {jlong(p.maxExtent.width), jlong(p.maxExtent.height), jlong(p.maxExtent.depth),
+                         jlong(p.maxMipLevels), jlong(p.maxArrayLayers), jlong(p.sampleCounts),
+                         jlong(std::min(p.maxResourceSize, VkDeviceSize(INT64_MAX))), jlong(fp.optimalTilingFeatures)});
     });
 }
 JNI_METHOD(jlong, createSampler)
@@ -410,7 +414,8 @@ JNI_METHOD(jintArray, queueInfo)(JNIEnv *e, jobject, jlong id) {
             if (!(d->enabledExtra & DataGraph) || !d->extensions->graphQueues.count(q.family))
                 flags &= ~VK_QUEUE_DATA_GRAPH_BIT_ARM;
             const auto timestampBits = flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)
-                ? p.timestampValidBits : 0;
+                                           ? p.timestampValidBits
+                                           : 0;
             values.insert(values.end(),
                           {jint(q.family), jint(q.index), jint(flags), jint(timestampBits),
                            jint(p.minImageTransferGranularity.width), jint(p.minImageTransferGranularity.height),

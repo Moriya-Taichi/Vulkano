@@ -36,7 +36,7 @@ void validateCooperativeShader(Device &d, const Shader &shader, const std::array
             if (spec != specIds.end()) {
                 auto supplied = shader.constants.find(spec->second);
                 if (supplied != shader.constants.end())
-                    value = supplied->second;
+                    value = supplied->second.uint32();
             }
             constants[code[at + 2]] = value;
         }

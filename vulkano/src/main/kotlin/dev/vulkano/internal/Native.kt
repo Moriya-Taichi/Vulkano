@@ -93,14 +93,14 @@ internal object Native {
 
     external fun textureIsLazy(texture: Long): Boolean
 
-    external fun supportsTexture(
+    external fun vertexInputCapabilities(device: Long): LongArray
+
+    external fun textureFormatCapabilities(
         device: Long,
-        width: Int,
-        height: Int,
         format: Int,
+        type: Int,
         usage: Int,
-        options: IntArray,
-    ): Boolean
+    ): LongArray
 
     external fun createSampler(
         device: Long,
@@ -179,6 +179,7 @@ internal object Native {
         slices: Int,
         usage: Int,
         swizzle: IntArray,
+        aspect: Int,
     ): Long
 
     external fun beginRenderAdvanced(

@@ -129,15 +129,41 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
         )
     }
 
+    /**
+     * Physical support for this descriptor. Required Features must also be enabled before
+     * allocation.
+     */
     fun supportsTexture(descriptor: TextureDescriptor): Boolean = access {
-        Native.supportsTexture(
-            nativeHandle,
-            descriptor.width,
-            descriptor.height,
-            descriptor.pixelFormat.vk,
-            descriptor.usageBits,
-            descriptor.options(),
-        )
+        val p =
+            textureFormatCapabilities(
+                descriptor.pixelFormat,
+                descriptor.usage,
+                descriptor.textureType,
+                descriptor.storageMode,
+            ) ?: return@access false
+        val o = descriptor
+        val type = o.textureType
+        val cube = type == TextureType.CUBE || type == TextureType.CUBE_ARRAY
+        val oneD = type == TextureType.TYPE_1D || type == TextureType.TYPE_1D_ARRAY
+        val threeD = type == TextureType.TYPE_3D
+        val array = type == TextureType.TYPE_1D_ARRAY || type == TextureType.TYPE_2D_ARRAY || cube
+        o.width <= p.maxSize.width &&
+            o.height <= p.maxSize.height &&
+            o.depth <= p.maxSize.depth &&
+            o.mipLevels <= p.maxMipLevels &&
+            o.arrayLength <= p.maxArrayLength &&
+            o.sampleCount in p.sampleCounts &&
+            capabilities.availableFeatures.containsAll(p.requiredFeatures) &&
+            (!oneD || o.height == 1 && o.depth == 1) &&
+            (if (threeD) o.arrayLength == 1 else o.depth == 1) &&
+            (array || o.arrayLength == 1) &&
+            (!cube || o.width == o.height && o.arrayLength % 6 == 0 && o.sampleCount == 1) &&
+            (type != TextureType.CUBE || o.arrayLength == 6) &&
+            (o.sampleCount == 1 || !oneD && !threeD && o.mipLevels == 1) &&
+            (o.sampleCount == 1 ||
+                TextureUsage.STORAGE !in o.usage ||
+                Feature.STORAGE_IMAGE_MULTISAMPLE in capabilities.availableFeatures) &&
+            (!o.pixelFormat.isPvrtc1 || o.width.countOneBits() == 1 && o.height.countOneBits() == 1)
     }
 
     fun makeSampler(descriptor: SamplerDescriptor = SamplerDescriptor()): Sampler = access {
@@ -362,6 +388,11 @@ internal constructor(
     id: Long,
     val descriptor: TextureDescriptor,
     val isLazilyAllocated: Boolean = false,
+    /**
+     * Selected aspect for shader access and default transfers; attachment operations use the full
+     * format.
+     */
+    val aspect: TextureAspect? = null,
 ) : Resource(device, id) {
     val width
         get() = descriptor.width
@@ -390,6 +421,7 @@ internal constructor(
         sliceCount: Int = descriptor.arrayLength - slice,
         usage: Set<TextureUsage> = descriptor.usage,
         swizzle: TextureSwizzle = TextureSwizzle(),
+        aspect: TextureAspect? = this.aspect,
     ): Texture = access {
         val size = sizeAtLevel(level)
         val view =
@@ -415,9 +447,11 @@ internal constructor(
                 sliceCount,
                 usage.fold(0) { bits, use -> bits or use.bit },
                 swizzle.pack(),
+                aspect?.bit ?: 0,
             ),
             view,
             isLazilyAllocated,
+            aspect,
         )
     }
 }

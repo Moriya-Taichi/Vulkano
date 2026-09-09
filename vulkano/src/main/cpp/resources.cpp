@@ -27,7 +27,7 @@ VkImageView imageView(Texture &t, VkFormat format, VkImageViewType type, uint32_
         conversion.conversion = t.external->conversionSampler->conversion;
         u.pNext = &conversion;
     }
-    i.subresourceRange = {t.depth() ? uint32_t(VK_IMAGE_ASPECT_DEPTH_BIT) : t.aspects(), mip, levels, layer, layers};
+    i.subresourceRange = {t.viewAspects(), mip, levels, layer, layers};
     VkImageView v;
     check(vkCreateImageView(t.d->device, &i, nullptr, &v), "vkCreateImageView");
     return v;
@@ -113,14 +113,42 @@ VkImageAspectFlags Texture::aspects() const {
            (stencil() ? uint32_t(VK_IMAGE_ASPECT_STENCIL_BIT) : 0u) |
            (!depth() && !stencil() ? uint32_t(VK_IMAGE_ASPECT_COLOR_BIT) : 0u);
 }
+VkImageAspectFlags Texture::viewAspects() const {
+    return viewAspect ? viewAspect : depth() ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT) : aspects();
+}
+VkImageAspectFlags Texture::transferAspects(VkImageAspectFlags requested) const {
+    require(!requested || requested == VK_IMAGE_ASPECT_COLOR_BIT || requested == VK_IMAGE_ASPECT_DEPTH_BIT ||
+                requested == VK_IMAGE_ASPECT_STENCIL_BIT,
+            "Select one texture aspect");
+    auto selected = requested ? requested : viewAspect ? viewAspect : aspects();
+    require((selected & aspects()) == selected, "Texture format does not contain the selected aspect");
+    return selected;
+}
+uint32_t Texture::transferPixelSize(VkImageAspectFlags aspect) const {
+    if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT)
+        return 1;
+    if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT)
+        return format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
+    return pixelSize();
+}
+int Texture::viewNumericClass() const {
+    return viewAspects() == VK_IMAGE_ASPECT_STENCIL_BIT ? 2 : numericClass(format);
+}
 VkExtent3D Texture::extent(uint32_t mip) const {
     require(mip < options.mipLevels, "Mip level out of range");
     return {std::max(1u, width >> mip), std::max(1u, height >> mip), std::max(1u, options.depth >> mip)};
 }
-VkImageType Texture::imageType() const {
-    if (options.type == VK_IMAGE_VIEW_TYPE_1D || options.type == VK_IMAGE_VIEW_TYPE_1D_ARRAY)
+VkImageType textureImageType(VkImageViewType type) {
+    if (type == VK_IMAGE_VIEW_TYPE_1D || type == VK_IMAGE_VIEW_TYPE_1D_ARRAY)
         return VK_IMAGE_TYPE_1D;
-    return options.type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    return type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+}
+VkImageType Texture::imageType() const { return textureImageType(options.type); }
+VkImageCreateFlags textureImageFlags(VkImageViewType type) {
+    return VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
+           ((type == VK_IMAGE_VIEW_TYPE_CUBE || type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
+                ? uint32_t(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
+                : 0u);
 }
 VkFormatFeatureFlags Texture::formatFeatures() const {
     if (external && format == VK_FORMAT_UNDEFINED)
@@ -135,10 +163,7 @@ VkImageCreateFlags Texture::flags() const {
     return (sparse ? (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
                       (d->coreFeatures.sparseResidencyAliased ? uint32_t(VK_IMAGE_CREATE_SPARSE_ALIASED_BIT) : 0u))
                    : 0u) |
-           VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
-           ((options.type == VK_IMAGE_VIEW_TYPE_CUBE || options.type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)
-                ? uint32_t(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT)
-                : 0u);
+           textureImageFlags(options.type);
 }
 uint32_t Texture::pixelSize() const {
     if (format == VK_FORMAT_R8G8B8_UNORM)
@@ -340,7 +365,7 @@ Texture::Texture(std::shared_ptr<Device> device, uint32_t w, uint32_t h, VkForma
         if (sparse) {
             sparse->initialize(*this);
             for (auto &state : states)
-                state = {VK_IMAGE_LAYOUT_GENERAL, true}; // Unbound reads follow sparse residency rules.
+                state = {VK_IMAGE_LAYOUT_GENERAL, aspects()}; // Unbound reads follow sparse residency rules.
             layout = VK_IMAGE_LAYOUT_GENERAL;
             initialized = true;
         }
@@ -361,18 +386,21 @@ Texture::Texture(std::shared_ptr<Device> device, std::shared_ptr<ExternalImage> 
                  VkFormat f, VkImageUsageFlags use, TextureOptions o)
     : Resource(std::move(device)), image(imported->image), external(std::move(imported)), format(f), width(w),
       height(h), options(o), usage(use), storage(Storage::Private) {
-    states.resize(size_t(o.layers) * o.mipLevels, {VK_IMAGE_LAYOUT_GENERAL, true});
+    states.resize(size_t(o.layers) * o.mipLevels, {VK_IMAGE_LAYOUT_GENERAL, aspects()});
     layout = VK_IMAGE_LAYOUT_GENERAL;
     initialized = true;
     if (usage & viewUsages)
         view = imageView(*this, f, o.type, 0, o.mipLevels, 0, o.layers);
 }
 Texture::Texture(std::shared_ptr<Texture> p, VkFormat f, VkImageViewType type, uint32_t mip, uint32_t levels,
-                 uint32_t layer, uint32_t layers, VkImageUsageFlags viewUsage, VkComponentMapping swizzle)
+                 uint32_t layer, uint32_t layers, VkImageUsageFlags viewUsage, VkComponentMapping swizzle,
+                 VkImageAspectFlags aspect)
     : Resource(p->d), image(p->image), external(p->external), format(f), width(p->extent(mip).width),
       height(p->extent(mip).height), options(p->options), baseMip(p->baseMip + mip), baseLayer(p->baseLayer + layer),
       parent(p), usage(p->usage), storage(p->storage) {
     p->usable();
+    viewAspect = aspect ? aspect : p->viewAspect;
+    transferAspects(viewAspect);
     require(!p->borrowed, "Drawable views are not exposed");
     require(levels && mip < p->options.mipLevels && levels <= p->options.mipLevels - mip && layers &&
                 layer < p->options.layers && layers <= p->options.layers - layer,
@@ -515,11 +543,11 @@ Sampler::~Sampler() {
         vkDestroySamplerYcbcrConversion(d->device, conversion, nullptr);
 }
 
-void Command::transition(Texture &t, VkImageLayout layout, bool read) {
-    transition(t, layout, read, 0, 0, t.options.mipLevels, t.options.layers);
+void Command::transition(Texture &t, VkImageLayout layout, bool read, VkImageAspectFlags readAspects) {
+    transition(t, layout, read, 0, 0, t.options.mipLevels, t.options.layers, readAspects);
 }
 void Command::transition(Texture &t, VkImageLayout layout, bool read, uint32_t mip, uint32_t layer, uint32_t levels,
-                         uint32_t layers) {
+                         uint32_t layers, VkImageAspectFlags readAspects) {
     t.usable();
     requireOwnership(t);
     require(!t.borrowed || (presentation && presentation->texture.get() == &t),
@@ -528,12 +556,16 @@ void Command::transition(Texture &t, VkImageLayout layout, bool read, uint32_t m
                 layer < t.options.layers && layers <= t.options.layers - layer,
             "Invalid subresource range");
     auto &root = t.root();
+    if (!readAspects)
+        readAspects = t.aspects();
+    require((readAspects & t.aspects()) == readAspects, "Invalid texture read aspects");
     auto [it, added] = images.emplace(&root, root.states);
     (void)added;
     for (uint32_t a = layer; a < layer + layers; ++a)
         for (uint32_t m = mip; m < mip + levels; ++m) {
             auto &state = it->second[(a + t.baseLayer) * root.options.mipLevels + m + t.baseMip];
-            require(!read || state.initialized, "Cannot read uninitialized/discarded texture subresource");
+            require(!read || (state.initialized & readAspects) == readAspects,
+                    "Cannot read uninitialized/discarded texture aspect or subresource");
             if (state.layout == layout)
                 continue;
             VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -554,12 +586,20 @@ void Command::transition(Texture &t, VkImageLayout layout, bool read, uint32_t m
 void Command::markInitialized(Texture &t, bool value) {
     markInitialized(t, value, 0, 0, t.options.mipLevels, t.options.layers);
 }
-void Command::markInitialized(Texture &t, bool value, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers) {
+void Command::markInitialized(Texture &t, bool value, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers,
+                              VkImageAspectFlags aspects) {
+    if (!aspects)
+        aspects = t.aspects();
     auto &root = t.root();
     auto &states = images.at(&root);
     for (uint32_t a = layer; a < layer + layers; ++a)
-        for (uint32_t m = mip; m < mip + levels; ++m)
-            states[(a + t.baseLayer) * root.options.mipLevels + m + t.baseMip].initialized = value;
+        for (uint32_t m = mip; m < mip + levels; ++m) {
+            auto &initialized = states[(a + t.baseLayer) * root.options.mipLevels + m + t.baseMip].initialized;
+            if (value)
+                initialized |= aspects;
+            else
+                initialized &= ~aspects;
+        }
 }
 void Command::fill(std::shared_ptr<Buffer> b, VkDeviceSize offset, VkDeviceSize size, uint32_t value) {
     recording();
@@ -577,6 +617,7 @@ void Command::fill(std::shared_ptr<Buffer> b, VkDeviceSize offset, VkDeviceSize 
 }
 namespace {
 void validRegion(Texture &t, ImageRegion &r) {
+    r.aspect = t.transferAspects(r.aspect);
     const auto e = t.extent(r.mip);
     require(r.layers && r.layer < t.options.layers && r.layers <= t.options.layers - r.layer, "Layer out of range");
     if (!r.size.width && !r.size.height && !r.size.depth)
@@ -625,35 +666,36 @@ void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDevi
     validateTransfer(*t, r);
     if (t->depth() || t->stencil())
         requireQueue(VK_QUEUE_GRAPHICS_BIT);
-    require(t->options.samples == 1 && !(t->depth() && t->stencil()),
-            "Resolve multisampling first; packed depth/stencil copies require separate aspects");
+    require(t->options.samples == 1 && (r.aspect & (r.aspect - 1)) == 0,
+            "Resolve multisampling first; select Depth or Stencil for a packed depth/stencil buffer copy");
     require((b->usage & (toTexture ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : VK_BUFFER_USAGE_TRANSFER_DST_BIT)) &&
                 (t->usage & (toTexture ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : VK_IMAGE_USAGE_TRANSFER_SRC_BIT)),
             "Matching transfer usage required");
     require(!row || (row >= r.size.width && row % t->blockWidth() == 0), "Invalid row length");
     require(!height || (height >= r.size.height && height % t->blockHeight() == 0), "Invalid image height");
-    require(offset % 4 == 0 && offset % t->pixelSize() == 0, "Invalid copy alignment");
+    const auto pixelBytes = t->transferPixelSize(r.aspect);
+    require(offset % 4 == 0 && offset % pixelBytes == 0, "Invalid copy alignment");
     uint64_t bw = t->blockWidth(), bh = t->blockHeight(), rows = (r.size.height + bh - 1) / bh;
-    uint64_t rowBytes = ((row ? row : r.size.width) + bw - 1) / bw * t->pixelSize();
+    uint64_t rowBytes = ((row ? row : r.size.width) + bw - 1) / bw * pixelBytes;
     uint64_t sliceBytes = rowBytes * ((height ? height : r.size.height) + bh - 1) / bh;
     uint64_t bytes = (uint64_t(r.layers) * r.size.depth - 1) * sliceBytes + (rows - 1) * rowBytes +
-                     ((r.size.width + bw - 1) / bw) * t->pixelSize();
+                     ((r.size.width + bw - 1) / bw) * pixelBytes;
     bounds(b->size, offset, bytes);
     buffers.push_back(b);
     operations.push_back([b, t, offset, toTexture, r, row, height](Command &c) {
         c.barrier();
         const auto layout = toTexture ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        c.transition(*t, layout, !toTexture || !fullRegion(*t, r), r.mip, r.layer, 1, r.layers);
+        c.transition(*t, layout, !toTexture || !fullRegion(*t, r), r.mip, r.layer, 1, r.layers, r.aspect);
         VkBufferImageCopy region{};
         region.bufferOffset = offset;
         region.bufferRowLength = row;
         region.bufferImageHeight = height;
-        region.imageSubresource = {t->aspects(), t->baseMip + r.mip, t->baseLayer + r.layer, r.layers};
+        region.imageSubresource = {r.aspect, t->baseMip + r.mip, t->baseLayer + r.layer, r.layers};
         region.imageOffset = r.origin;
         region.imageExtent = r.size;
         if (toTexture) {
             vkCmdCopyBufferToImage(c.command, b->buffer, t->image, layout, 1, &region);
-            c.markInitialized(*t, true, r.mip, r.layer, 1, r.layers);
+            c.markInitialized(*t, true, r.mip, r.layer, 1, r.layers, r.aspect);
         } else
             vkCmdCopyImageToBuffer(c.command, t->image, layout, b->buffer, 1, &region);
     });
@@ -681,8 +723,8 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
         require(!aliases, "Texture copy regions overlap");
     }
     require(source->format == dest->format && source->options.samples == dest->options.samples &&
-                a.layers == b.layers && a.size.width == b.size.width && a.size.height == b.size.height &&
-                a.size.depth == b.size.depth,
+                a.aspect == b.aspect && a.layers == b.layers && a.size.width == b.size.width &&
+                a.size.height == b.size.height && a.size.depth == b.size.depth,
             "Texture copy format/extent mismatch");
     require((source->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && (dest->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT),
             "Texture transfer usage required");
@@ -690,15 +732,15 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
         c.barrier();
         const auto sourceLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         const auto destinationLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        c.transition(*source, sourceLayout, true, a.mip, a.layer, 1, a.layers);
-        c.transition(*dest, destinationLayout, !fullRegion(*dest, b), b.mip, b.layer, 1, b.layers);
-        VkImageCopy region{{source->aspects(), source->baseMip + a.mip, source->baseLayer + a.layer, a.layers},
+        c.transition(*source, sourceLayout, true, a.mip, a.layer, 1, a.layers, a.aspect);
+        c.transition(*dest, destinationLayout, !fullRegion(*dest, b), b.mip, b.layer, 1, b.layers, b.aspect);
+        VkImageCopy region{{a.aspect, source->baseMip + a.mip, source->baseLayer + a.layer, a.layers},
                            a.origin,
-                           {dest->aspects(), dest->baseMip + b.mip, dest->baseLayer + b.layer, b.layers},
+                           {b.aspect, dest->baseMip + b.mip, dest->baseLayer + b.layer, b.layers},
                            b.origin,
                            a.size};
         vkCmdCopyImage(c.command, source->image, sourceLayout, dest->image, destinationLayout, 1, &region);
-        c.markInitialized(*dest, true, b.mip, b.layer, 1, b.layers);
+        c.markInitialized(*dest, true, b.mip, b.layer, 1, b.layers, b.aspect);
     });
 }
 void Command::generateMipmaps(std::shared_ptr<Texture> t, VkFilter filter) {

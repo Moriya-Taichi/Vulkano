@@ -1,0 +1,8 @@
+#version 450
+layout(local_size_x=1, local_size_y=1) in;
+layout(set=0, binding=0) uniform usampler2D sourceStencil;
+layout(set=0, binding=1, std430) buffer Result { uint values[]; } result;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    result.values[p.y * 2 + p.x] = texelFetch(sourceStencil, p, 0).r;
+}

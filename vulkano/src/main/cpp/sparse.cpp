@@ -158,6 +158,7 @@ struct Tile {
     VkSparseImageMemoryBind bind;
 };
 static std::vector<Tile> regionTiles(Texture &t, ImageRegion r) {
+    require(!r.aspect || r.aspect == VK_IMAGE_ASPECT_COLOR_BIT, "Sparse residency supports color aspects");
     auto &s = *t.sparse;
     require(r.mip < s.tiles.imageMipTailFirstLod && r.mip < t.options.mipLevels && r.layers &&
                 r.layer < t.options.layers && r.layers <= t.options.layers - r.layer,
@@ -287,6 +288,7 @@ void SparseState::mapTail(Texture &t, uint32_t layer, bool resident) {
     pages.swap(next);
 }
 bool SparseState::isResident(Texture &t, ImageRegion region) {
+    require(!region.aspect || region.aspect == VK_IMAGE_ASPECT_COLOR_BIT, "Sparse residency supports color aspects");
     require(t.sparse.get() == this && !t.parent, "Query the original sparse texture");
     if (region.mip >= tiles.imageMipTailFirstLod) {
         require(region.mip < t.options.mipLevels && region.layers && region.layer < t.options.layers &&

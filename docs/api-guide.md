@@ -59,7 +59,11 @@ val device = Device.create(
 
 要求したFeatureが利用できなければ作成に失敗します。`capabilities.availableFeatures`と`enabledFeatures`は区別され、広告されているだけのFeatureをシェーダーで使うことはできません。Float16の演算と16-bit Storageは別のFeatureです。
 
-Subgroupの幅・Stage・演算を取得し、使用するシェーダーとの適合性を確認します。幅を32や64に固定しません。画像形式は`supportsTexture(descriptor)`で問い合わせられます。`memoryHeaps()`は`VK_EXT_memory_budget`に対応する端末でBudgetとUsageを取得し、非対応時の推定値には`estimated = true`を付けます。
+Subgroupの幅・Stage・演算を取得し、使用するシェーダーとの適合性を確認します。幅を32や64に固定しません。画像形式は`supportsTexture(descriptor)`で問い合わせられます。
+`textureFormatCapabilities(format, usage, textureType, storageMode)`では、指定した組み合わせのMSAA対応数、最大サイズ、Mip・Layer上限、Formatの演算対応を取得できます。
+どちらも端末の対応を照会し、必要なFeatureの有効化と実メモリの確保は行いません。
+Format照会が返す`requiredFeatures`をDevice作成時に有効にし、Storage MSAAには`STORAGE_IMAGE_MULTISAMPLE`も要求します。
+`memoryHeaps()`は`VK_EXT_memory_budget`に対応する端末でBudgetとUsageを取得し、非対応時の推定値には`estimated = true`を付けます。
 
 ## 対応範囲と制約
 
@@ -68,7 +72,9 @@ SPIR-Vのバージョンは実効Vulkanバージョンに従い、Vulkan 1.1で�
 Vulkan 1.1にRay Tracing/Meshの拡張を追加した構成では、依存するSPIR-V 1.4拡張も確認します。
 シェーダーはDescriptor Set 0を使用します。
 
-Function Constantsは32ビットの整数、浮動小数点、Booleanを指定できます。
+Function Constantsは符号付き・符号なしの8/16/32/64ビット整数、Half、Float、Double、Booleanを指定できます。
+SPIR-VのScalar型とバイト数を照合し、型幅の違いと未宣言のConstant IDを拒否します。
+整数や浮動小数点の演算には、型に対応するFeatureの有効化も必要です。
 固定Local Sizeに加え、Local Sizeのスカラー特殊化定数に対応します。
 複雑な特殊化式によるWorkgroupサイズは拒否します。
 
@@ -83,6 +89,7 @@ GraphicsでStorageを書き込む場合は、Stageに応じて`VERTEX_STORES_AND
 Memoryless TextureはPassをまたいで保持できません。
 
 GPUが生成するIndirect引数、Index値、デバイスアドレスの参照先はシェーダー側でも範囲を守る必要があります。
+Instanceの`stepRate`を1以外にする場合、`vertexInputCapabilities().supportsNonZeroFirstInstance`がfalseの端末ではIndirect引数の`firstInstance`も0にします。
 `Buffer.gpuAddress`から間接参照するBufferは、Encoderの`useResource(buffer)`でCommandに保持させてください。
 TextureのStorage書き込みは、指定したSubresource全体の初期化をアプリが保証する契約です。
 

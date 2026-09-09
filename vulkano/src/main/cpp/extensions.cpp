@@ -19,6 +19,9 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     core12 = api >= VK_API_VERSION_1_2;
     core13 = api >= VK_API_VERSION_1_3;
     void *head = nullptr;
+    vertexDivisorKHR = has(e, VK_KHR_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    if (vertexDivisorKHR || has(e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME))
+        link(head, vertexDivisor);
     if (core13 && has(e, VK_ARM_TENSORS_EXTENSION_NAME))
         link(head, tensor);
     if (core13 || has(e, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME))
@@ -96,6 +99,11 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = head;
     vkGetPhysicalDeviceFeatures2(d, &f);
+    if (vertexDivisor.vertexAttributeInstanceRateDivisor) {
+        availableExtra |= VertexDivisor;
+        if (vertexDivisor.vertexAttributeInstanceRateZeroDivisor)
+            availableExtra |= VertexZeroDivisor;
+    }
     if (sync2.synchronization2)
         availableExtra |= Synchronization2;
     if (tensor.tensors && sync2.synchronization2)
@@ -192,6 +200,14 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
             available |= TaskShader;
     }
     head = nullptr;
+    VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT divisorEXT{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT};
+    if (availableExtra & VertexDivisor) {
+        if (vertexDivisorKHR)
+            link(head, vertexDivisorProperties);
+        else
+            link(head, divisorEXT);
+    }
     if (availableExtra & TileShading)
         link(head, tileProperties);
     if (availableExtra & TensorResources)
@@ -217,6 +233,10 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
     VkPhysicalDeviceProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     p.pNext = head;
     vkGetPhysicalDeviceProperties2(d, &p);
+    if ((availableExtra & VertexDivisor) && !vertexDivisorKHR) {
+        vertexDivisorProperties.maxVertexAttribDivisor = divisorEXT.maxVertexAttribDivisor;
+        vertexDivisorProperties.supportsNonZeroFirstInstance = VK_TRUE;
+    }
     if (!(matrixProperties.cooperativeMatrixSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT))
         available &= ~CooperativeMatrix;
 }
@@ -399,6 +419,13 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if (extra & VertexDivisor) {
+        vertexDivisor.vertexAttributeInstanceRateDivisor = true;
+        vertexDivisor.vertexAttributeInstanceRateZeroDivisor = (extra & VertexZeroDivisor) != 0;
+        link(chain, vertexDivisor);
+        extensions.push_back(vertexDivisorKHR ? VK_KHR_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME
+                                              : VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+    }
     if (extra & RayMotionBlur) {
         link(chain, motion);
         extensions.push_back(VK_NV_RAY_TRACING_MOTION_BLUR_EXTENSION_NAME);
