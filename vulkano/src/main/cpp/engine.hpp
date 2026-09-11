@@ -570,6 +570,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     std::vector<DescriptorPoolAllocation> descriptorAllocations;
     std::vector<FramebufferAllocation> framebufferAllocations;
     VkFramebuffer framebuffer(const VkFramebufferCreateInfo &);
+    uint32_t scopedBarrierCount = 0;
     // Command-scoped immutable descriptors retain resources through operations.
     struct DescriptorArena {
         VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -629,7 +630,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     void present(std::shared_ptr<Drawable>);
     void commit();
     bool wait(uint64_t timeout = UINT64_MAX);
-    void barrier();
+    void barrier(VkPipelineStageFlags destination = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT);
     void alias(std::shared_ptr<Resource>, std::shared_ptr<Resource>);
     void transition(Texture &, VkImageLayout, bool read, VkImageAspectFlags readAspects = 0);
     void transition(Texture &, VkImageLayout, bool read, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers,

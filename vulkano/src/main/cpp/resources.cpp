@@ -611,7 +611,7 @@ void Command::fill(std::shared_ptr<Buffer> b, VkDeviceSize offset, VkDeviceSize 
             "Fill requires transfer destination and 4-byte alignment");
     buffers.push_back(b);
     operations.push_back([b, offset, size, value](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT);
         vkCmdFillBuffer(c.command, b->buffer, offset, size, value);
     });
 }
@@ -683,7 +683,7 @@ void Command::copy(std::shared_ptr<Buffer> b, std::shared_ptr<Texture> t, VkDevi
     bounds(b->size, offset, bytes);
     buffers.push_back(b);
     operations.push_back([b, t, offset, toTexture, r, row, height](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT);
         const auto layout = toTexture ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         c.transition(*t, layout, !toTexture || !fullRegion(*t, r), r.mip, r.layer, 1, r.layers, r.aspect);
         VkBufferImageCopy region{};
@@ -729,7 +729,7 @@ void Command::copy(std::shared_ptr<Texture> source, std::shared_ptr<Texture> des
     require((source->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && (dest->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT),
             "Texture transfer usage required");
     operations.push_back([source, dest, a, b, sameImage](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT);
         const auto sourceLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         const auto destinationLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         c.transition(*source, sourceLayout, true, a.mip, a.layer, 1, a.layers, a.aspect);
@@ -764,7 +764,7 @@ void Command::generateMipmaps(std::shared_ptr<Texture> t, VkFilter filter) {
                  (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)),
             "Unsupported mip filter");
     operations.push_back([t, filter](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT);
         for (uint32_t m = 1; m < t->options.mipLevels; ++m) {
             c.transition(*t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, true, m - 1, 0, 1, t->options.layers);
             c.transition(*t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, false, m, 0, 1, t->options.layers);
