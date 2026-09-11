@@ -73,7 +73,10 @@ ResolveのModeはLayoutとDepth Attachmentで一致させます。
 Input Attachmentには描画先と同じImage、Mip、Layer、FormatのViewを指定します。
 混合Depth/Stencil FormatのStencil入力には、`TextureAspect.STENCIL`のViewと整数型のShader入力を使用します。
 Textureの初期化状態はMip・Layer・Aspectごとに管理し、未初期化またはDiscardしたAspectの読み取りを拒否します。
-Attachment操作はFormat全体を使用し、DepthとStencilで別々のLoad/Storeや同時Read/WriteのLayoutを選ぶAPIは公開していません。
+`DepthAttachment`はDepthとStencilのLoad/Storeを個別に指定できます。
+`depthReadOnly` / `stencilReadOnly`でVulkan 1.1の混合Read/Write Layoutを選べます。
+同じPassからSamplingする場合は、全Aspectに読み取り専用のLOAD / NONEと`ATTACHMENT_STORE_NONE` Featureを要求し、Storeとの競合を防ぎます。
+SamplingするViewはFramebufferのMip・Layer範囲に一致させ、読み取り専用AspectのLoadにはLOADを指定します。
 同じSubpassで同じAttachmentへ書き込みながらInput Attachmentとして読む構成は受け付けません。
 一般のStorage Resourceについては、Draw間の任意の依存関係を自動で推定しません。
 
