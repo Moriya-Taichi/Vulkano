@@ -1,27 +1,38 @@
 # Vulkano
 
-Vulkanoは、AndroidでVulkanをKotlinから使うためのGPUライブラリです。
-Metalに近い`Device`、`CommandQueue`、`CommandBuffer`、EncoderのAPIで、GPUによる計算や描画を記述できます。
+English | [日本語](README.ja.md)
 
-Vulkanのメモリ確保、リソースのBinding、画像レイアウトの遷移、コマンド間の同期をライブラリが管理します。アプリは、SPIR-V形式のシェーダーと、そのシェーダーで処理するデータを用意します。
+Vulkano is a Kotlin GPU library for Vulkan on Android. Its Metal-style `Device`,
+`CommandQueue`, `CommandBuffer`, and encoder APIs let you write graphics and compute
+workloads without managing Vulkan objects directly.
 
-## できること
+The library manages memory allocation, resource bindings, image layout transitions,
+and synchronization between commands. Your application supplies SPIR-V shaders and
+the data they process. Vulkano does not compile Metal Shading Language or provide
+complete Metal API compatibility.
 
-| 用途 | 機能 |
+## What you can do
+
+| Task | Features |
 | --- | --- |
-| GPUで計算する | Compute ShaderでBuffer、Texture、Tensorを処理し、結果をCPUへ読み戻す。対応端末ではCooperative Matrixも利用する |
-| MLを実行する | 対応端末で専用Tensor、SPIR-V Graph、Weights、Function Constants、Graphの連続実行・Cache復元を利用する |
-| 画像を描く | Tile Compute、MSAA、Indexed/Indirect Draw、GPUでのCommand生成、頂点属性、MRT、Depth/Stencil、Subpass、Multiview、Shading Rate、Tessellation、Mesh Shaderを使って描画する |
-| データを転送する | Buffer、Textureの領域・Depth/Stencil・Mip・配列Sliceをコピーし、Mipを生成する |
-| 光線を追跡する | 対応端末でBLAS/TLASの構築・Refit・Copy・Compaction・保存と復元、Ray Query、Ray Tracing Pipeline、Motion Blurを利用する |
-| リソースを管理する | Texture View、Resource配列、Heap・Placement・Alias、Sparse Resource、独立Queue、Shared Event、Counter、Pipeline Cacheを使う |
-| 端末に合わせる | 利用可能なFeature、画像形式、処理サイズの上限、メモリ情報を取得する |
+| GPU compute | Process buffers, textures, and tensors; read results on the CPU; use cooperative matrices on supported devices |
+| Machine learning | Dedicated tensors, SPIR-V graphs, weights, function constants, graph sequencing, and cache restoration on supported devices |
+| Rendering | MSAA, indexed and indirect draws, GPU-generated commands, vertex attributes, MRT, depth/stencil, subpasses, multiview, shading rates, tessellation, mesh shaders, and tile compute |
+| Data transfer | Copy buffer and texture regions, individual depth/stencil aspects, mip levels, and array slices; generate mipmaps |
+| Ray tracing | BLAS/TLAS build, refit, copy, compaction, serialization, ray queries, ray tracing pipelines, and motion blur on supported devices |
+| Resource management | Texture views, resource arrays, heaps, placement and aliasing, sparse resources, independent queues, shared events, counters, and pipeline caches |
+| Device adaptation | Query features, texture formats, workload limits, and memory information |
 
-Android 10（API 29）以上の`arm64-v8a`・`x86_64`に対応します。Vulkan 1.1以上とGraphics・Computeを扱えるGPUが必要です。実際に利用できるかは`Device.create()`で検査します。
+Requires Android 10 (API 29) or newer, `arm64-v8a` or `x86_64`, and Vulkan 1.1 with
+graphics and compute support. `Device.create()` checks these requirements.
+Optional features depend on the device and driver, not just the Android version or
+GPU manufacturer.
 
-## 導入
+## Installation
 
-現在のバージョンは`0.1.0-SNAPSHOT`です。Maven Centralには未公開のため、ソースからビルドしてローカルのMavenリポジトリへ配置します。JDK 17と、このリポジトリで指定するAndroid SDK・NDK・CMakeを用意してください。バージョンと設定は[ビルド環境](docs/development.md#ビルド環境)に記載しています。
+The current version is `0.1.0-SNAPSHOT`. It is not yet published to Maven Central.
+Build from source and publish to your local Maven repository. Use JDK 17, Android
+SDK 35, NDK 28.1.13356709, and CMake 3.22.1; the Gradle wrapper is included.
 
 ```sh
 git clone https://github.com/Moriya-Taichi/Vulkano.git
@@ -29,7 +40,7 @@ cd Vulkano
 ./gradlew :vulkano:publishReleasePublicationToMavenLocal
 ```
 
-利用するアプリの`settings.gradle.kts`で、依存関係のリポジトリに`mavenLocal()`を追加します。
+Add `mavenLocal()` to your application's `settings.gradle.kts`:
 
 ```kotlin
 dependencyResolutionManagement {
@@ -41,7 +52,7 @@ dependencyResolutionManagement {
 }
 ```
 
-アプリモジュールの`build.gradle.kts`に依存関係を追加し、`minSdk`を29以上にします。
+Set `minSdk` to at least 29 and add the dependency to the app module:
 
 ```kotlin
 dependencies {
@@ -49,13 +60,13 @@ dependencies {
 }
 ```
 
-AARの生成やソースモジュールからの組み込みは[ビルドと検証](docs/development.md)を参照してください。
+## Usage
 
-## 使い方
+### Process an array on the GPU
 
-### GPUで配列を処理する
-
-4個の数値をGPUで2倍にする例です。次のシェーダーを`double.comp`として用意します。`dispatchThreads`は実行するWorkgroup数を切り上げるため、シェーダーで配列の範囲を確認します。
+Save this shader as `double.comp`. It doubles four floating-point values.
+`dispatchThreads` rounds up to whole workgroups, so the shader checks the array
+bounds before accessing memory.
 
 ```glsl
 #version 450
@@ -68,13 +79,15 @@ void main() {
 }
 ```
 
-NDK付属の`glslc`でSPIR-Vへ変換し、アプリの`app/src/main/assets/shaders/double.comp.spv`に配置します。
+Compile with the NDK's `glslc` and place the output in
+`app/src/main/assets/shaders/double.comp.spv`:
 
 ```sh
 glslc --target-env=vulkan1.1 double.comp -o double.comp.spv
 ```
 
-Kotlin側では、シェーダーを読み込んでPipelineを作成し、Bufferを渡して実行します。以下はワーカースレッドで実行してください。`assets`はAndroidの`AssetManager`です。
+Run the following Kotlin code on a worker thread. `assets` is an Android
+`AssetManager`.
 
 ```kotlin
 import dev.vulkano.*
@@ -109,11 +122,17 @@ Device.create().use { device ->
 }
 ```
 
-`compute {}`で処理を記録し、`commit()`でGPUへ送信します。CPUで結果を読み戻す前に`waitUntilCompleted()`で完了を待ちます。Binding、Push Constants、Workgroupの大きさはシェーダーから取得します。この例の`setBytes`は、処理する要素数を渡しています。
+`compute {}` records operations and `commit()` submits them asynchronously.
+Wait for completion before reading the buffer on the CPU. The library reflects
+bindings, push constants, and workgroup sizes from the shader. `setBytes` supplies
+the element count in this example.
 
-### 画面に描画する
+### Render to the screen
 
-有効なAndroidの`Surface`から`SurfaceLayer`を作成し、取得したDrawableを描画先にします。以下では、作成済みの`device`と`queue`、読み込んだ頂点・フラグメントシェーダーの`vertexFunction`・`fragmentFunction`を使用します。シェーダーとSurfaceの管理を含む実装は[サンプルアプリ](sample/src/main/kotlin/dev/vulkano/sample/MainActivity.kt)にあります。
+Create a `SurfaceLayer` from a valid Android `Surface`, then render into an acquired
+drawable. This example assumes an existing device, queue, and vertex/fragment
+functions. See the [sample application](sample/src/main/kotlin/dev/vulkano/sample/MainActivity.kt)
+for shader loading and Android Surface lifecycle handling.
 
 ```kotlin
 val layer = device.makeSurfaceLayer(surface, width, height)
@@ -135,36 +154,51 @@ layer.nextDrawable()?.use { drawable ->
 }
 ```
 
-LayerとPipelineは初期化時に作成し、フレームごとにDrawableを取得します。`nextDrawable()`が`null`の場合は次のフレームで再試行します。Surfaceのサイズ変更は`layer.resize()`で反映し、`surfaceDestroyed`が返る前に、そのSurfaceを使うGPU処理を終了してください。
+Create the layer and pipeline during initialization and acquire a drawable for each
+frame. If `nextDrawable()` returns `null`, retry on a later frame. Call
+`layer.resize()` when the Surface size changes. Finish GPU work using the Surface
+before `surfaceDestroyed` returns.
 
-### メモリを選ぶ・リソースを解放する
+### Choose memory and release resources
 
-| Storage Mode | 主な用途 |
+| Storage mode | Use |
 | --- | --- |
-| `SHARED` | CPUから更新・読み戻しするBuffer。`makeBuffer()`の既定値 |
-| `PRIVATE` | GPU用のBufferやTexture。CPUとの受け渡しにはShared BufferとのBlitを使う |
-| `MEMORYLESS` | Render Passの中だけで使うDepthなどのAttachment |
+| `SHARED` | Buffers updated or read by the CPU; the default for `makeBuffer()` |
+| `PRIVATE` | GPU buffers and textures; transfer CPU data through a shared staging buffer |
+| `MEMORYLESS` | Attachments used only within one render pass, such as temporary depth |
 
-CPUから書き込むだけの用途には`makeUploadBuffer()`も利用できます。GPU処理中のBufferをCPUから読み書きする場合は、先に処理の完了を待ってください。
+Use `makeUploadBuffer()` for CPU-write-only uploads. Wait for GPU completion before
+accessing an in-use buffer from the CPU. Shared physical memory on Android does not
+remove the need for synchronization or cache maintenance.
 
-Resourceは`use`または`close()`で解放します。`Device.close()`は残っている子Resourceも解放するため、上のCompute例ではDeviceの`use`を抜けるとBufferやPipelineも解放されます。Deviceを長く保持するアプリでは、不要になったResourceをその都度閉じてください。送信済みCommand Bufferの`close()`はGPUの完了を待ちます。
+Release resources with `use` or `close()`. `Device.close()` also releases remaining
+child resources. Applications that keep a device alive should close unused resources
+as they go. Closing a submitted command buffer waits for GPU completion.
 
-## 詳しい使い方と対応範囲
+## Documentation and support
 
-MSAA、Mip生成、Indexed Drawは基本APIから利用できます。
-Ray TracingやMesh Shaderなどの追加機能は、端末が提供するFeatureをDevice作成時に要求します。
-利用手順は[拡張APIの使用例](docs/advanced-features.md)、Metalとの対応範囲は[機能対応表](docs/metal-coverage.md)を参照してください。
+MSAA, mipmap generation, and indexed drawing are available through the basic APIs.
+Request optional features such as ray tracing or mesh shaders when creating the
+device. The following detailed guides are currently in Japanese:
 
-- [APIの詳細と対応範囲](docs/api-guide.md)：Featureの選択、画像形式、シェーダーや描画の制約
-- [メモリと同期](docs/memory-and-synchronization.md)：CPU/GPUアクセス、送信順、リソースとSurfaceの寿命
-- [モバイルGPU最適化](docs/mobile-gpu-optimization.md)：Mali・PowerVR・Adreno・Xclipse向けの実装
-- [ビルドと検証](docs/development.md)：サンプルの実行、ライブラリのビルドとテスト
-- [ライブラリの公開](docs/publishing.md)：Mavenリポジトリの生成とMaven Centralへの公開
+- [Advanced examples](docs/advanced-features.md)
+- [API guide and limitations](docs/api-guide.md)
+- [Metal feature coverage](docs/metal-coverage.md)
+- [Memory and synchronization](docs/memory-and-synchronization.md)
+- [Mali, PowerVR, Adreno, and Xclipse optimizations](docs/mobile-gpu-optimization.md)
+- [Building and testing](docs/development.md)
+- [Publishing](docs/publishing.md)
 
-GPUごとの実機性能は未計測です。実施済みの確認は[検証結果](docs/validation-results.md)、端末での確認手順は[Android実機検証](docs/android-validation.md)に記載しています。
+See [validation results](docs/validation-results.md) for completed checks and
+[Android device validation](docs/android-validation.md) for hardware test procedures.
+GPU-specific performance, thermal behavior, and power consumption have not been
+measured on physical devices.
 
-## ライセンス
+## License
 
-Vulkano本体は[Apache License 2.0](LICENSE)で提供します。Copyright 2026 Moriya-Taichi。
+Vulkano is licensed under the [Apache License 2.0](LICENSE).
+Copyright 2026 Moriya-Taichi.
 
-同梱するVMA・SPIRV-Reflect・SPIR-V Headers・Vulkan-Headersには、それぞれのライセンスが適用されます。著作権・ライセンス表示は[third_party](vulkano/src/main/cpp/third_party/)に保持し、配布するAARとSources JARにも同梱します。
+Bundled VMA, SPIRV-Reflect, SPIR-V Headers, and Vulkan-Headers retain their respective
+licenses. Notices are preserved in [third_party](vulkano/src/main/cpp/third_party/)
+and included in the distributed AAR and sources JAR.
