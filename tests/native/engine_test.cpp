@@ -166,6 +166,17 @@ int main() try {
                   << ", nonzero first instance " << d->extensions->vertexDivisorProperties.supportsNonZeroFirstInstance
                   << '\n';
     expect(d->enabled == 0, "Optional features must be opt-in");
+    if (d->availableExtra & Synchronization2) {
+        auto sync = Device::create(0, std::getenv("VULKANO_VALIDATION") != nullptr, true, Synchronization2);
+        auto input = buffer(sync, 16), output = buffer(sync, 16);
+        auto command = std::make_shared<Command>(sync);
+        command->fill(input, 0, 16, 0x12345678);
+        command->copy(input, output, 0, 0, 16);
+        command->commit(); command->wait();
+        uint32_t values[4]{}; output->read(0, values, sizeof(values));
+        expect(values[0] == 0x12345678 && values[3] == 0x12345678 && command->scopedBarrierCount == 3,
+               "Synchronization2 scoped transfer and host dependencies preserve GPU results");
+    }
     rejects([&] { Device::create(1ull << 63, false, true); }, "Unknown feature must fail");
     rejects([&] { Device::create(0, false, true, 1ull << 63); }, "Unknown extended feature must fail");
     {
@@ -185,10 +196,13 @@ int main() try {
             cmd->dispatch({pipeline, {binding}, integer(4), {1, 1, 1}});
             cmd->copy(upload, result, 0, 0, 16); cmd->commit(); cmd->wait();
             if (frame) expect(cmd->pool == previousPool && cmd->command == previousBuffer, "Completed pool and primary buffer must be reused");
+            if (!frame) expect(cmd->scopedBarrierCount == 3, "Compute/transfer/host waits must target their consuming stages");
             previousPool = cmd->pool; previousBuffer = cmd->command;
             float out[4]; result->read(0, out, sizeof(out));
             expect(out[0] == 2 && out[3] == 8, "Direct upload / reused command readback");
         }
+        expect(rdna->descriptorPoolsCreated == 1 && rdna->descriptorPoolsReused == 31,
+               "Completed submissions must reset and reuse the descriptor pool");
         std::vector<std::shared_ptr<Command>> retained;
         for (int i = 0; i < 10; ++i) {
             auto cmd = std::make_shared<Command>(rdna); cmd->commit();
