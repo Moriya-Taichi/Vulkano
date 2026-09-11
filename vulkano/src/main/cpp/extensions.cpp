@@ -18,6 +18,8 @@ void Extensions::inspect(VkPhysicalDevice d, uint32_t api, const std::vector<VkE
         available |= DepthResolve;
     core12 = api >= VK_API_VERSION_1_2;
     core13 = api >= VK_API_VERSION_1_3;
+    if (core13 || has(e, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME) || has(e, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME))
+        availableExtra |= AttachmentStoreNone;
     void *head = nullptr;
     vertexDivisorKHR = has(e, VK_KHR_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     if (vertexDivisorKHR || has(e, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME))
@@ -419,6 +421,9 @@ void Extensions::enable(uint64_t f, std::vector<const char *> &names, uint64_t e
     }
 }
 void Extensions::enableExtra(uint64_t extra, std::vector<const char *> &extensions) {
+    if ((extra & AttachmentStoreNone) && !core13)
+        extensions.push_back(has(supported, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME) ?
+            VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME : VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME);
     if (extra & VertexDivisor) {
         vertexDivisor.vertexAttributeInstanceRateDivisor = true;
         vertexDivisor.vertexAttributeInstanceRateZeroDivisor = (extra & VertexZeroDivisor) != 0;

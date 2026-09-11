@@ -117,7 +117,8 @@ enum ExtraFeature : uint64_t {
     DataGraph = 2048,
     RayMotionBlur = 4096,
     VertexDivisor = 8192,
-    VertexZeroDivisor = 16384
+    VertexZeroDivisor = 16384,
+    AttachmentStoreNone = 32768
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -433,6 +434,7 @@ struct Binding {
     std::shared_ptr<AccelerationStructure> acceleration;
     std::shared_ptr<TextureBuffer> texel;
     std::shared_ptr<TensorView> tensor;
+    VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 struct Dispatch {
     std::shared_ptr<Pipeline> pipeline;

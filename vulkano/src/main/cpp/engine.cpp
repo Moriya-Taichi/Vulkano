@@ -942,7 +942,7 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
 } // namespace
 
 std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool allowSoftware, uint64_t extra) {
-    require((extra >> 15) == 0, "Unknown extended feature");
+    require((extra >> 16) == 0, "Unknown extended feature");
     if (extra & VertexZeroDivisor)
         extra |= VertexDivisor;
     if (extra & RayMotionBlur)
@@ -2195,7 +2195,7 @@ void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, b
         }
         if (b.texture) {
             // Keep GENERAL for textures that can alias sampled/storage descriptors.
-            const auto layout = (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT)
+            const auto layout = b.imageLayout != VK_IMAGE_LAYOUT_UNDEFINED ? b.imageLayout : (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT)
                                     ? VK_IMAGE_LAYOUT_GENERAL
                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             auto schema =
@@ -2233,7 +2233,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                        {b->index, b->element, reinterpret_cast<uintptr_t>(b->buffer.get()), b->offset, b->length,
                         reinterpret_cast<uintptr_t>(b->texture.get()), reinterpret_cast<uintptr_t>(b->sampler.get()),
                         reinterpret_cast<uintptr_t>(b->acceleration.get()), reinterpret_cast<uintptr_t>(b->texel.get()),
-                        reinterpret_cast<uintptr_t>(b->tensor.get())});
+                        reinterpret_cast<uintptr_t>(b->tensor.get()), uint64_t(b->imageLayout)});
         }
         VkDescriptorSet set;
         auto cached = descriptorSets.find(key);
@@ -2306,7 +2306,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 } else {
                     imageInfo[i] = {
                         b.sampler ? b.sampler->sampler : VK_NULL_HANDLE, b.texture ? b.texture->view : VK_NULL_HANDLE,
-                        (schema->tile ||
+                        b.imageLayout != VK_IMAGE_LAYOUT_UNDEFINED ? b.imageLayout : (schema->tile ||
                          (w.descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && p.graphics.tileShading) ||
                          (w.descriptorType != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT && b.texture &&
                           (b.texture->usage & VK_IMAGE_USAGE_STORAGE_BIT)))
@@ -2420,7 +2420,8 @@ void Command::render(Render op) {
         require(t->usage & (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
                 "Invalid attachment usage");
         require(load >= VK_ATTACHMENT_LOAD_OP_LOAD && load <= VK_ATTACHMENT_LOAD_OP_DONT_CARE &&
-                    store >= VK_ATTACHMENT_STORE_OP_STORE && store <= VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    (store == VK_ATTACHMENT_STORE_OP_STORE || store == VK_ATTACHMENT_STORE_OP_DONT_CARE ||
+                     (depth && store == VK_ATTACHMENT_STORE_OP_NONE && (d->enabledExtra & AttachmentStoreNone))),
                 "Invalid attachment actions");
         require(t->storage != Storage::Memoryless ||
                     (load != VK_ATTACHMENT_LOAD_OP_LOAD && store == VK_ATTACHMENT_STORE_OP_DONT_CARE),
@@ -2442,11 +2443,16 @@ void Command::render(Render op) {
                    op.depth->depth() ? op.depthStore : op.stencilStoreOp(), samples, true);
         if (op.depth->stencil()) {
             require(op.stencilLoadOp() >= VK_ATTACHMENT_LOAD_OP_LOAD && op.stencilLoadOp() <= VK_ATTACHMENT_LOAD_OP_DONT_CARE &&
-                    op.stencilStoreOp() >= VK_ATTACHMENT_STORE_OP_STORE && op.stencilStoreOp() <= VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    (op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_STORE || op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_DONT_CARE ||
+                     (op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_NONE && (d->enabledExtra & AttachmentStoreNone))),
                     "Invalid stencil actions");
             require(op.depth->storage != Storage::Memoryless || (op.stencilLoadOp() != VK_ATTACHMENT_LOAD_OP_LOAD &&
                     op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_DONT_CARE), "Memoryless stencil cannot load/store");
         }
+        require(!op.depth->depth() || op.depthStore != VK_ATTACHMENT_STORE_OP_NONE || op.depthReadOnly,
+                "NONE store requires read-only depth");
+        require(!op.depth->stencil() || op.stencilStoreOp() != VK_ATTACHMENT_STORE_OP_NONE || op.stencilReadOnly,
+                "NONE store requires read-only stencil");
         require(!op.depthReadOnly || !op.depth->depth() || op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD,
                 "Read-only depth requires LOAD");
         require(!op.stencilReadOnly || !op.depth->stencil() || op.stencilLoadOp() == VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -2585,7 +2591,7 @@ void Command::render(Render op) {
     }
     require(!perTile, "End per-tile execution before ending the render pass");
     std::set<std::pair<CounterPool *, uint32_t>> visibilityIndices;
-    for (const auto &draw : op.draws) {
+    for (auto &draw : op.draws) {
         if (draw.tileAction >= 3)
             continue;
         if (draw.visibility) {
@@ -2635,7 +2641,7 @@ void Command::render(Render op) {
                         draw.pipeline->graphics.rateMapTexelSize.height == op.rateMapTexelSize.height,
                     "Pipeline rate map layout differs from render pass");
         }
-        for (const auto &b : draw.bindings) {
+        for (auto &b : draw.bindings) {
             if (b.texel)
                 buffers.push_back(b.texel->buffer);
             if (b.buffer)
@@ -2660,6 +2666,24 @@ void Command::render(Render op) {
                         "Input descriptor does not match framebuffer attachment subresource");
                 continue;
             }
+            const bool depthSample = b.texture && op.depth && &b.texture->root() == &op.depth->root() &&
+                (schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || schema->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+            if (depthSample) {
+                const auto aspects = b.texture->viewAspects();
+                // Store and even DONT_CARE can write adjacent samples/aspects. Only
+                // LOAD/NONE on every present aspect permits unrestricted sampling.
+                require((!op.depth->depth() || (op.depthReadOnly && op.depthStore == VK_ATTACHMENT_STORE_OP_NONE)) &&
+                        (!op.depth->stencil() || (op.stencilReadOnly && op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_NONE)),
+                        "Sampled depth/stencil attachments require read-only LOAD/NONE for all aspects");
+                require(!op.tileShading && (!op.passLayout || op.passLayout->subpasses[draw.subpass].depth) &&
+                        (!(aspects & VK_IMAGE_ASPECT_DEPTH_BIT) || op.depthReadOnly) &&
+                        (!(aspects & VK_IMAGE_ASPECT_STENCIL_BIT) || op.stencilReadOnly),
+                        "Sampling an attachment requires read-only access for every sampled aspect");
+                require(b.texture->baseMip == op.depth->baseMip + op.depthMip && b.texture->options.mipLevels == 1 &&
+                        b.texture->baseLayer == op.depth->baseLayer + op.depthLayer && b.texture->options.layers == op.layers,
+                        "Read-only sampled view must match the framebuffer subresource");
+                b.imageLayout = op.depthLayout();
+            }
             Resource *resource = b.buffer  ? static_cast<Resource *>(b.buffer.get())
                                  : b.texel ? static_cast<Resource *>(b.texel->buffer.get())
                                            : static_cast<Resource *>(b.texture.get());
@@ -2669,7 +2693,7 @@ void Command::render(Render op) {
                 for (auto [root, mip, layer] : used) {
                     (void)mip;
                     (void)layer;
-                    require(!memoryOverlaps(*resource, *root), "Binding aliases render target memory");
+                    require((depthSample && root == &op.depth->root()) || !memoryOverlaps(*resource, *root), "Binding aliases render target memory");
                 }
             }
             if (b.texture && op.rateMap)
@@ -2679,7 +2703,7 @@ void Command::render(Render op) {
                 for (auto [root, mip, layer] : used) {
                     (void)mip;
                     (void)layer;
-                    require(&b.texture->root() != root, "Attachment feedback is unsupported");
+                    require((depthSample && root == &op.depth->root()) || &b.texture->root() != root, "Attachment feedback is unsupported");
                 }
         }
         if (draw.tileAction) {
@@ -2995,9 +3019,9 @@ void Command::render(Render op) {
         if (op.depthResolve)
             initialized(*op.depthResolve, true, op.depthResolveMip, op.depthResolveLayer);
         if (op.depth) {
-            if (op.depth->depth()) initialized(*op.depth, op.depthStore == VK_ATTACHMENT_STORE_OP_STORE,
+            if (op.depth->depth()) initialized(*op.depth, op.depthStore != VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                               op.depthMip, op.depthLayer, VK_IMAGE_ASPECT_DEPTH_BIT);
-            if (op.depth->stencil()) initialized(*op.depth, op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_STORE,
+            if (op.depth->stencil()) initialized(*op.depth, op.stencilStoreOp() != VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                                 op.depthMip, op.depthLayer, VK_IMAGE_ASPECT_STENCIL_BIT);
         }
     });
