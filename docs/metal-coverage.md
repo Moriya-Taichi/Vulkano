@@ -110,3 +110,9 @@ MetalFXやMPSなどの上位ライブラリのアルゴリズムは、Vulkan API
 
 比較の基準は[AppleのMetal Feature Set Tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)です。
 Vulkan側の条件は[KhronosのFeature管理](https://docs.vulkan.org/guide/latest/features.html)と[Ray Tracingの対応関係](https://docs.vulkan.org/guide/latest/extensions/ray_tracing.html)を参照してください。
+
+### Workgroupの特殊化定数式
+
+整数・Booleanの算術・比較・選択・ビット演算・型変換とCompositeの操作を評価します。
+CPUの単体検査に加え、Vulkan 1.1 Shaderの特殊化後のInvocation数とGPU出力をKotlin/JNIから照合します。
+実機でのShader Compiler差の検証は含みません。
