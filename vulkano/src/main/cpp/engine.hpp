@@ -335,6 +335,7 @@ struct Shader {
     std::string entry = "main";
     std::map<uint32_t, FunctionConstant> constants;
 };
+std::array<uint32_t, 3> reflectWorkgroupSize(const Shader &, uint32_t entryId);
 struct SpecializationData {
     std::vector<VkSpecializationMapEntry> entries;
     std::vector<uint8_t> data;
