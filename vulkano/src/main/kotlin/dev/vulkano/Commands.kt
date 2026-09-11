@@ -67,13 +67,13 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
         get() = access { CommandBufferStatus.entries[Native.commandState(it)] }
 
     internal fun <T> encode(current: CommandEncoder, block: (Long) -> T): T = access {
-        check(encoder === current) { "Encoder has ended or is not active" }
+        check(encoder === current || (encoder as? ParallelRenderCommandEncoder)?.owns(current) == true) { "Encoder has ended or is not active" }
         block(it)
     }
 
     internal fun ended(current: CommandEncoder) {
-        check(encoder === current)
-        encoder = null
+        if (encoder === current) encoder = null
+        else checkNotNull(encoder as? ParallelRenderCommandEncoder).childEnded(current)
     }
 
     private fun recording() {
@@ -149,7 +149,7 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
         RayTracingCommandEncoder(this).also { encoder = it }
     }
 
-    fun makeRenderCommandEncoder(pass: RenderPassDescriptor): RenderCommandEncoder = access {
+    private fun beginRender(pass: RenderPassDescriptor): Long = access {
         recording()
         require(queueCapabilities.supportsRendering) { "This queue cannot render" }
         val colors = pass.colorAttachments
@@ -226,18 +226,19 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
                             )
                     })
                 .toFloatArray()
-        RenderCommandEncoder(
-                this,
-                Native.beginRenderAdvanced(
-                    it,
-                    handles,
-                    actions,
-                    clear,
-                    pass.subpassLayout?.pack() ?: intArrayOf(),
-                    pass.tileShading?.pack() ?: intArrayOf(),
-                ),
-            )
-            .also { encoder = it }
+        Native.beginRenderAdvanced(
+            it, handles, actions, clear, pass.subpassLayout?.pack() ?: intArrayOf(),
+            pass.tileShading?.pack() ?: intArrayOf())
+    }
+
+    fun makeRenderCommandEncoder(pass: RenderPassDescriptor): RenderCommandEncoder = access {
+        RenderCommandEncoder(this, beginRender(pass)).also { encoder = it }
+    }
+
+    /** Independent CPU recording state, assembled in child creation order when the parent ends. */
+    fun makeParallelRenderCommandEncoder(pass: RenderPassDescriptor): ParallelRenderCommandEncoder = access {
+        require(pass.subpassLayout == null && pass.tileShading == null) { "Parallel render recording requires an ordinary pass" }
+        ParallelRenderCommandEncoder(this, beginRender(pass)).also { encoder = it }
     }
 
     fun compute(block: ComputeCommandEncoder.() -> Unit) = scope(makeComputeCommandEncoder(), block)
