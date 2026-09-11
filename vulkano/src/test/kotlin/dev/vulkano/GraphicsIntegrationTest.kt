@@ -393,8 +393,8 @@ class GraphicsIntegrationTest {
             val outputView = output.makeView()
             val values = floats(1f, 2f, 4f, 8f, 16f, 32f)
             source.write(values)
-            val pipeline = d.makeMachineLearningPipelineState(d.function("graph-identity.spv"),
-                listOf(MachineLearningTensorBinding(0, gpu), MachineLearningTensorBinding(1, gpu)))
+            val pipeline = d.makeMachineLearningPipelineState(d.function("graph-multiple-sets.spv"),
+                listOf(MachineLearningTensorBinding(0, gpu), MachineLearningTensorBinding(0, gpu, set = 2)))
             val event = d.makeSharedEvent()
             val upload = d.makeCommandQueue().use { it.makeCommandBuffer() }
             upload.blit { copy(source, input) }
@@ -406,11 +406,13 @@ class GraphicsIntegrationTest {
                 encoder.setMachineLearningPipelineState(pipeline)
                 encoder.setTensor(inputView, 0)
                 assertThrows(IllegalArgumentException::class.java) { encoder.dispatch() }
-                encoder.setTensor(middleView, 1)
+                val outputGroup = d.makeResourceBindings(2) { setTensor(middleView, 0) }
+                encoder.setResourceBindings(outputGroup)
                 encoder.dispatch()
                 encoder.setTensor(middleView, 0)
-                encoder.setTensor(outputView, 1)
+                outputGroup.update { setTensor(outputView, 0) }
                 encoder.dispatch()
+                outputGroup.close()
             }
             command.signalEventOnCompletion(event, 2)
             input.close(); intermediate.close(); inputView.close(); middleView.close(); outputView.close(); pipeline.close()

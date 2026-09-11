@@ -70,6 +70,7 @@ int main() try {
                "Tensor shader reflection");
         expect(module.descriptor_binding_count == 2, "Tensor descriptors must both be reflected");
         Device limits;
+        limits.properties.limits.maxBoundDescriptorSets = 4;
         limits.enabledExtra = TensorResources;
         limits.extensions = std::make_shared<Extensions>();
         limits.extensions->tensor.shaderTensorAccess = true;
@@ -98,6 +99,13 @@ int main() try {
         for (const auto &b : graph.bindings)
             expect(b.storageFormat == VK_FORMAT_R32_SFLOAT && b.tensorDimensions == std::vector<int64_t>{2, 3},
                    "Graph tensor type and shape reflection");
+        const auto multipleSets = reflectGraph(limits, shader("graph-multiple-sets.spv"));
+        expect(multipleSets.bindings.size() == 2 && multipleSets.bindings[0].binding == 0 &&
+                   multipleSets.bindings[1].binding == 0 && multipleSets.bindings[0].set == 0 && multipleSets.bindings[1].set == 2,
+               "Graph reflection distinguishes equal bindings in different sets");
+        limits.properties.limits.maxBoundDescriptorSets = 2;
+        rejects([&] { reflectGraph(limits, shader("graph-multiple-sets.spv")); }, "Graph sets must fit device limits");
+        limits.properties.limits.maxBoundDescriptorSets = 4;
         const auto constantGraph = reflectGraph(limits, shader("graph-constant.spv"));
         expect(constantGraph.bindings.size() == 1 && constantGraph.bindings[0].binding == 1 && constantGraph.constants.count(7),
                "Graph weights use graph constant identifiers");
