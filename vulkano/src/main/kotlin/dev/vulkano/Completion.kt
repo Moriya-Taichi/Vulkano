@@ -1,7 +1,5 @@
 package dev.vulkano
 
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -33,6 +31,7 @@ internal object CompletionMonitor {
 
     fun finish(command: CommandBuffer, result: CommandBufferCompletion) {
         if (!command.completionQueued.compareAndSet(false, true)) return
+        command.device.forgetCompletion(command)
         // Completing a CompletableFuture may invoke arbitrary user continuations. Never do so
         // while holding Device/JNI locks or on the shared fence-polling thread.
         callbacks.execute { command.completion.complete(result) }

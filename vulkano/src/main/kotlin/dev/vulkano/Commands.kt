@@ -39,6 +39,7 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
     fun completionFuture(): CompletableFuture<CommandBufferCompletion> {
         val observe = synchronized(device) {
             completionRequested = true
+            if (!completionQueued.get()) device.observeCompletion(this)
             submitted || isClosed || device.closed
         }
         if (observe) CompletionMonitor.watch(this)
