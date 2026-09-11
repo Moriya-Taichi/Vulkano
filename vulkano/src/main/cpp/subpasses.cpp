@@ -158,7 +158,7 @@ void validateSubpassLayout(Device &d, const SubpassLayout &layout) {
 }
 VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::vector<Attachment> &targets,
                              VkAttachmentLoadOp depthLoad, VkAttachmentStoreOp depthStore, uint32_t viewMask,
-                             bool tileShading, VkExtent2D tileApron, VkExtent2D rateMapTexelSize) {
+                             bool tileShading, VkExtent2D tileApron, VkExtent2D rateMapTexelSize, const Render *render) {
     validateSubpassLayout(d, layout);
     require(targets.empty() || targets.size() == layout.colors.size(), "Subpass target count mismatch");
     validateTileOptions(d, tileShading, tileApron);
@@ -172,6 +172,10 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
                          int(rateMapTexelSize.height)};
     key.insert(key.end(), layout.key.begin(), layout.key.end());
     key.insert(key.end(), {depthLoad, depthStore, int(viewMask)});
+    const auto stencilLoad = render ? render->stencilLoadOp() : depthLoad;
+    const auto stencilStore = render ? render->stencilStoreOp() : depthStore;
+    const auto depthLayout = render ? render->depthLayout() : (tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    key.insert(key.end(), {stencilLoad, stencilStore, int(depthLayout)});
     const auto baseCount = layout.colors.size() + (layout.depth != VK_FORMAT_UNDEFINED);
     const auto rateIndex = layout.depthResolveIndex() + depthResolve;
     const auto count = rateIndex + rateMap;
@@ -216,18 +220,20 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
                     : depth           ? depthStore
                     : targets.empty() ? VK_ATTACHMENT_STORE_OP_STORE
                                       : targets[i].store;
-        if (firstInput[i] && targets.empty())
+        if (firstInput[i] && !render)
             a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        require(!firstInput[i] || a.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD, "First input use requires LOAD");
+        require(!firstInput[i] || (depth && !hasDepth(a.format)) || a.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD, "First input use requires LOAD");
         require(depth || resolve || rate || targets.empty() || bool(targets[i].resolve) == bool(resolves.count(i)),
                 "Resolve targets do not match render pass layout");
-        a.stencilLoadOp = depth ? a.loadOp : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        a.stencilStoreOp = depth ? a.storeOp : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        a.stencilLoadOp = depth ? (resolve || !render ? a.loadOp : stencilLoad) : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        a.stencilStoreOp = depth ? (resolve ? a.storeOp : stencilStore) : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        require(!firstInput[i] || !hasStencil(a.format) || a.stencilLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD,
+                "First stencil input use requires LOAD");
         a.initialLayout = a.finalLayout = rate          ? VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR
                                           : tileShading ? VK_IMAGE_LAYOUT_GENERAL
-                                          : depth       ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                          : depth       ? (resolve ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : depthLayout)
                                                         : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        key.insert(key.end(), {a.loadOp, a.storeOp});
+        key.insert(key.end(), {a.loadOp, a.storeOp, a.stencilLoadOp, a.stencilStoreOp});
     }
     const auto found = d.renderPassCache.find(key);
     if (found != d.renderPassCache.end())
@@ -270,7 +276,7 @@ VkRenderPass makeSubpassPass(Device &d, const SubpassLayout &layout, const std::
         sub.pResolveAttachments = anyResolve ? ref.resolves.data() : nullptr;
         if (source.depth) {
             ref.depth = {uint32_t(layout.colors.size()),
-                         tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+                         depthLayout};
             used.insert(ref.depth.attachment);
             sub.pDepthStencilAttachment = &ref.depth;
         }

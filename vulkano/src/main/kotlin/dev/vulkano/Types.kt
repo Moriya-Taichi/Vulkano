@@ -470,6 +470,11 @@ data class DepthAttachment(
     val resolveSlice: Int = 0,
     val depthResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
     val stencilResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
+    /** Null inherits loadAction, including when the descriptor is copied. */
+    val stencilLoadAction: LoadAction? = null,
+    val stencilStoreAction: StoreAction? = null,
+    val depthReadOnly: Boolean = false,
+    val stencilReadOnly: Boolean = false,
 )
 
 data class RenderPassDescriptor(

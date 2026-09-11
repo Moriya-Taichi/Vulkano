@@ -154,6 +154,10 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
                     rate?.texelSize?.height ?: 0,
                     rate?.level ?: 0,
                     rate?.slice ?: 0,
+                    (d?.stencilLoadAction ?: d?.loadAction)?.vk ?: 1,
+                    (d?.stencilStoreAction ?: d?.storeAction)?.vk ?: 1,
+                    if (d?.depthReadOnly == true) 1 else 0,
+                    if (d?.stencilReadOnly == true) 1 else 0,
                 ) +
                     colors.flatMap {
                         listOf(

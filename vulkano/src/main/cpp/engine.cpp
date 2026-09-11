@@ -72,7 +72,7 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         if (render->rateMapTexelSize.width)
             validateRateTexel(d, render->rateMapTexelSize);
         return makeSubpassPass(d, *render->passLayout, targets, depthLoad, depthStore, viewMask, render->tileShading,
-                               render->tileApron, render->rateMapTexelSize);
+                               render->tileApron, render->rateMapTexelSize, render);
     }
     std::vector<int> key{int(colors.size()), depth, samples, depthLoad, depthStore, int(viewMask)};
     const bool tile = render && render->tileShading;
@@ -80,7 +80,10 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
     validateTileOptions(d, tile, apron);
     key.insert(key.end(), {tile, int(apron.width), int(apron.height)});
     const auto colorLayout = tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    const auto depthLayout = tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    const auto depthLayout = render ? render->depthLayout() : (tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    const auto stencilLoad = render ? render->stencilLoadOp() : depthLoad;
+    const auto stencilStore = render ? render->stencilStoreOp() : depthStore;
+    key.insert(key.end(), {stencilLoad, stencilStore, int(depthLayout)});
     const bool depthResolve = render && render->depthResolve;
     const bool rateMap = render && render->rateMapTexelSize.width;
     if (rateMap)
@@ -111,8 +114,10 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         VkAttachmentDescription a{};
         a.format = depth;
         a.samples = samples;
-        a.loadOp = a.stencilLoadOp = depthLoad;
-        a.storeOp = a.stencilStoreOp = depthStore;
+        a.loadOp = depthLoad;
+        a.stencilLoadOp = stencilLoad;
+        a.storeOp = depthStore;
+        a.stencilStoreOp = stencilStore;
         a.initialLayout = a.finalLayout = dr.layout;
         dr.attachment = uint32_t(attachments.size());
         attachments.push_back(a);
@@ -203,7 +208,7 @@ VkRenderPass makePass(Device &d, const std::vector<VkFormat> &colors, VkFormat d
         auto depth2 = ref(dr);
         VkAttachmentReference2 resolve2{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
         resolve2.attachment = uint32_t(descriptions.size());
-        resolve2.layout = depthLayout;
+        resolve2.layout = tile ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         VkAttachmentDescription2 target{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
         target.format = depth;
         target.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2432,7 +2437,20 @@ void Command::render(Render op) {
         }
     }
     if (op.depth) {
-        attachment(op.depth, op.depthMip, op.depthLayer, op.depthLoad, op.depthStore, samples, true);
+        attachment(op.depth, op.depthMip, op.depthLayer,
+                   op.depth->depth() ? op.depthLoad : op.stencilLoadOp(),
+                   op.depth->depth() ? op.depthStore : op.stencilStoreOp(), samples, true);
+        if (op.depth->stencil()) {
+            require(op.stencilLoadOp() >= VK_ATTACHMENT_LOAD_OP_LOAD && op.stencilLoadOp() <= VK_ATTACHMENT_LOAD_OP_DONT_CARE &&
+                    op.stencilStoreOp() >= VK_ATTACHMENT_STORE_OP_STORE && op.stencilStoreOp() <= VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                    "Invalid stencil actions");
+            require(op.depth->storage != Storage::Memoryless || (op.stencilLoadOp() != VK_ATTACHMENT_LOAD_OP_LOAD &&
+                    op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_DONT_CARE), "Memoryless stencil cannot load/store");
+        }
+        require(!op.depthReadOnly || !op.depth->depth() || op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD,
+                "Read-only depth requires LOAD");
+        require(!op.stencilReadOnly || !op.depth->stencil() || op.stencilLoadOp() == VK_ATTACHMENT_LOAD_OP_LOAD,
+                "Read-only stencil requires LOAD");
         require(std::isfinite(op.clearDepth) && op.clearDepth >= 0 && op.clearDepth <= 1, "Invalid depth clear");
     }
     if (op.depthResolve) {
@@ -2590,6 +2608,11 @@ void Command::render(Render op) {
                     "Generated indexed drawing requires an index binding");
         }
         if (!draw.tileAction) {
+            const auto &g = draw.pipeline->graphics;
+            require(!op.depth || !op.depth->depth() || !op.depthReadOnly || !g.depthWrite,
+                    "Pipeline writes read-only depth");
+            require(!op.depth || !op.depth->stencil() || !op.stencilReadOnly || !g.stencilTest ||
+                    (!g.front.writeMask && !g.back.writeMask), "Pipeline writes read-only stencil");
             require(draw.pipeline->graphics.tileShading == op.tileShading &&
                         draw.pipeline->graphics.tileApron.width == op.tileApron.width &&
                         draw.pipeline->graphics.tileApron.height == op.tileApron.height,
@@ -2775,15 +2798,15 @@ void Command::render(Render op) {
     }
     operations.push_back([op = std::move(op), formats, extent, samples](Command &c) {
         c.barrier();
-        auto transition = [&](Texture &t, VkImageLayout layout, bool read, uint32_t mip, uint32_t layer) {
+        auto transition = [&](Texture &t, VkImageLayout layout, bool read, uint32_t mip, uint32_t layer, VkImageAspectFlags aspects = 0) {
             for (uint32_t n = 0; n < op.layers; ++n)
                 if (!op.viewMask || (op.viewMask & (1u << n)))
-                    c.transition(t, layout, read, mip, layer + n, 1, 1);
+                    c.transition(t, layout, read, mip, layer + n, 1, 1, aspects);
         };
-        auto initialized = [&](Texture &t, bool value, uint32_t mip, uint32_t layer) {
+        auto initialized = [&](Texture &t, bool value, uint32_t mip, uint32_t layer, VkImageAspectFlags aspects = 0) {
             for (uint32_t n = 0; n < op.layers; ++n)
                 if (!op.viewMask || (op.viewMask & (1u << n)))
-                    c.markInitialized(t, value, mip, layer + n, 1, 1);
+                    c.markInitialized(t, value, mip, layer + n, 1, 1, aspects);
         };
         for (const auto &draw : op.draws)
             if (draw.visibility)
@@ -2792,8 +2815,7 @@ void Command::render(Render op) {
             if (draw.tileAction < 3)
                 c.prepare(*draw.pipeline, draw.bindings, draw.tileAction != 0);
         const auto colorLayout = op.tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        const auto depthLayout =
-            op.tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        const auto depthLayout = op.depthLayout();
         std::vector<VkImageView> views;
         std::vector<VkClearValue> clears;
         for (const auto &a : op.colors) {
@@ -2804,7 +2826,10 @@ void Command::render(Render op) {
             clears.push_back(value);
         }
         if (op.depth) {
-            transition(*op.depth, depthLayout, op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD, op.depthMip, op.depthLayer);
+            VkImageAspectFlags reads = 0;
+            if (op.depth->depth() && op.depthLoad == VK_ATTACHMENT_LOAD_OP_LOAD) reads |= VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (op.depth->stencil() && op.stencilLoadOp() == VK_ATTACHMENT_LOAD_OP_LOAD) reads |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            transition(*op.depth, depthLayout, reads != 0, op.depthMip, op.depthLayer, reads);
             views.push_back(op.depth->attachmentView(op.depthMip, op.depthLayer, op.layers));
             VkClearValue value{};
             value.depthStencil = {op.clearDepth, op.clearStencil};
@@ -2817,7 +2842,7 @@ void Command::render(Render op) {
                 clears.push_back({});
             }
         if (op.depthResolve) {
-            transition(*op.depthResolve, depthLayout, false, op.depthResolveMip, op.depthResolveLayer);
+            transition(*op.depthResolve, op.tileShading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, op.depthResolveMip, op.depthResolveLayer);
             views.push_back(op.depthResolve->attachmentView(op.depthResolveMip, op.depthResolveLayer, op.layers));
             clears.push_back({});
         }
@@ -2969,8 +2994,12 @@ void Command::render(Render op) {
         }
         if (op.depthResolve)
             initialized(*op.depthResolve, true, op.depthResolveMip, op.depthResolveLayer);
-        if (op.depth)
-            initialized(*op.depth, op.depthStore == VK_ATTACHMENT_STORE_OP_STORE, op.depthMip, op.depthLayer);
+        if (op.depth) {
+            if (op.depth->depth()) initialized(*op.depth, op.depthStore == VK_ATTACHMENT_STORE_OP_STORE,
+                                              op.depthMip, op.depthLayer, VK_IMAGE_ASPECT_DEPTH_BIT);
+            if (op.depth->stencil()) initialized(*op.depth, op.stencilStoreOp() == VK_ATTACHMENT_STORE_OP_STORE,
+                                                op.depthMip, op.depthLayer, VK_IMAGE_ASPECT_STENCIL_BIT);
+        }
     });
 }
 void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkDeviceSize so, VkDeviceSize to,
