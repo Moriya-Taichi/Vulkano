@@ -1234,6 +1234,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
 Device::~Device() {
     if (device)
         vkDeviceWaitIdle(device);
+    clearIdleResources();
     reclaimPresentation(true);
     for (auto [key, pass] : renderPassCache) {
         (void)key;
@@ -2266,14 +2267,12 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 std::vector<VkDescriptorPoolSize> sizes;
                 for (auto [type, count] : counts)
                     sizes.push_back({type, count});
-                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-                pi.maxSets = setsPerPool;
-                pi.poolSizeCount = static_cast<uint32_t>(sizes.size());
-                pi.pPoolSizes = sizes.data();
                 descriptorPools.reserve(descriptorPools.size() + 1);
-                VkDescriptorPool dp;
-                check(vkCreateDescriptorPool(d->device, &pi, nullptr, &dp), "vkCreateDescriptorPool");
+                descriptorAllocations.reserve(descriptorAllocations.size() + 1);
+                auto allocation = d->takeDescriptorPool(setsPerPool, sizes);
+                const auto dp = allocation.pool;
                 descriptorPools.push_back(dp);
+                descriptorAllocations.push_back(std::move(allocation));
                 arena = {dp, 0};
             }
             VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -2945,10 +2944,7 @@ void Command::render(Render op) {
         fi.width = extent.width;
         fi.height = extent.height;
         fi.layers = op.viewMask ? 1 : op.layers;
-        c.framebuffers.reserve(c.framebuffers.size() + 1);
-        VkFramebuffer fb;
-        check(vkCreateFramebuffer(c.d->device, &fi, nullptr, &fb), "vkCreateFramebuffer");
-        c.framebuffers.push_back(fb);
+        const auto fb = c.framebuffer(fi);
         if (op.tileShading &&
             std::any_of(op.draws.begin(), op.draws.end(), [](const auto &draw) { return draw.tileAction == 2; })) {
             uint32_t count = 0;
@@ -3342,10 +3338,8 @@ Command::~Command() {
         d->idleCommands[d->idleCommandCount++] = {pool, command, queueInfo().family};
     } else if (pool)
         vkDestroyCommandPool(d->device, pool, nullptr);
-    for (auto fb : framebuffers)
-        vkDestroyFramebuffer(d->device, fb, nullptr);
-    for (auto dp : descriptorPools)
-        vkDestroyDescriptorPool(d->device, dp, nullptr);
+    for (auto &fb : framebufferAllocations) d->recycle(std::move(fb), completed);
+    for (auto &dp : descriptorAllocations) d->recycle(std::move(dp), completed);
     if (fence)
         vkDestroyFence(d->device, fence, nullptr);
 }
@@ -3368,7 +3362,7 @@ Surface::Surface(std::shared_ptr<Device> device, ANativeWindow *nativeWindow, ui
         ++d->liveSurfaces;
     } catch (...) {
         for (auto view : views)
-            vkDestroyImageView(d->device, view, nullptr);
+            d->destroyView(view);
         if (swapchain)
             vkDestroySwapchainKHR(d->device, swapchain, nullptr);
         if (surface)
@@ -3441,7 +3435,7 @@ void Surface::rebuild() {
     check(vkCreateSwapchainKHR(d->device, &info, nullptr, &next), "vkCreateSwapchainKHR");
     // oldSwapchain is retired after successful creation, including if view creation fails.
     for (auto view : views)
-        vkDestroyImageView(d->device, view, nullptr);
+        d->destroyView(view);
     views.clear();
     images.clear();
     if (swapchain)
@@ -3564,7 +3558,7 @@ void Device::reclaimPresentation(bool shutdown) {
     retiredDrawables.clear();
     for (const auto &item : retiredSurfaces) {
         for (auto view : item.views)
-            vkDestroyImageView(device, view, nullptr);
+            destroyView(view);
         if (item.swapchain)
             vkDestroySwapchainKHR(device, item.swapchain, nullptr);
         if (item.surface)

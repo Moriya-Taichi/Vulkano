@@ -476,7 +476,7 @@ VkImageView Texture::attachmentView(uint32_t mip, uint32_t layer, uint32_t layer
     try {
         attachmentViews.emplace(key, v);
     } catch (...) {
-        vkDestroyImageView(d->device, v, nullptr);
+        d->destroyView(v);
         throw;
     }
     return v;
@@ -489,11 +489,11 @@ void Texture::usable() const {
 Texture::~Texture() {
     for (auto [key, v] : attachmentViews) {
         (void)key;
-        vkDestroyImageView(d->device, v, nullptr);
+        d->destroyView(v);
     }
     if (!borrowed) {
         if (view)
-            vkDestroyImageView(d->device, view, nullptr);
+            d->destroyView(view);
         if (image && !parent && !external)
             vmaDestroyImage(d->allocator, image, allocation);
     }

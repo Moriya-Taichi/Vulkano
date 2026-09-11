@@ -3,6 +3,9 @@ package dev.vulkano.internal
 import java.nio.ByteBuffer
 
 internal object Native {
+    external fun resourceCacheStatistics(device: Long): LongArray
+
+    external fun trimIdleResources(device: Long)
     init {
         System.loadLibrary("vulkano")
     }
