@@ -316,6 +316,17 @@ int main() try {
     auto bad = std::make_shared<Command>(d);
     rejects([&] { bad->render(badPass); }, "Memoryless store must fail");
     rejects([&] { std::make_shared<Texture>(d, 4, 4, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, Storage::Memoryless); }, "Memoryless sampling must fail");
+    auto split = pass;
+    split.depth = std::make_shared<Texture>(d, 16, 16, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, Storage::Private);
+    split.draws.push_back(split.draws.front());
+    split.draws.back().bindings.clear();
+    split.memoryBarriers = {1};
+    auto rollback = std::make_shared<Command>(d);
+    Render prior{}; prior.color = target; rollback->render(prior);
+    const auto operationsBefore = rollback->operations.size(), buffersBefore = rollback->buffers.size();
+    rejects([&] { rollback->render(split); }, "Invalid later split must reject the whole render encoder");
+    expect(rollback->operations.size() == operationsBefore && rollback->buffers.size() == buffersBefore,
+           "Split validation must roll back earlier recorded segments and retained buffers");
     std::cout << "Texture transfer, compute, sampling, graphics and transient depth passed\n";
 
     auto fresh = texture(d, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
