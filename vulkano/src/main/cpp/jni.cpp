@@ -26,6 +26,28 @@ namespace {
 std::recursive_mutex mutex;
 std::unordered_map<jlong, std::shared_ptr<Object>> objects;
 jlong nextId = 1;
+struct ResourceBindings : Resource {
+    uint32_t set;
+    std::vector<Binding> entries;
+    ResourceBindings(std::shared_ptr<Device> device, uint32_t index) : Resource(std::move(device)), set(index) {
+        require(set < d->properties.limits.maxBoundDescriptorSets, "Descriptor set exceeds device limit");
+    }
+    void validate(const std::vector<Binding> &bindings) const {
+        std::set<std::pair<uint64_t, uint32_t>> used;
+        for (const auto &b : bindings) {
+            require(b.set == set && used.emplace(b.location(), b.element).second, "Invalid binding group location");
+            for (const Resource *r : {static_cast<const Resource *>(b.buffer.get()),
+                     static_cast<const Resource *>(b.texture.get()), static_cast<const Resource *>(b.sampler.get()),
+                     static_cast<const Resource *>(b.acceleration.get()), static_cast<const Resource *>(b.texel.get()),
+                     static_cast<const Resource *>(b.tensor.get())})
+                if (r) require(r->owner() == d.get(), "Binding resource belongs to another device");
+            if (b.buffer) {
+                require(b.length > 0, "Empty binding range");
+                require(b.offset <= b.buffer->size && b.length <= b.buffer->size - b.offset, "Binding range exceeds buffer");
+            }
+        }
+    }
+};
 template <class T> std::shared_ptr<T> get(jlong id) {
     auto it = objects.find(id);
     require(it != objects.end(), "Native resource is closed or invalid");
@@ -135,7 +157,7 @@ std::vector<BindingLayout> layout(JNIEnv *env, jintArray source) {
     }
     return result;
 }
-std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
+std::vector<Binding> bindings(JNIEnv *env, jlongArray source, bool groups = true) {
     require(source != nullptr, "Bindings are required");
     std::vector<jlong> data(env->GetArrayLength(source));
     require(data.size() % 11 == 0, "Invalid binding data");
@@ -143,7 +165,19 @@ std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
     if (env->ExceptionCheck())
         throw std::runtime_error("Cannot read JNI bindings");
     std::vector<Binding> result;
+    std::set<std::pair<uint64_t, uint32_t>> explicitBindings;
     for (size_t i = 0; i < data.size(); i += 11) {
+        if (data[i] == -1) {
+            require(groups && explicitBindings.empty(), "Binding groups must precede explicit bindings");
+            auto group = get<ResourceBindings>(data[i + 1]);
+            for (const auto &entry : group->entries) {
+                require(std::none_of(result.begin(), result.end(), [&](const auto &previous) {
+                    return previous.location() == entry.location() && previous.element == entry.element;
+                }), "Overlapping binding groups");
+                result.push_back(entry);
+            }
+            continue;
+        }
         require(data[i] >= 0 && data[i] <= UINT32_MAX && data[i + 2] >= 0 && data[i + 3] >= 0, "Invalid binding range");
         Binding b{};
         b.index = static_cast<uint32_t>(data[i]);
@@ -165,7 +199,12 @@ std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
             b.texel = get<TextureBuffer>(data[i + 8]);
         if (data[i + 7])
             b.acceleration = get<AccelerationStructure>(data[i + 7]);
-        result.push_back(std::move(b));
+        require(explicitBindings.emplace(b.location(), b.element).second, "Duplicate explicit binding");
+        auto previous = std::find_if(result.begin(), result.end(), [&](const auto &entry) {
+            return entry.location() == b.location() && entry.element == b.element;
+        });
+        if (previous == result.end()) result.push_back(std::move(b));
+        else *previous = std::move(b);
     }
     return result;
 }
@@ -299,6 +338,42 @@ JNI_METHOD(jlong, createBuffer)(JNIEnv *e, jobject, jlong device, jlong length, 
     return guard(e, [&] {
         require(length > 0 && storage >= 0 && storage <= 1, "Invalid buffer descriptor");
         return put(std::make_shared<Buffer>(get<Device>(device), length, usage, static_cast<Storage>(storage)));
+    });
+}
+JNI_METHOD(jlong, createResourceBindings)(JNIEnv *e, jobject, jlong device, jint set, jlongArray data) {
+    return guard(e, [&] {
+        require(set >= 0, "Negative descriptor set");
+        auto group = std::make_shared<ResourceBindings>(get<Device>(device), uint32_t(set));
+        auto entries = bindings(e, data, false);
+        group->validate(entries);
+        group->entries = std::move(entries);
+        return put(group);
+    });
+}
+JNI_METHOD(void, updateResourceBindings)(JNIEnv *e, jobject, jlong id, jlongArray data, jlongArray removed, jboolean clear) {
+    return guard(e, [&] {
+        auto group = get<ResourceBindings>(id);
+        auto changes = bindings(e, data, false);
+        group->validate(changes);
+        auto removals = longValues(e, removed);
+        require(removals.size() % 2 == 0, "Invalid removed bindings");
+        auto next = clear ? std::vector<Binding>{} : group->entries;
+        for (size_t i = 0; i < removals.size(); i += 2) {
+            require(removals[i] >= 0 && removals[i] <= UINT32_MAX && removals[i + 1] >= 0 && removals[i + 1] <= UINT32_MAX,
+                    "Invalid removed binding");
+            next.erase(std::remove_if(next.begin(), next.end(), [&](const auto &b) {
+                return b.index == removals[i] && b.element == removals[i + 1];
+            }), next.end());
+        }
+        for (auto &change : changes) {
+            auto previous = std::find_if(next.begin(), next.end(), [&](const auto &b) {
+                return b.location() == change.location() && b.element == change.element;
+            });
+            if (previous == next.end()) next.push_back(std::move(change));
+            else *previous = std::move(change);
+        }
+        // Commit atomically. Recorded commands already own independent snapshots.
+        group->entries.swap(next);
     });
 }
 JNI_METHOD(jlong, createUploadBuffer)(JNIEnv *e, jobject, jlong device, jlong length, jint usage) {

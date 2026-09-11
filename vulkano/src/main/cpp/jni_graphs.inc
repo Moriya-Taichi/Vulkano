@@ -129,19 +129,6 @@ JNI_METHOD(jbyteArray, graphProperty)(JNIEnv *env, jobject, jlong pipeline, jint
 }
 JNI_METHOD(void, dispatchGraph)(JNIEnv *env, jobject, jlong command, jlong pipeline, jlongArray tensors) {
     return guard(env, [&] {
-        const auto values = longValues(env, tensors);
-        require(values.size() % 4 == 0, "Invalid graph tensor bindings");
-        std::vector<Binding> bindings;
-        for (size_t i = 0; i < values.size(); i += 4) {
-            require(values[i] >= 0 && values[i] <= UINT32_MAX && values[i + 1] >= 0 && values[i + 1] <= UINT32_MAX,
-                    "Invalid graph tensor binding index");
-            Binding binding{uint32_t(values[i])};
-            require(values[i + 3] >= 0 && values[i + 3] <= UINT32_MAX, "Invalid graph descriptor set");
-            binding.set = uint32_t(values[i + 3]);
-            binding.element = uint32_t(values[i + 1]);
-            binding.tensor = get<TensorView>(values[i + 2]);
-            bindings.push_back(std::move(binding));
-        }
-        get<Command>(command)->dispatchGraph(get<GraphPipeline>(pipeline), std::move(bindings));
+        get<Command>(command)->dispatchGraph(get<GraphPipeline>(pipeline), bindings(env, tensors));
     });
 }

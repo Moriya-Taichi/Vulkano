@@ -183,13 +183,8 @@ private fun Device.createMachineLearningPipeline(
 }
 
 class MachineLearningCommandEncoder internal constructor(command: CommandBuffer) :
-    CommandEncoder(command) {
+    ShaderCommandEncoder(command) {
     private var pipeline: MachineLearningPipelineState? = null
-    private val tensors =
-        sortedMapOf<Triple<Int, Int, Int>, TensorView>(
-            compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.second }.thenBy { it.third }
-        )
-
     fun setMachineLearningPipelineState(state: MachineLearningPipelineState): Unit = encode {
         require(
             state.device === commandBuffer.device &&
@@ -199,14 +194,6 @@ class MachineLearningCommandEncoder internal constructor(command: CommandBuffer)
         pipeline = state
     }
 
-    fun setTensor(view: TensorView, index: Int, arrayElement: Int = 0, set: Int = 0): Unit = encode {
-        require(view.device === commandBuffer.device && index >= 0 && arrayElement >= 0 && set >= 0)
-        view.handle()
-        tensors[Triple(set, index, arrayElement)] = view
-    }
-
-    fun resetBindings(): Unit = encode { tensors.clear() }
-
     /**
      * Encodes one graph invocation; subsequent invocations observe earlier writes on this queue.
      */
@@ -215,11 +202,7 @@ class MachineLearningCommandEncoder internal constructor(command: CommandBuffer)
         Native.dispatchGraph(
             command,
             state.handle(),
-            tensors
-                .flatMap { (key, view) ->
-                    listOf(key.second.toLong(), key.third.toLong(), view.handle(), key.first.toLong())
-                }
-                .toLongArray(),
+            bindingData(),
         )
     }
 }

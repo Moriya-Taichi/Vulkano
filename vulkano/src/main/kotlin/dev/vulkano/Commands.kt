@@ -309,7 +309,7 @@ abstract class CommandEncoder internal constructor(protected val commandBuffer: 
     final override fun close() = endEncoding()
 }
 
-private class BoundResource(
+internal class BoundResource(
     val index: Int,
     val buffer: Buffer? = null,
     val offset: Long = 0,
@@ -344,10 +344,12 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         sortedMapOf<Triple<Int, Int, Int>, BoundResource>(
             compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.second }.thenBy { it.third }
         )
+    private val resourceGroups = sortedMapOf<Int, ResourceBindings>()
     private var constants = byteArrayOf()
 
     fun resetBindings(): Unit = encode {
         bindings.clear()
+        resourceGroups.clear()
         constants = byteArrayOf()
     }
 
@@ -425,6 +427,13 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
             BoundResource(index, set = set, arrayElement = arrayElement, acceleration = structure)
     }
 
+    /** Bind a reusable group. Explicit setters override its entries until resetBindings. */
+    fun setResourceBindings(group: ResourceBindings): Unit = encode {
+        require(group.device === commandBuffer.device)
+        group.handle()
+        resourceGroups[group.set] = group
+    }
+
     /** Retain buffers accessed through GPU addresses until this command completes. */
     fun useResource(buffer: Buffer): Unit = encode {
         require(buffer.device === commandBuffer.device)
@@ -433,7 +442,9 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
 
     fun setBytes(bytes: ByteArray): Unit = encode { constants = bytes.copyOf() }
 
-    protected fun bindingData(): LongArray = bindings.values.flatMap { it.pack() }.toLongArray()
+    protected fun bindingData(): LongArray = (
+        resourceGroups.values.flatMap { listOf(-1L, it.handle(), 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L) } +
+            bindings.values.flatMap { it.pack() }).toLongArray()
 
     protected fun constantData(): ByteArray = constants
 }
