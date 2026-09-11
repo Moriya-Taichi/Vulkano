@@ -324,6 +324,8 @@ internal object Native {
 
     external fun endRender(encoder: Long)
 
+    external fun renderMemoryBarrier(encoder: Long)
+
     external fun copyBuffers(
         command: Long,
         source: Long,

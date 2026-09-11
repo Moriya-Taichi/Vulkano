@@ -562,6 +562,19 @@ JNI_METHOD(void, endRender)(JNIEnv *e, jobject, jlong id) {
         objects.erase(id);
     });
 }
+JNI_METHOD(void, renderMemoryBarrier)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto pending = get<PendingRender>(id);
+        pending->command->recording();
+        const auto &pass = pending->pass;
+        require(!pass.passLayout && !pass.tileShading, "Use subpass dependencies or tileMemoryBarrier inside specialized passes");
+        require(!pass.depth || pass.depth->storage != Storage::Memoryless, "Render memory barriers require stored depth/stencil");
+        require(!pass.color || pass.color->storage != Storage::Memoryless, "Render memory barriers require stored color");
+        for (const auto &a : pass.colors)
+            require(a.texture && a.texture->storage != Storage::Memoryless, "Render memory barriers require stored color");
+        pending->pass.memoryBarriers.push_back(pass.draws.size());
+    });
+}
 JNI_METHOD(void, copyBuffers)
 (JNIEnv *e, jobject, jlong command, jlong src, jlong dst, jlong so, jlong to, jlong length) {
     return guard(e, [&] {

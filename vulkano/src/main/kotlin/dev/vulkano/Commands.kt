@@ -543,6 +543,13 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
     /** Orders attachment, compute and indirect accesses within each tile. */
     fun tileMemoryBarrier(): Unit = encode { Native.tileControl(nativeEncoder, 5) }
 
+    /**
+     * Makes earlier draws' memory accesses visible to later draws, including vertex and indirect
+     * reads. Splits the Vulkan render pass with intermediate STORE/LOAD operations. Requires
+     * persistent attachments and a pass without subpasses or tile shading. Encoder state is kept.
+     */
+    fun memoryBarrier(): Unit = encode { Native.renderMemoryBarrier(nativeEncoder) }
+
     fun setTileComputePipelineState(state: ComputePipelineState): Unit = encode {
         require(state.device === commandBuffer.device)
         state.handle()
