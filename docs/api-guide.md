@@ -70,7 +70,10 @@ Format照会が返す`requiredFeatures`をDevice作成時に有効にし、Stora
 機能別の対応状況は[Metalとの機能対応表](metal-coverage.md)、使用例は[拡張API](advanced-features.md)にまとめています。
 SPIR-Vのバージョンは実効Vulkanバージョンに従い、Vulkan 1.1ではSPIR-V 1.3、Vulkan 1.2では1.5、Vulkan 1.3では1.6までを受け付けます。
 Vulkan 1.1にRay Tracing/Meshの拡張を追加した構成では、依存するSPIR-V 1.4拡張も確認します。
-シェーダーはDescriptor Set 0を使用します。
+シェーダーは複数のDescriptor Setを使用できます。`set`の既定値は0です。
+`BindingLayout.set`と各`setBuffer` / `setTexture` / `setTensor`などの`set`引数をSPIR-Vの宣言に合わせます。
+番号を飛ばしたSetにも対応し、上限は`capabilities.limits.maxBoundDescriptorSets`で取得します。
+ML Graphも`MachineLearningTensorBinding.set`でSetを指定できます。
 
 Function Constantsは符号付き・符号なしの8/16/32/64ビット整数、Half、Float、Double、Booleanを指定できます。
 SPIR-VのScalar型とバイト数を照合し、型幅の違いと未宣言のConstant IDを拒否します。
@@ -112,3 +115,32 @@ STOREやDONT_CAREも書き込みを発生させるため、この条件を満た
 NONEは変更しないDepth/Stencilの内容を保持し、Storeによる競合を避けます。
 Sampling ViewはAttachmentのMip・Layerに一致させます。MemorylessにはLOAD/STOREを指定できません。
 混合Layoutは最低要件のVulkan 1.1で使用でき、タイルCompute内のSamplingには適用しません。
+
+
+## Bindingグループの再利用
+
+`makeResourceBindings(set)`は、1つのDescriptor Setに渡すResourceをまとめます。
+同じBinding番号を異なるSetに置けます。固定配列には`arrayElement`を指定します。
+
+```kotlin
+val material = device.makeResourceBindings(set = 2) {
+    setTexture(albedo, index = 0, sampler = linearSampler)
+    setBuffer(parameters, index = 1)
+}
+commandBuffer.render(pass) {
+    setRenderPipelineState(pipeline)
+    setResourceBindings(material)
+    drawPrimitives(vertexCount)
+    material.update { setTexture(otherAlbedo, index = 0, sampler = linearSampler) }
+    drawPrimitives(vertexCount)
+}
+material.close()
+```
+
+Draw / Dispatchの記録時にグループの内容をコピーします。後からの更新は記録済み命令を変えません。
+グループと記録済み命令がNative Resourceを保持するため、登録後に元のBufferやTextureを閉じても参照は有効です。
+グループ自体は最後の記録後に閉じられます。Submitted中のVkDescriptorSetを上書きしません。
+`update`は部分更新で、例外時には元の内容を維持します。`remove`は1要素、`clear`は全要素を削除します。
+Encoderの個別`setBuffer`などは同じ位置のグループ値を上書きし、`resetBindings()`で両方を解除します。
+必須Bindingや型・Usage・範囲のPipelineとの適合性はDraw / Dispatch時に検証します。
+Groupの更新はDeviceのロックで直列化します。更新Blockを終了後に再利用することはできません。

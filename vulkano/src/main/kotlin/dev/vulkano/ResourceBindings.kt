@@ -3,40 +3,69 @@ package dev.vulkano
 import dev.vulkano.internal.Native
 
 /** A reusable descriptor set. Updates affect future draws/dispatches, never recorded work. */
-class ResourceBindings internal constructor(device: Device, id: Long, val set: Int) : Resource(device, id) {
+class ResourceBindings internal constructor(device: Device, id: Long, val set: Int) :
+    Resource(device, id) {
     /** Atomically patch this group. An exception leaves all previous bindings intact. */
     fun update(block: ResourceBindingUpdate.() -> Unit): Unit = access { id ->
         val changes = ResourceBindingUpdate(device, set)
         try {
             changes.block()
             Native.updateResourceBindings(id, changes.data(), changes.removed(), changes.replaceAll)
-        } finally { changes.finish() }
+        } finally {
+            changes.finish()
+        }
     }
 }
 
-fun Device.makeResourceBindings(set: Int = 0, block: ResourceBindingUpdate.() -> Unit = {}): ResourceBindings = access {
+fun Device.makeResourceBindings(
+    set: Int = 0,
+    block: ResourceBindingUpdate.() -> Unit = {},
+): ResourceBindings = access {
     require(set in 0 until capabilities.limits.maxBoundDescriptorSets)
     val changes = ResourceBindingUpdate(this, set)
     try {
         changes.block()
-        ResourceBindings(this, Native.createResourceBindings(nativeHandle, set, changes.data()), set)
-    } finally { changes.finish() }
+        ResourceBindings(
+            this,
+            Native.createResourceBindings(nativeHandle, set, changes.data()),
+            set,
+        )
+    } finally {
+        changes.finish()
+    }
 }
 
 /** A transaction for a single descriptor set; fixed arrays use arrayElement. */
 class ResourceBindingUpdate internal constructor(private val device: Device, private val set: Int) {
-    private val bindings = sortedMapOf<Triple<Int, Int, Int>, BoundResource>(
-        compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.second }.thenBy { it.third })
+    private val bindings =
+        sortedMapOf<Triple<Int, Int, Int>, BoundResource>(
+            compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.second }.thenBy { it.third }
+        )
     private val removals = mutableSetOf<Pair<Int, Int>>()
     private var active = true
     internal var replaceAll = false
         private set
-    private fun edit(block: () -> Unit) { check(active) { "Binding update has ended" }; block() }
-    internal fun finish() { active = false }
-    internal fun data(): LongArray = bindings.values.flatMap { it.pack() }.toLongArray()
-    internal fun removed(): LongArray = removals.flatMap { listOf(it.first.toLong(), it.second.toLong()) }.toLongArray()
 
-    fun clear(): Unit = edit { bindings.clear(); removals.clear(); replaceAll = true }
+    private fun edit(block: () -> Unit) {
+        check(active) { "Binding update has ended" }
+        block()
+    }
+
+    internal fun finish() {
+        active = false
+    }
+
+    internal fun data(): LongArray = bindings.values.flatMap { it.pack() }.toLongArray()
+
+    internal fun removed(): LongArray =
+        removals.flatMap { listOf(it.first.toLong(), it.second.toLong()) }.toLongArray()
+
+    fun clear(): Unit = edit {
+        bindings.clear()
+        removals.clear()
+        replaceAll = true
+    }
+
     fun remove(index: Int, arrayElement: Int = 0): Unit = edit {
         require(index >= 0 && arrayElement >= 0)
         bindings.remove(Triple(set, index, arrayElement))
@@ -61,7 +90,14 @@ class ResourceBindingUpdate internal constructor(private val device: Device, pri
         buffer.handle()
         require(arrayElement >= 0 && set >= 0)
         bindings[Triple(set, index, arrayElement)] =
-            BoundResource(index, buffer = buffer, offset = offset, length = length, set = set, arrayElement = arrayElement)
+            BoundResource(
+                index,
+                buffer = buffer,
+                offset = offset,
+                length = length,
+                set = set,
+                arrayElement = arrayElement,
+            )
     }
 
     fun setTexture(
@@ -79,7 +115,13 @@ class ResourceBindingUpdate internal constructor(private val device: Device, pri
         sampler?.handle()
         require(arrayElement >= 0 && set >= 0)
         bindings[Triple(set, index, arrayElement)] =
-            BoundResource(index, set = set, texture = texture, sampler = sampler, arrayElement = arrayElement)
+            BoundResource(
+                index,
+                set = set,
+                texture = texture,
+                sampler = sampler,
+                arrayElement = arrayElement,
+            )
     }
 
     fun setSampler(sampler: Sampler, index: Int, arrayElement: Int = 0): Unit = edit {
@@ -113,5 +155,4 @@ class ResourceBindingUpdate internal constructor(private val device: Device, pri
         bindings[Triple(set, index, arrayElement)] =
             BoundResource(index, set = set, arrayElement = arrayElement, acceleration = structure)
     }
-
 }
