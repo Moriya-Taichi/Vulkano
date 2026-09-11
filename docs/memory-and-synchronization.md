@@ -15,7 +15,23 @@ VMAは必要に応じてCPUキャッシュをFlush・Invalidateし、Non-coheren
 EncoderはNativeに操作とResource参照を記録します。実際のVkCommandBufferは`commit()`時に作り、送信順にTextureのLayoutを確定します。先に記録したCommand Bufferを後から送信しても、過去のLayoutを前提にしたBarrierは生成しません。
 
 Compute Dispatch、Blit、Render Passの間にメモリ依存関係を入れます。GraphicsのStorage書き込みは対応Featureを要求します。
-Draw間に一般のStorageの読み書き依存がある場合はRender Passを分けてください。
+Draw間に一般のStorageの読み書き依存がある場合は`RenderCommandEncoder.memoryBarrier()`を記録します。
+Vulkan Render Passをその位置で分割し、Passの外で全Stageのメモリ依存関係を作ります。Fragmentの書き込みからVertex・Indirectの読み取りへの依存にも使えます。
+中間のColor / Depth / StencilはSTOREし、次のPassでLOADします。最初のLoadと最後のStore、Resolve、EncoderのBinding・Pipeline・動的状態は維持します。
+読み取り専用Depth/Stencilに指定したNONEは維持します。Memoryless Attachmentは保存できないため、このAPIでは使用できません。
+Subpass Layoutを使うPassはSubpassの依存関係、Tile Passは`tileMemoryBarrier()`を使用します。
+Pass分割の帯域コストがあるため、依存関係が必要なDrawの間に指定します。
+
+```kotlin
+commandBuffer.render(pass) {
+    setRenderPipelineState(producer)
+    setBuffer(sharedData, 0)
+    drawPrimitives(3)
+    memoryBarrier()
+    setRenderPipelineState(consumer)
+    drawPrimitives(3)
+}
+```
 Attachmentの読み取りはSubpassとInput Attachmentで指定でき、BY_REGIONの依存関係を入れます。書き込むAttachment Aspectを同一Pass内でSamplingするFeedback Loopは禁止します。
 Depth/Stencilの全Aspectを読み取り専用のLOAD / NONEにした場合、対応するViewを指定してSamplingできます。Textureは必要に応じてTransfer、General、Attachment、PresentationのLayoutへ移行します。
 

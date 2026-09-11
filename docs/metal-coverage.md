@@ -78,7 +78,9 @@ Textureの初期化状態はMip・Layer・Aspectごとに管理し、未初期�
 同じPassからSamplingする場合は、全Aspectに読み取り専用のLOAD / NONEと`ATTACHMENT_STORE_NONE` Featureを要求し、Storeとの競合を防ぎます。
 SamplingするViewはFramebufferのMip・Layer範囲に一致させ、読み取り専用AspectのLoadにはLOADを指定します。
 同じSubpassで同じAttachmentへ書き込みながらInput Attachmentとして読む構成は受け付けません。
-一般のStorage Resourceについては、Draw間の任意の依存関係を自動で推定しません。
+一般のStorage Resourceについては、Draw間の依存関係を`RenderCommandEncoder.memoryBarrier()`で指定します。
+通常のPassをSTORE / LOADで分割し、FragmentからVertex・Indirectへの依存を含む全Stageのメモリ依存関係をPass外に作ります。
+Memoryless、Subpass、Tile Passではこの分割APIを受け付けません。
 
 Acceleration Structure Archiveは互換Driver向けの不透明なデータです。
 TLASの復元には、保存時のBLASアドレスから復元済みBLASへの対応表が必要です。
