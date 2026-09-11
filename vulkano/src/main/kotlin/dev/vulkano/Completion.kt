@@ -10,12 +10,14 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 data class CommandBufferCompletion(val status: CommandBufferStatus, val error: Throwable? = null)
 
 internal object CompletionMonitor {
-    private val poller = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "Vulkano completion polling").apply { isDaemon = true }
-    }
-    val callbacks = Executors.newCachedThreadPool { task ->
-        Thread(task, "Vulkano completion callback").apply { isDaemon = true }
-    }
+    private val poller =
+        Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "Vulkano completion polling").apply { isDaemon = true }
+        }
+    val callbacks =
+        Executors.newCachedThreadPool { task ->
+            Thread(task, "Vulkano completion callback").apply { isDaemon = true }
+        }
 
     fun watch(command: CommandBuffer) {
         if (command.completionQueued.get() || !command.monitoring.compareAndSet(false, true)) return
@@ -43,8 +45,7 @@ suspend fun CommandBuffer.awaitCompleted(): Unit = suspendCancellableCoroutine {
     val future = completionFuture()
     future.whenComplete { result, failure ->
         val error = failure ?: result.error
-        if (error != null) continuation.resumeWithException(error)
-        else continuation.resume(Unit)
+        if (error != null) continuation.resumeWithException(error) else continuation.resume(Unit)
     }
     continuation.invokeOnCancellation { future.cancel(false) }
 }
