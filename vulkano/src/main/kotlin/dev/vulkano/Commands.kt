@@ -320,6 +320,7 @@ private class BoundResource(
     val acceleration: AccelerationStructure? = null,
     val texel: TextureBuffer? = null,
     val tensor: TensorView? = null,
+    val set: Int = 0,
 ) {
     fun pack() =
         listOf(
@@ -333,14 +334,15 @@ private class BoundResource(
             acceleration?.handle() ?: 0,
             texel?.handle() ?: 0,
             tensor?.handle() ?: 0,
+            set.toLong(),
         )
 }
 
 abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer) :
     CommandEncoder(command) {
     private val bindings =
-        sortedMapOf<Pair<Int, Int>, BoundResource>(
-            compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second }
+        sortedMapOf<Triple<Int, Int, Int>, BoundResource>(
+            compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.second }.thenBy { it.third }
         )
     private var constants = byteArrayOf()
 
@@ -355,6 +357,7 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         offset: Long = 0,
         length: Long = buffer.length - offset,
         arrayElement: Int = 0,
+        set: Int = 0,
     ): Unit = encode {
         require(
             buffer.device === commandBuffer.device &&
@@ -365,9 +368,9 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
                 length <= buffer.length - offset
         )
         buffer.handle()
-        require(arrayElement >= 0)
-        bindings[index to arrayElement] =
-            BoundResource(index, buffer, offset, length, arrayElement = arrayElement)
+        require(arrayElement >= 0 && set >= 0)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, buffer = buffer, offset = offset, length = length, set = set, arrayElement = arrayElement)
     }
 
     fun setTexture(
@@ -375,6 +378,7 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         index: Int,
         sampler: Sampler? = null,
         arrayElement: Int = 0,
+        set: Int = 0,
     ): Unit = encode {
         require(
             texture.device === commandBuffer.device &&
@@ -383,41 +387,42 @@ abstract class ShaderCommandEncoder internal constructor(command: CommandBuffer)
         )
         texture.handle()
         sampler?.handle()
-        require(arrayElement >= 0)
-        bindings[index to arrayElement] =
-            BoundResource(index, texture = texture, sampler = sampler, arrayElement = arrayElement)
+        require(arrayElement >= 0 && set >= 0)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, set = set, texture = texture, sampler = sampler, arrayElement = arrayElement)
     }
 
-    fun setSampler(sampler: Sampler, index: Int, arrayElement: Int = 0): Unit = encode {
-        require(sampler.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
+    fun setSampler(sampler: Sampler, index: Int, arrayElement: Int = 0, set: Int = 0): Unit = encode {
+        require(sampler.device === commandBuffer.device && index >= 0 && arrayElement >= 0 && set >= 0)
         sampler.handle()
-        bindings[index to arrayElement] =
-            BoundResource(index, sampler = sampler, arrayElement = arrayElement)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, set = set, sampler = sampler, arrayElement = arrayElement)
     }
 
-    fun setTextureBuffer(texture: TextureBuffer, index: Int, arrayElement: Int = 0): Unit = encode {
-        require(texture.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
+    fun setTextureBuffer(texture: TextureBuffer, index: Int, arrayElement: Int = 0, set: Int = 0): Unit = encode {
+        require(texture.device === commandBuffer.device && index >= 0 && arrayElement >= 0 && set >= 0)
         texture.handle()
-        bindings[index to arrayElement] =
-            BoundResource(index, texel = texture, arrayElement = arrayElement)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, set = set, texel = texture, arrayElement = arrayElement)
     }
 
-    fun setTensor(tensor: TensorView, index: Int, arrayElement: Int = 0): Unit = encode {
-        require(tensor.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
+    fun setTensor(tensor: TensorView, index: Int, arrayElement: Int = 0, set: Int = 0): Unit = encode {
+        require(tensor.device === commandBuffer.device && index >= 0 && arrayElement >= 0 && set >= 0)
         tensor.handle()
-        bindings[index to arrayElement] =
-            BoundResource(index, tensor = tensor, arrayElement = arrayElement)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, set = set, tensor = tensor, arrayElement = arrayElement)
     }
 
     fun setAccelerationStructure(
         structure: AccelerationStructure,
         index: Int,
         arrayElement: Int = 0,
+        set: Int = 0,
     ): Unit = encode {
-        require(structure.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
+        require(structure.device === commandBuffer.device && index >= 0 && arrayElement >= 0 && set >= 0)
         structure.handle()
-        bindings[index to arrayElement] =
-            BoundResource(index, arrayElement = arrayElement, acceleration = structure)
+        bindings[Triple(set, index, arrayElement)] =
+            BoundResource(index, set = set, arrayElement = arrayElement, acceleration = structure)
     }
 
     /** Retain buffers accessed through GPU addresses until this command completes. */

@@ -28,8 +28,8 @@ void destroyPipeline(GraphPipeline &p) {
         vkDestroyPipeline(p.d->device, p.pipeline, nullptr);
     if (p.layout)
         vkDestroyPipelineLayout(p.d->device, p.layout, nullptr);
-    if (p.setLayout)
-        vkDestroyDescriptorSetLayout(p.d->device, p.setLayout, nullptr);
+    for (auto set : p.setLayouts)
+        vkDestroyDescriptorSetLayout(p.d->device, set, nullptr);
 }
 } // namespace
 
@@ -68,14 +68,17 @@ GraphPipeline::GraphPipeline(std::shared_ptr<Device> device, uint32_t queue, Sha
         require(constants.empty() && shader.constants.empty(), "Cached graphs already contain their constants");
     }
     uint64_t descriptorCount = 0;
-    std::set<uint32_t> used;
+    std::set<uint64_t> used;
+    uint32_t setCount = 1;
     std::vector<VkDescriptorSetLayoutBinding> layouts;
     std::vector<VkTensorDescriptionARM> descriptions(bindings.size());
     std::vector<VkDataGraphPipelineResourceInfoARM> infos(bindings.size(),
                                                           {VK_STRUCTURE_TYPE_DATA_GRAPH_PIPELINE_RESOURCE_INFO_ARM});
     for (size_t i = 0; i < bindings.size(); ++i) {
         const auto &b = bindings[i];
-        require(b.count && used.insert(b.index).second, "Graph bindings must be unique and non-empty");
+        require(b.count && used.insert(b.location()).second, "Graph bindings must be unique and non-empty");
+        require(b.set < d->properties.limits.maxBoundDescriptorSets, "Graph descriptor set exceeds device limit");
+        setCount = std::max(setCount, b.set + 1);
         require(b.tensor.usage & VK_TENSOR_USAGE_DATA_GRAPH_BIT_ARM,
                 "Graph tensor description requires MACHINE_LEARNING usage");
         b.tensor.validate(*d);
@@ -84,7 +87,7 @@ GraphPipeline::GraphPipeline(std::shared_ptr<Device> device, uint32_t queue, Sha
                 "Graph tensor descriptors exceed limits");
         if (identifier.empty()) {
             auto schema = std::find_if(interface.bindings.begin(), interface.bindings.end(),
-                                       [&](const auto &s) { return s.binding == b.index; });
+                                       [&](const auto &s) { return s.location() == b.location(); });
             require(schema != interface.bindings.end() && schema->count == b.count,
                     "Graph binding or array count differs from SPIR-V");
             matches(b.tensor, *schema);
@@ -94,6 +97,7 @@ GraphPipeline::GraphPipeline(std::shared_ptr<Device> device, uint32_t queue, Sha
         descriptions[i] = b.tensor.description();
         infos[i].pNext = &descriptions[i];
         infos[i].binding = b.index;
+        infos[i].descriptorSet = b.set;
     }
     std::vector<VkTensorDescriptionARM> constantDescriptions(constants.size());
     std::vector<VkDataGraphPipelineConstantARM> constantInfos(constants.size(),
@@ -116,13 +120,19 @@ GraphPipeline::GraphPipeline(std::shared_ptr<Device> device, uint32_t queue, Sha
         constantInfos[i].pConstantData = c.data.data();
     }
     try {
-        VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        set.bindingCount = uint32_t(layouts.size());
-        set.pBindings = layouts.data();
-        check(vkCreateDescriptorSetLayout(d->device, &set, nullptr, &setLayout), "create graph descriptor layout");
+        setLayouts.resize(setCount, VK_NULL_HANDLE);
+        for (uint32_t setIndex = 0; setIndex < setCount; ++setIndex) {
+            std::vector<VkDescriptorSetLayoutBinding> entries;
+            for (size_t i = 0; i < bindings.size(); ++i)
+                if (bindings[i].set == setIndex) entries.push_back(layouts[i]);
+            VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            set.bindingCount = uint32_t(entries.size());
+            set.pBindings = entries.data();
+            check(vkCreateDescriptorSetLayout(d->device, &set, nullptr, &setLayouts[setIndex]), "create graph descriptor layout");
+        }
         VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &setLayout;
+        layoutInfo.setLayoutCount = uint32_t(setLayouts.size());
+        layoutInfo.pSetLayouts = setLayouts.data();
         check(vkCreatePipelineLayout(d->device, &layoutInfo, nullptr, &layout), "create graph pipeline layout");
         VkShaderModuleCreateInfo module{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         module.codeSize = shader.code.size() * 4;
@@ -195,7 +205,7 @@ struct GraphExecution {
     std::shared_ptr<GraphPipeline> pipeline;
     std::vector<Binding> bindings;
     VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> sets;
     VkDataGraphPipelineSessionARM session = VK_NULL_HANDLE;
     std::vector<VkDeviceMemory> memory;
     ~GraphExecution() {
@@ -266,15 +276,16 @@ struct GraphExecution {
         }
         VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_TENSOR_ARM, uint32_t(bindings.size())};
         VkDescriptorPoolCreateInfo descriptorPool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        descriptorPool.maxSets = 1;
+        descriptorPool.maxSets = uint32_t(pipeline->setLayouts.size());
         descriptorPool.poolSizeCount = bindings.empty() ? 0 : 1;
         descriptorPool.pPoolSizes = bindings.empty() ? nullptr : &size;
         check(vkCreateDescriptorPool(d.device, &descriptorPool, nullptr, &pool), "create graph descriptor pool");
         VkDescriptorSetAllocateInfo descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         descriptor.descriptorPool = pool;
-        descriptor.descriptorSetCount = 1;
-        descriptor.pSetLayouts = &pipeline->setLayout;
-        check(vkAllocateDescriptorSets(d.device, &descriptor, &set), "allocate graph descriptor set");
+        descriptor.descriptorSetCount = uint32_t(pipeline->setLayouts.size());
+        sets.resize(descriptor.descriptorSetCount);
+        descriptor.pSetLayouts = pipeline->setLayouts.data();
+        check(vkAllocateDescriptorSets(d.device, &descriptor, sets.data()), "allocate graph descriptor set");
         std::vector<VkWriteDescriptorSetTensorARM> tensors(bindings.size(),
                                                            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_TENSOR_ARM});
         std::vector<VkWriteDescriptorSet> writes(bindings.size(), {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET});
@@ -282,7 +293,7 @@ struct GraphExecution {
             tensors[i].tensorViewCount = 1;
             tensors[i].pTensorViews = &bindings[i].tensor->view;
             writes[i].pNext = &tensors[i];
-            writes[i].dstSet = set;
+            writes[i].dstSet = sets[bindings[i].set];
             writes[i].dstBinding = bindings[i].index;
             writes[i].dstArrayElement = bindings[i].element;
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_TENSOR_ARM;
@@ -301,13 +312,13 @@ void Command::dispatchGraph(std::shared_ptr<GraphPipeline> pipeline, std::vector
     for (const auto &b : pipeline->bindings)
         count += b.count;
     require(count == bindings.size(), "Bind every graph tensor and array element");
-    std::set<std::pair<uint32_t, uint32_t>> used;
+    std::set<std::pair<uint64_t, uint32_t>> used;
     for (const auto &b : bindings) {
         require(b.tensor && b.tensor->d == d && !b.buffer && !b.texture && !b.sampler && !b.acceleration && !b.texel,
                 "Graph bindings require tensor views from this device");
-        require(used.emplace(b.index, b.element).second, "Duplicate graph tensor binding");
+        require(used.emplace(b.location(), b.element).second, "Duplicate graph tensor binding");
         auto expected = std::find_if(pipeline->bindings.begin(), pipeline->bindings.end(),
-                                     [&](const auto &s) { return s.index == b.index; });
+                                     [&](const auto &s) { return s.location() == b.location(); });
         require(expected != pipeline->bindings.end() && b.element < expected->count,
                 "Unknown graph binding or array element");
         const auto &actual = b.tensor->tensor->options;
@@ -326,8 +337,8 @@ void Command::dispatchGraph(std::shared_ptr<GraphPipeline> pipeline, std::vector
     operations.push_back([execution](Command &c) {
         c.barrier();
         vkCmdBindPipeline(c.command, VK_PIPELINE_BIND_POINT_DATA_GRAPH_ARM, execution->pipeline->pipeline);
-        vkCmdBindDescriptorSets(c.command, VK_PIPELINE_BIND_POINT_DATA_GRAPH_ARM, execution->pipeline->layout, 0, 1,
-                                &execution->set, 0, nullptr);
+        vkCmdBindDescriptorSets(c.command, VK_PIPELINE_BIND_POINT_DATA_GRAPH_ARM, execution->pipeline->layout, 0, uint32_t(execution->sets.size()),
+                                execution->sets.data(), 0, nullptr);
         c.d->extensions->dispatchGraph(c.command, execution->session, nullptr);
     });
 }

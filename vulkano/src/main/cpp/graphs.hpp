@@ -5,6 +5,8 @@ namespace vulkano {
 struct GraphBinding {
     uint32_t index = 0, count = 1;
     TensorOptions tensor;
+    uint32_t set = 0;
+    uint64_t location() const { return (uint64_t(set) << 32) | index; }
 };
 struct GraphConstant {
     uint32_t id = 0;
@@ -24,7 +26,7 @@ GraphInterface reflectGraph(Device &, const Shader &);
 struct GraphPipeline : Resource {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSetLayout> setLayouts;
     uint32_t family;
     std::vector<GraphBinding> bindings;
     GraphPipeline(std::shared_ptr<Device>, uint32_t queue, Shader, std::vector<GraphBinding>,

@@ -119,13 +119,15 @@ Shader shader(JNIEnv *env, jbyteArray source, jstring entry) {
 }
 std::vector<BindingLayout> layout(JNIEnv *env, jintArray source) {
     auto data = ints(env, source);
-    require(data.size() % 5 == 0, "Invalid binding layout");
+    require(data.size() % 6 == 0, "Invalid binding layout");
     std::vector<BindingLayout> result;
-    for (size_t i = 0; i < data.size(); i += 5) {
+    for (size_t i = 0; i < data.size(); i += 6) {
         require(data[i] >= 0, "Negative binding");
         require(data[i + 2] > 0, "Invalid descriptor count");
         BindingLayout b{static_cast<uint32_t>(data[i]), static_cast<VkDescriptorType>(data[i + 1])};
         b.count = data[i + 2];
+        require(data[i + 5] >= 0, "Negative descriptor set");
+        b.set = data[i + 5];
         const auto sampler = uint64_t(uint32_t(data[i + 3])) | (uint64_t(uint32_t(data[i + 4])) << 32);
         if (sampler)
             b.immutableSampler = get<Sampler>(jlong(sampler));
@@ -136,15 +138,17 @@ std::vector<BindingLayout> layout(JNIEnv *env, jintArray source) {
 std::vector<Binding> bindings(JNIEnv *env, jlongArray source) {
     require(source != nullptr, "Bindings are required");
     std::vector<jlong> data(env->GetArrayLength(source));
-    require(data.size() % 10 == 0, "Invalid binding data");
+    require(data.size() % 11 == 0, "Invalid binding data");
     env->GetLongArrayRegion(source, 0, static_cast<jsize>(data.size()), data.data());
     if (env->ExceptionCheck())
         throw std::runtime_error("Cannot read JNI bindings");
     std::vector<Binding> result;
-    for (size_t i = 0; i < data.size(); i += 10) {
+    for (size_t i = 0; i < data.size(); i += 11) {
         require(data[i] >= 0 && data[i] <= UINT32_MAX && data[i + 2] >= 0 && data[i + 3] >= 0, "Invalid binding range");
         Binding b{};
         b.index = static_cast<uint32_t>(data[i]);
+        require(data[i + 10] >= 0 && data[i + 10] <= UINT32_MAX, "Invalid descriptor set");
+        b.set = data[i + 10];
         if (data[i + 1])
             b.buffer = get<Buffer>(data[i + 1]);
         b.offset = data[i + 2];
@@ -255,7 +259,7 @@ JNI_METHOD(jlongArray, deviceInfo)(JNIEnv *e, jobject, jlong id) {
                          d->memoryBudget,
                          static_cast<jlong>(l.maxSamplerAnisotropy * 1000),
                          static_cast<jlong>(d->availableExtra),
-                         static_cast<jlong>(d->enabledExtra)});
+                         static_cast<jlong>(d->enabledExtra), l.maxBoundDescriptorSets});
     });
 }
 JNI_METHOD(jlongArray, memoryHeaps)(JNIEnv *e, jobject, jlong id) {

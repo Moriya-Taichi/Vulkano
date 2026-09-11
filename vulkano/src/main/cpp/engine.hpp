@@ -301,8 +301,7 @@ struct Sampler : Resource {
     ~Sampler() override;
 };
 
-// Descriptor set 0, one resource at each explicit binding. Stage visibility is
-// the pipeline's stages; graphics resources are read-only in the public API.
+// Reflection identifies resources by descriptor set, binding and array element.
 struct BindingLayout {
     uint32_t binding;
     VkDescriptorType type;
@@ -318,6 +317,8 @@ struct BindingLayout {
     std::shared_ptr<Sampler> immutableSampler;
     uint32_t tensorRank = 0;
     std::vector<int64_t> tensorDimensions;
+    uint32_t set = 0;
+    uint64_t location() const { return (uint64_t(set) << 32) | binding; }
     uint64_t descriptorCost() const {
         return uint64_t(count) * (immutableSampler ? immutableSampler->descriptorCost : 1);
     }
@@ -402,6 +403,7 @@ struct Pipeline : Resource {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSetLayout> setLayouts;
     VkRenderPass compatiblePass = VK_NULL_HANDLE;
     std::vector<BindingLayout> bindings;
     uint32_t pushBytes;
@@ -435,6 +437,8 @@ struct Binding {
     std::shared_ptr<TextureBuffer> texel;
     std::shared_ptr<TensorView> tensor;
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t set = 0;
+    uint64_t location() const { return (uint64_t(set) << 32) | index; }
 };
 struct Dispatch {
     std::shared_ptr<Pipeline> pipeline;
@@ -544,7 +548,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
         VkDescriptorPool pool = VK_NULL_HANDLE;
         uint32_t used = 0;
     };
-    std::map<const Pipeline *, DescriptorArena> descriptorArenas;
+    std::map<std::pair<const Pipeline *, uint32_t>, DescriptorArena> descriptorArenas;
     std::map<std::vector<uint64_t>, VkDescriptorSet> descriptorSets;
     uint32_t descriptorCacheHits = 0, imageBarrierCount = 0;
     std::array<VkPipeline, 3> boundPipelines{};
