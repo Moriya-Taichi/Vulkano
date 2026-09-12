@@ -97,3 +97,18 @@ TextureのStorage書き込みは、指定したSubresource全体の初期化を�
 
 Mali、PowerVR、Adreno、Xclipse向けのメモリ選択とキャッシュ方針は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。
 GPU固有の性能、熱特性、消費電力は実機未計測です。
+
+## DepthとStencilの独立制御
+
+`DepthAttachment.stencilLoadAction` / `stencilStoreAction`は個別に設定できます。
+nullは既存の`loadAction` / `storeAction`を継承するため、既存コードの動作を維持します。
+片方のDONT_CAREはもう片方の初期化状態を破棄しません。通常のPassとSubpassの両方に適用します。
+
+`depthReadOnly = true`にするとDepthの書き込みを禁止し、Stencilだけを書き換えられます。
+`stencilReadOnly`は逆の用途です。読み取り専用AspectのLoadにはLOADを指定し、Pipeline側のDepth書き込み、またはStencilのWrite Maskを無効化してください。
+同じPassでTextureとしてSamplingする場合は、全Aspectを読み取り専用にし、LOAD / `StoreAction.NONE`を指定します。
+`Feature.ATTACHMENT_STORE_NONE`（Vulkan 1.3またはKHR/EXT拡張）を要求してください。
+STOREやDONT_CAREも書き込みを発生させるため、この条件を満たさないSamplingは拒否します。
+NONEは変更しないDepth/Stencilの内容を保持し、Storeによる競合を避けます。
+Sampling ViewはAttachmentのMip・Layerに一致させます。MemorylessにはLOAD/STOREを指定できません。
+混合Layoutは最低要件のVulkan 1.1で使用でき、タイルCompute内のSamplingには適用しません。

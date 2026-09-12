@@ -143,7 +143,7 @@ JNI_METHOD(jlong, beginRenderAdvanced)
         auto f = floatValues(e, clear);
         require(h.size() >= 3 && h.size() % 2 == 1, "Invalid attachments");
         size_t count = (h.size() - 3) / 2;
-        require(v.size() == 15 + count * 6 && f.size() == 1 + count * 4, "Invalid render descriptor");
+        require(v.size() == 19 + count * 6 && f.size() == 1 + count * 4, "Invalid render descriptor");
         auto c = get<Command>(command);
         c->recording();
         auto pending = std::make_shared<PendingRender>(c);
@@ -180,8 +180,13 @@ JNI_METHOD(jlong, beginRenderAdvanced)
         p.rateMapTexelSize = {uint32_t(v[11]), uint32_t(v[12])};
         p.rateMip = v[13];
         p.rateLayer = v[14];
+        p.stencilLoad = VkAttachmentLoadOp(v[15]);
+        p.stencilStore = VkAttachmentStoreOp(v[16]);
+        require((v[17] == 0 || v[17] == 1) && (v[18] == 0 || v[18] == 1), "Invalid attachment access mode");
+        p.depthReadOnly = v[17];
+        p.stencilReadOnly = v[18];
         for (size_t i = 0; i < count; ++i) {
-            size_t n = 15 + i * 6;
+            size_t n = 19 + i * 6;
             Attachment a;
             a.texture = get<Texture>(h[3 + i * 2]);
             if (h[4 + i * 2])

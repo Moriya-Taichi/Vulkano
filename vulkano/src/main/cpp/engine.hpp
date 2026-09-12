@@ -117,7 +117,8 @@ enum ExtraFeature : uint64_t {
     DataGraph = 2048,
     RayMotionBlur = 4096,
     VertexDivisor = 8192,
-    VertexZeroDivisor = 16384
+    VertexZeroDivisor = 16384,
+    AttachmentStoreNone = 32768
 };
 enum class Storage { Shared, Private, Memoryless };
 
@@ -433,6 +434,7 @@ struct Binding {
     std::shared_ptr<AccelerationStructure> acceleration;
     std::shared_ptr<TextureBuffer> texel;
     std::shared_ptr<TensorView> tensor;
+    VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 struct Dispatch {
     std::shared_ptr<Pipeline> pipeline;
@@ -487,6 +489,22 @@ struct Render {
     float clearDepth = 1;
     std::vector<Draw> draws;
     std::vector<Attachment> colors;
+    VkAttachmentLoadOp stencilLoad = VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
+    VkAttachmentStoreOp stencilStore = VK_ATTACHMENT_STORE_OP_MAX_ENUM;
+    bool depthReadOnly = false, stencilReadOnly = false;
+    VkAttachmentLoadOp stencilLoadOp() const { return stencilLoad == VK_ATTACHMENT_LOAD_OP_MAX_ENUM ? depthLoad : stencilLoad; }
+    VkAttachmentStoreOp stencilStoreOp() const { return stencilStore == VK_ATTACHMENT_STORE_OP_MAX_ENUM ? depthStore : stencilStore; }
+    VkImageLayout depthLayout() const {
+        if (tileShading) return VK_IMAGE_LAYOUT_GENERAL;
+        if (!depth || (!depthReadOnly && !stencilReadOnly)) return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        if (!depth->stencil()) return depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        if (!depth->depth()) return stencilReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        const bool dr = depthReadOnly, sr = stencilReadOnly;
+        if (dr && sr) return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        if (dr) return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+        if (sr) return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL;
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
     uint32_t depthMip = 0, depthLayer = 0, clearStencil = 0;
     uint32_t viewMask = 0, layers = 1;
     std::shared_ptr<Texture> depthResolve;
@@ -501,7 +519,7 @@ struct Render {
 };
 VkRenderPass makeSubpassPass(Device &, const SubpassLayout &, const std::vector<Attachment> &, VkAttachmentLoadOp,
                              VkAttachmentStoreOp, uint32_t viewMask, bool tileShading = false,
-                             VkExtent2D tileApron = {}, VkExtent2D rateMapTexelSize = {});
+                             VkExtent2D tileApron = {}, VkExtent2D rateMapTexelSize = {}, const Render *render = nullptr);
 Attachment subpassAttachment(const Render &, uint32_t index);
 struct ImageRegion {
     uint32_t mip = 0, layer = 0, layers = 1;

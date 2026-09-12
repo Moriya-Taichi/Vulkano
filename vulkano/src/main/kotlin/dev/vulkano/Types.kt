@@ -77,6 +77,7 @@ enum class Feature(internal val bit: Long, internal val group: Int = 0) {
     RAY_TRACING_MOTION_BLUR(4096, 1),
     VERTEX_ATTRIBUTE_DIVISOR(8192, 1),
     VERTEX_ATTRIBUTE_ZERO_DIVISOR(16384, 1),
+    ATTACHMENT_STORE_NONE(32768, 1),
 }
 
 enum class StorageMode {
@@ -283,6 +284,8 @@ enum class LoadAction(internal val vk: Int) {
 enum class StoreAction(internal val vk: Int) {
     STORE(0),
     DONT_CARE(1),
+    /** Preserves an unmodified read-only depth/stencil aspect without a store access. */
+    NONE(1000301000),
 }
 
 enum class CommandBufferStatus {
@@ -470,6 +473,11 @@ data class DepthAttachment(
     val resolveSlice: Int = 0,
     val depthResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
     val stencilResolveMode: ResolveMode = ResolveMode.SAMPLE_ZERO,
+    /** Null inherits loadAction, including when the descriptor is copied. */
+    val stencilLoadAction: LoadAction? = null,
+    val stencilStoreAction: StoreAction? = null,
+    val depthReadOnly: Boolean = false,
+    val stencilReadOnly: Boolean = false,
 )
 
 data class RenderPassDescriptor(
