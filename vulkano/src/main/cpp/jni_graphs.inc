@@ -74,16 +74,16 @@ JNI_METHOD(jlong, createGraphPipeline)
         specialize(env, source, specialization);
         require(queue >= 0 && descriptions && constantDescriptions && constantData, "Missing graph pipeline options");
         auto indices = ints(env, keys), ids = ints(env, constantIds);
-        require(indices.size() % 2 == 0 && indices.size() / 2 == size_t(env->GetArrayLength(descriptions)),
+        require(indices.size() % 3 == 0 && indices.size() / 3 == size_t(env->GetArrayLength(descriptions)),
                 "Invalid graph binding descriptions");
         require(ids.size() == size_t(env->GetArrayLength(constantDescriptions)) &&
                     ids.size() == size_t(env->GetArrayLength(constantData)),
                 "Invalid graph constants");
         std::vector<GraphBinding> resources;
-        for (size_t i = 0; i < indices.size(); i += 2) {
-            require(indices[i] >= 0 && indices[i + 1] > 0, "Invalid graph binding index or count");
+        for (size_t i = 0; i < indices.size(); i += 3) {
+            require(indices[i] >= 0 && indices[i + 1] > 0 && indices[i + 2] >= 0, "Invalid graph binding index or count");
             resources.push_back(
-                {uint32_t(indices[i]), uint32_t(indices[i + 1]), graphTensorOptions(env, descriptions, i / 2)});
+                {uint32_t(indices[i]), uint32_t(indices[i + 1]), graphTensorOptions(env, descriptions, i / 3), uint32_t(indices[i + 2])});
         }
         std::vector<GraphConstant> constants;
         for (size_t i = 0; i < ids.size(); ++i) {
@@ -129,17 +129,6 @@ JNI_METHOD(jbyteArray, graphProperty)(JNIEnv *env, jobject, jlong pipeline, jint
 }
 JNI_METHOD(void, dispatchGraph)(JNIEnv *env, jobject, jlong command, jlong pipeline, jlongArray tensors) {
     return guard(env, [&] {
-        const auto values = longValues(env, tensors);
-        require(values.size() % 3 == 0, "Invalid graph tensor bindings");
-        std::vector<Binding> bindings;
-        for (size_t i = 0; i < values.size(); i += 3) {
-            require(values[i] >= 0 && values[i] <= UINT32_MAX && values[i + 1] >= 0 && values[i + 1] <= UINT32_MAX,
-                    "Invalid graph tensor binding index");
-            Binding binding{uint32_t(values[i])};
-            binding.element = uint32_t(values[i + 1]);
-            binding.tensor = get<TensorView>(values[i + 2]);
-            bindings.push_back(std::move(binding));
-        }
-        get<Command>(command)->dispatchGraph(get<GraphPipeline>(pipeline), std::move(bindings));
+        get<Command>(command)->dispatchGraph(get<GraphPipeline>(pipeline), bindings(env, tensors));
     });
 }

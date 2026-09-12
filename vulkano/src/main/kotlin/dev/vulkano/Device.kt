@@ -42,6 +42,7 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
                 Size(p[11].toInt(), p[12].toInt(), p[13].toInt()),
                 Size(p[14].toInt(), p[15].toInt(), p[16].toInt()),
                 p[21] / 1000f,
+                p[24].toInt(),
             ),
             p[17].toInt(),
             p[18].toInt(),
@@ -317,7 +318,7 @@ internal fun packLayout(bindings: List<BindingLayout>): IntArray =
     bindings
         .flatMap {
             val sampler = it.immutableSampler?.handle() ?: 0L
-            listOf(it.index, it.type.vk, it.count, sampler.toInt(), (sampler ushr 32).toInt())
+            listOf(it.index, it.type.vk, it.count, sampler.toInt(), (sampler ushr 32).toInt(), it.set)
         }
         .toIntArray()
 

@@ -29,7 +29,7 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | Texture View / Buffer | makeTextureView / makeTextureBuffer | Subresource、互換Format、Depth/Stencil Aspect、Swizzle、Usage制限、VkBufferView |
 | Sampler | SamplerDescriptor | LOD、Mip Filter、Compare、Anisotropy、Min/Max、Border Color、Immutable Sampler |
 | 転送 | Blit Encoder | Buffer、Texture領域、Depth/Stencilの個別転送、Mip、Slice、Fill |
-| Argument Bufferに相当する配列 | BindingLayout / arrayElement | 固定Descriptor Array、端末依存のRuntime Array、BDAによる間接参照 |
+| Argument Bufferに相当するBinding | BindingLayout / ResourceBindings / arrayElement | 複数Descriptor Set、更新可能なグループ、記録時Snapshot、固定Descriptor Array、端末依存Runtime Array、BDA |
 | Function Constants | FunctionConstants | 8/16/32/64ビット整数、Half/Float/Double、BooleanのSpecialization Constants |
 | Tessellation | Control / Evaluation Function | 端末依存。Patch Primitive |
 | Object / Mesh Shader | objectFunction / meshShader | VK_EXT_mesh_shader。Task Shaderは別Feature |

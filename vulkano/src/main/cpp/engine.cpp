@@ -664,11 +664,12 @@ struct Module {
                 "16-bit arithmetic with subgroups requires extended-type support, which is not enabled");
         for (uint32_t set = 0; set < reflectedEntry->descriptor_set_count; ++set) {
             const auto &descriptors = reflectedEntry->descriptor_sets[set];
-            require(descriptors.set == 0, "Only descriptor set 0 is exposed");
+            require(descriptors.set < d.properties.limits.maxBoundDescriptorSets, "Descriptor set exceeds device limit");
             for (uint32_t i = 0; i < descriptors.binding_count; ++i) {
                 const auto &b = *descriptors.bindings[i];
                 require(b.count > 0 || (d.enabled & DescriptorIndexing), "Runtime arrays require descriptor indexing");
                 BindingLayout binding{b.binding, static_cast<VkDescriptorType>(b.descriptor_type)};
+                binding.set = descriptors.set;
                 binding.count = b.count;
                 binding.runtime = b.count == 0;
                 binding.stages = reflectedEntry->shader_stage;
@@ -887,12 +888,12 @@ struct Module {
     }
 };
 void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &modules) {
-    std::map<uint32_t, BindingLayout> reflected;
+    std::map<uint64_t, BindingLayout> reflected;
     uint32_t pushBytes = 0;
     for (const auto *module : modules) {
         pushBytes = std::max(pushBytes, module->reflectedPushBytes);
         for (const auto &b : module->reflectedBindings) {
-            auto [it, inserted] = reflected.emplace(b.binding, b);
+            auto [it, inserted] = reflected.emplace(b.location(), b);
             if (!inserted) {
                 require(it->second.type == b.type && it->second.storageFormat == b.storageFormat &&
                             it->second.count == b.count && it->second.imageDim == b.imageDim &&
@@ -918,15 +919,15 @@ void resolveLayout(Pipeline &pipeline, const std::vector<const Module *> &module
     if (!pipeline.bindings.empty()) {
         require(pipeline.bindings.size() == reflected.size(),
                 "Explicit bindings do not match reflected shader bindings");
-        std::set<uint32_t> indices;
+        std::set<uint64_t> indices;
         for (const auto &b : pipeline.bindings) {
-            require(indices.insert(b.binding).second && reflected.count(b.binding) &&
-                        reflected.at(b.binding).type == b.type && b.count > 0 &&
-                        (reflected.at(b.binding).count == 0 || reflected.at(b.binding).count == b.count),
+            require(indices.insert(b.location()).second && reflected.count(b.location()) &&
+                        reflected.at(b.location()).type == b.type && b.count > 0 &&
+                        (reflected.at(b.location()).count == 0 || reflected.at(b.location()).count == b.count),
                     "Explicit binding differs from shader declaration");
-            reflected.at(b.binding).immutableSampler = b.immutableSampler;
-            if (reflected.at(b.binding).runtime)
-                reflected.at(b.binding).count = b.count;
+            reflected.at(b.location()).immutableSampler = b.immutableSampler;
+            if (reflected.at(b.location()).runtime)
+                reflected.at(b.location()).count = b.count;
         }
     }
     pipeline.bindings.clear();
@@ -1387,10 +1388,13 @@ void Pipeline::makeLayout() {
     std::vector<VkDescriptorSetLayoutBinding> vkBindings;
     std::vector<std::vector<VkSampler>> immutableSamplers;
     immutableSamplers.reserve(bindings.size());
-    std::set<uint32_t> indices;
+    std::set<uint64_t> indices;
+    uint32_t setCount = 1;
     std::map<VkDescriptorType, uint64_t> counts;
     for (const auto &b : bindings) {
-        require(indices.insert(b.binding).second, "Duplicate descriptor binding");
+        require(indices.insert(b.location()).second, "Duplicate descriptor binding");
+        require(b.set < d->properties.limits.maxBoundDescriptorSets, "Descriptor set exceeds device limit");
+        setCount = std::max(setCount, b.set + 1);
         require(b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                     b.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || b.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                     b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR ||
@@ -1463,23 +1467,30 @@ void Pipeline::makeLayout() {
                     stageCounts[b.type] += b.descriptorCost();
             checkLimits(stageCounts, true);
         }
-    std::vector<VkDescriptorBindingFlags> flags;
-    for (const auto &b : bindings)
-        flags.push_back(b.runtime ? VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT : 0);
-    VkDescriptorSetLayoutBindingFlagsCreateInfo indexing{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
-    indexing.bindingCount = uint32_t(flags.size());
-    indexing.pBindingFlags = flags.data();
-    VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    if (d->enabled & DescriptorIndexing)
-        setInfo.pNext = &indexing;
-    setInfo.bindingCount = static_cast<uint32_t>(vkBindings.size());
-    setInfo.pBindings = vkBindings.data();
-    check(vkCreateDescriptorSetLayout(d->device, &setInfo, nullptr, &setLayout), "vkCreateDescriptorSetLayout");
+    setLayouts.resize(setCount, VK_NULL_HANDLE);
+    for (uint32_t set = 0; set < setCount; ++set) {
+        std::vector<VkDescriptorSetLayoutBinding> entries;
+        std::vector<VkDescriptorBindingFlags> flags;
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            if (bindings[i].set != set) continue;
+            entries.push_back(vkBindings[i]);
+            flags.push_back(bindings[i].runtime ? VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT : 0);
+        }
+        VkDescriptorSetLayoutBindingFlagsCreateInfo indexing{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+        indexing.bindingCount = uint32_t(flags.size());
+        indexing.pBindingFlags = flags.data();
+        VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        if (d->enabled & DescriptorIndexing) info.pNext = &indexing;
+        info.bindingCount = uint32_t(entries.size());
+        info.pBindings = entries.data();
+        check(vkCreateDescriptorSetLayout(d->device, &info, nullptr, &setLayouts[set]), "vkCreateDescriptorSetLayout");
+    }
+    setLayout = setLayouts.front();
     VkPushConstantRange range{stages, 0, pushBytes};
     VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &setLayout;
+    layoutInfo.setLayoutCount = uint32_t(setLayouts.size());
+    layoutInfo.pSetLayouts = setLayouts.data();
     layoutInfo.pushConstantRangeCount = pushBytes ? 1 : 0;
     layoutInfo.pPushConstantRanges = &range;
     check(vkCreatePipelineLayout(d->device, &layoutInfo, nullptr, &layout), "vkCreatePipelineLayout");
@@ -1518,8 +1529,8 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
             vkDestroyPipeline(d->device, pipeline, nullptr);
         if (layout)
             vkDestroyPipelineLayout(d->device, layout, nullptr);
-        if (setLayout)
-            vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
+        for (auto set : setLayouts)
+            vkDestroyDescriptorSetLayout(d->device, set, nullptr);
         throw;
     }
 }
@@ -1831,8 +1842,8 @@ Pipeline::Pipeline(std::shared_ptr<Device> device, std::vector<BindingLayout> b,
             vkDestroyPipeline(d->device, pipeline, nullptr);
         if (layout)
             vkDestroyPipelineLayout(d->device, layout, nullptr);
-        if (setLayout)
-            vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
+        for (auto set : setLayouts)
+            vkDestroyDescriptorSetLayout(d->device, set, nullptr);
         throw;
     }
 }
@@ -1980,7 +1991,7 @@ RayTracingPipeline::RayTracingPipeline(std::shared_ptr<Device> device, std::vect
 static void resolveSamplers(const Pipeline &p, std::vector<Binding> &bindings) {
     for (auto &b : bindings)
         for (const auto &schema : p.bindings)
-            if (b.index == schema.binding && schema.immutableSampler && !b.sampler)
+            if (b.location() == schema.location() && schema.immutableSampler && !b.sampler)
                 b.sampler = schema.immutableSampler;
 }
 void Command::trace(std::shared_ptr<RayTracingPipeline> p, std::vector<Binding> bs, std::vector<uint8_t> constants,
@@ -2018,8 +2029,8 @@ Pipeline::~Pipeline() {
         vkDestroyPipeline(d->device, pipeline, nullptr);
     if (layout)
         vkDestroyPipelineLayout(d->device, layout, nullptr);
-    if (setLayout)
-        vkDestroyDescriptorSetLayout(d->device, setLayout, nullptr);
+    for (auto set : setLayouts)
+        vkDestroyDescriptorSetLayout(d->device, set, nullptr);
 }
 
 Command::Command(std::shared_ptr<Device> device, uint32_t index) : Resource(std::move(device)), queueIndex(index) {
@@ -2061,14 +2072,14 @@ void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs
     for (const auto &schema : p.bindings) {
         if (schema.runtime || (schema.type == VK_DESCRIPTOR_TYPE_SAMPLER && schema.immutableSampler))
             continue; // Unbound runtime elements MUST NOT be accessed by a shader.
-        size_t count = std::count_if(bs.begin(), bs.end(), [&](const Binding &b) { return b.index == schema.binding; });
+        size_t count = std::count_if(bs.begin(), bs.end(), [&](const Binding &b) { return b.location() == schema.location(); });
         require(count == schema.count, "Every fixed binding/array element must be supplied");
     }
-    std::set<std::pair<uint32_t, uint32_t>> found;
+    std::set<std::pair<uint64_t, uint32_t>> found;
     for (const auto &b : bs) {
-        require(found.insert({b.index, b.element}).second, "Duplicate binding");
+        require(found.insert({b.location(), b.element}).second, "Duplicate binding");
         auto schema =
-            std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.binding == b.index; });
+            std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.location() == b.location(); });
         require(schema != p.bindings.end() && b.element < schema->count,
                 "Binding/array element is not declared in pipeline");
         require(!schema->immutableSampler || b.sampler == schema->immutableSampler,
@@ -2199,7 +2210,7 @@ void Command::prepare(const Pipeline &p, const std::vector<Binding> &bindings, b
                                     ? VK_IMAGE_LAYOUT_GENERAL
                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             auto schema =
-                std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.binding == b.index; });
+                std::find_if(p.bindings.begin(), p.bindings.end(), [&](const auto &s) { return s.location() == b.location(); });
             if (schema->tile || schema->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
                 continue;
             const bool sampled = schema->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
@@ -2219,15 +2230,16 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
         vkCmdBindPipeline(command, point, p.pipeline);
         bound = p.pipeline;
     }
-    if (!p.bindings.empty()) {
+    for (uint32_t setIndex = 0; setIndex < p.setLayouts.size(); ++setIndex) {
+        if (std::none_of(p.bindings.begin(), p.bindings.end(), [&](const auto &b) { return b.set == setIndex; })) continue;
         // Canonical binding order; offsets, ranges, sampler and layout identity
         // are part of the key. Push constants deliberately are not.
         std::vector<const Binding *> ordered;
         for (const auto &binding : bs)
-            ordered.push_back(&binding);
+            if (binding.set == setIndex) ordered.push_back(&binding);
         std::sort(ordered.begin(), ordered.end(),
                   [](auto a, auto b) { return std::tie(a->index, a->element) < std::tie(b->index, b->element); });
-        std::vector<uint64_t> key{reinterpret_cast<uintptr_t>(&p)};
+        std::vector<uint64_t> key{reinterpret_cast<uintptr_t>(&p), setIndex};
         for (auto b : ordered) {
             key.insert(key.end(),
                        {b->index, b->element, reinterpret_cast<uintptr_t>(b->buffer.get()), b->offset, b->length,
@@ -2243,14 +2255,14 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
         } else {
             uint64_t descriptors = 0;
             for (const auto &b : p.bindings)
-                descriptors += b.descriptorCost();
+                if (b.set == setIndex) descriptors += b.descriptorCost();
             const uint32_t setsPerPool = uint32_t(std::max(
                 1ull, std::min(64ull, 4096ull / std::max(1ull, static_cast<unsigned long long>(descriptors)))));
-            auto &arena = descriptorArenas[&p];
+            auto &arena = descriptorArenas[{&p, setIndex}];
             if (!arena.pool || arena.used == setsPerPool) {
                 std::map<VkDescriptorType, uint32_t> counts;
                 for (const auto &b : p.bindings)
-                    counts[b.type] += setsPerPool * b.descriptorCost();
+                    if (b.set == setIndex) counts[b.type] += setsPerPool * b.descriptorCost();
                 std::vector<VkDescriptorPoolSize> sizes;
                 for (auto [type, count] : counts)
                     sizes.push_back({type, count});
@@ -2267,16 +2279,16 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
             VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
             ai.descriptorPool = arena.pool;
             ai.descriptorSetCount = 1;
-            ai.pSetLayouts = &p.setLayout;
+            ai.pSetLayouts = &p.setLayouts[setIndex];
             check(vkAllocateDescriptorSets(d->device, &ai, &set), "vkAllocateDescriptorSets");
             ++arena.used;
-            std::vector<VkDescriptorBufferInfo> buffersInfo(bs.size());
-            std::vector<VkDescriptorImageInfo> imageInfo(bs.size());
-            std::vector<VkWriteDescriptorSet> writes(bs.size());
-            std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfo(bs.size());
-            std::vector<VkWriteDescriptorSetTensorARM> tensorInfo(bs.size());
-            for (size_t i = 0; i < bs.size(); ++i) {
-                const auto &b = bs[i];
+            std::vector<VkDescriptorBufferInfo> buffersInfo(ordered.size());
+            std::vector<VkDescriptorImageInfo> imageInfo(ordered.size());
+            std::vector<VkWriteDescriptorSet> writes(ordered.size());
+            std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationInfo(ordered.size());
+            std::vector<VkWriteDescriptorSetTensorARM> tensorInfo(ordered.size());
+            for (size_t i = 0; i < ordered.size(); ++i) {
+                const auto &b = *ordered[i];
                 auto &w = writes[i];
                 w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 w.dstSet = set;
@@ -2284,7 +2296,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 w.dstArrayElement = b.element;
                 w.descriptorCount = 1;
                 const auto schema = std::find_if(p.bindings.begin(), p.bindings.end(),
-                                                 [&](const auto &s) { return s.binding == b.index; });
+                                                 [&](const auto &s) { return s.location() == b.location(); });
                 w.descriptorType = schema->type;
                 if (b.buffer) {
                     buffersInfo[i] = {b.buffer->buffer, b.offset, b.length};
@@ -2318,7 +2330,7 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
             vkUpdateDescriptorSets(d->device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
             descriptorSets.emplace(std::move(key), set);
         }
-        vkCmdBindDescriptorSets(command, point, p.layout, 0, 1, &set, 0, nullptr);
+        vkCmdBindDescriptorSets(command, point, p.layout, setIndex, 1, &set, 0, nullptr);
     }
     if (!constants.empty())
         vkCmdPushConstants(command, p.layout, p.stages, 0, static_cast<uint32_t>(constants.size()), constants.data());
@@ -2647,7 +2659,7 @@ void Command::render(Render op) {
             if (b.buffer)
                 buffers.push_back(b.buffer);
             const auto schema = std::find_if(draw.pipeline->bindings.begin(), draw.pipeline->bindings.end(),
-                                             [&](const auto &s) { return s.binding == b.index; });
+                                             [&](const auto &s) { return s.location() == b.location(); });
             if (schema->tile) {
                 validateTileBinding(*draw.pipeline, *schema, b, op, draw.subpass);
                 continue;

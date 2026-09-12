@@ -315,9 +315,10 @@ data class BindingLayout(
     val type: BindingType,
     val count: Int = 1,
     val immutableSampler: Sampler? = null,
+    val set: Int = 0,
 ) {
     init {
-        require(index >= 0 && count > 0)
+        require(index >= 0 && count > 0 && set >= 0)
     }
 }
 
@@ -514,6 +515,7 @@ data class DeviceLimits(
     val maxThreadgroupSize: Size,
     val maxThreadgroupCount: Size,
     val maxSamplerAnisotropy: Float,
+    val maxBoundDescriptorSets: Int = 4,
 )
 
 data class DeviceCapabilities(

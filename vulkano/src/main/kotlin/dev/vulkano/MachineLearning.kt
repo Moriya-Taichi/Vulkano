@@ -43,9 +43,10 @@ data class MachineLearningTensorBinding(
     val index: Int,
     val descriptor: TensorResourceDescriptor,
     val arrayLength: Int = 1,
+    val set: Int = 0,
 ) {
     init {
-        require(index >= 0 && arrayLength > 0)
+        require(index >= 0 && arrayLength > 0 && set >= 0)
         require(TensorUsage.MACHINE_LEARNING in descriptor.usage)
     }
 }
@@ -157,7 +158,7 @@ private fun Device.createMachineLearningPipeline(
     require(
         queueIndex in commandQueues.indices && commandQueues[queueIndex].supportsMachineLearning
     )
-    require(tensorBindings.map { it.index }.toSet().size == tensorBindings.size)
+    require(tensorBindings.map { it.set to it.index }.toSet().size == tensorBindings.size)
     require(constants.map { it.id }.toSet().size == constants.size)
     require('\u0000' !in compilerOptions)
     val bindings = tensorBindings.toList()
@@ -168,7 +169,7 @@ private fun Device.createMachineLearningPipeline(
             function?.library?.code ?: byteArrayOf(),
             function?.name ?: "main",
             function?.constants ?: intArrayOf(),
-            bindings.flatMap { listOf(it.index, it.arrayLength) }.toIntArray(),
+            bindings.flatMap { listOf(it.index, it.arrayLength, it.set) }.toIntArray(),
             bindings.map { it.descriptor.graphDescription() }.toTypedArray(),
             constants.map { it.id }.toIntArray(),
             constants.map { it.descriptor.graphDescription() }.toTypedArray(),
@@ -182,13 +183,8 @@ private fun Device.createMachineLearningPipeline(
 }
 
 class MachineLearningCommandEncoder internal constructor(command: CommandBuffer) :
-    CommandEncoder(command) {
+    ShaderCommandEncoder(command) {
     private var pipeline: MachineLearningPipelineState? = null
-    private val tensors =
-        sortedMapOf<Pair<Int, Int>, TensorView>(
-            compareBy<Pair<Int, Int>> { it.first }.thenBy { it.second }
-        )
-
     fun setMachineLearningPipelineState(state: MachineLearningPipelineState): Unit = encode {
         require(
             state.device === commandBuffer.device &&
@@ -198,14 +194,6 @@ class MachineLearningCommandEncoder internal constructor(command: CommandBuffer)
         pipeline = state
     }
 
-    fun setTensor(view: TensorView, index: Int, arrayElement: Int = 0): Unit = encode {
-        require(view.device === commandBuffer.device && index >= 0 && arrayElement >= 0)
-        view.handle()
-        tensors[index to arrayElement] = view
-    }
-
-    fun resetBindings(): Unit = encode { tensors.clear() }
-
     /**
      * Encodes one graph invocation; subsequent invocations observe earlier writes on this queue.
      */
@@ -214,11 +202,7 @@ class MachineLearningCommandEncoder internal constructor(command: CommandBuffer)
         Native.dispatchGraph(
             command,
             state.handle(),
-            tensors
-                .flatMap { (key, view) ->
-                    listOf(key.first.toLong(), key.second.toLong(), view.handle())
-                }
-                .toLongArray(),
+            bindingData(),
         )
     }
 }

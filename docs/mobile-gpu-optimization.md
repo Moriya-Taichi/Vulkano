@@ -7,7 +7,7 @@ AndroidのモバイルGPUを対象に、CPU側のVulkanオブジェクト作成�
 | 対象 | 処理 |
 | --- | --- |
 | Descriptor Pool | Command内でPipelineごとに64セット単位で確保。個別解放フラグを使わず、Command終了後にまとめて解放 |
-| Descriptor Set | Pipeline、Binding番号、Buffer/Texture/Sampler、Offset、Rangeが同じなら更新済みのSetを再利用。Bindingの指定順には依存しない |
+| Descriptor Set | Pipeline、Set番号、Binding番号、Buffer/Texture/Sampler、Offset、Rangeが同じなら更新済みのSetを再利用。Bindingの指定順には依存しない |
 | Pipeline | Deviceごとの`VkPipelineCache`をCompute/Graphics両方で使用。同一Pipelineの連続Bindを省略 |
 | Render Pass | FormatとLoad/Storeの組み合わせでDevice内にキャッシュ。FramebufferやAttachmentの寿命とは分離 |
 | Shared Buffer | VMAで常時マッピング。小さなread/writeのたびにVulkanメモリをMap/Unmapしない。Flush/InvalidateとGPU使用中のCPUアクセス検査は継続 |

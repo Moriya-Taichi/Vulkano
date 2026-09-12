@@ -7,6 +7,10 @@ internal object Native {
         System.loadLibrary("vulkano")
     }
 
+    external fun createResourceBindings(device: Long, set: Int, data: LongArray): Long
+
+    external fun updateResourceBindings(id: Long, data: LongArray, removed: LongArray, clear: Boolean)
+
     external fun graphCapabilities(device: Long): IntArray
 
     external fun graphOperations(device: Long, queue: Int): Array<String>

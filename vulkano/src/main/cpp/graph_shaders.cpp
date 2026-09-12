@@ -77,12 +77,13 @@ GraphInterface reflectGraph(Device &d, const Shader &shader) {
     };
     std::set<uint32_t> used;
     for (auto id : interfaces) {
-        require(used.insert(id).second && indices.count(id) && sets.count(id) && sets[id] == 0,
-                "Graph interfaces need unique variables in descriptor set zero");
+        require(used.insert(id).second && indices.count(id) && sets.count(id) && sets[id] < d.properties.limits.maxBoundDescriptorSets,
+                "Graph interfaces need unique variables and valid descriptor sets");
         auto v = node(id, 4);
         require((v[0] & 0xffff) == SpvOpVariable && v[3] == SpvStorageClassUniformConstant,
                 "Graph interface must use UniformConstant storage");
         BindingLayout binding{indices[id], VK_DESCRIPTOR_TYPE_TENSOR_ARM};
+        binding.set = sets[id];
         auto pointer = node(v[1], 4);
         require((pointer[0] & 0xffff) == SpvOpTypePointer, "Graph interface pointer required");
         auto type = node(pointer[3], 3);
@@ -100,7 +101,7 @@ GraphInterface reflectGraph(Device &d, const Shader &shader) {
                     "Graph interfaces require tensors or fixed tensor arrays");
         reflectTensorBinding(d, shader, id, binding, true);
         for (const auto &previous : result.bindings)
-            require(previous.binding != binding.binding, "Graph interfaces alias the same descriptor binding");
+            require(previous.location() != binding.location(), "Graph interfaces alias the same descriptor binding");
         result.bindings.push_back(std::move(binding));
     }
     for (const auto &[constant, id] : constants) {

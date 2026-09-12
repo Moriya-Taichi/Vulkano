@@ -84,10 +84,10 @@ std::vector<uint64_t> generatedGraphicsKey(const Pipeline &p) {
 }
 namespace {
 bool sameBinding(const BindingLayout &a, const BindingLayout &b) {
-    return std::tie(a.binding, a.type, a.storageFormat, a.minimumBytes, a.count, a.stages, a.imageDim, a.arrayed,
+    return std::tie(a.set, a.binding, a.type, a.storageFormat, a.minimumBytes, a.count, a.stages, a.imageDim, a.arrayed,
                     a.multisampled, a.shadow, a.runtime, a.inputAttachmentIndex, a.numericType, a.immutableSampler,
                     a.tile, a.readonly, a.tensorRank, a.tensorDimensions) ==
-           std::tie(b.binding, b.type, b.storageFormat, b.minimumBytes, b.count, b.stages, b.imageDim, b.arrayed,
+           std::tie(b.set, b.binding, b.type, b.storageFormat, b.minimumBytes, b.count, b.stages, b.imageDim, b.arrayed,
                     b.multisampled, b.shadow, b.runtime, b.inputAttachmentIndex, b.numericType, b.immutableSampler,
                     b.tile, b.readonly, b.tensorRank, b.tensorDimensions);
 }
