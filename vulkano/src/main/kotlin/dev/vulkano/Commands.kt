@@ -1,6 +1,10 @@
 package dev.vulkano
 
 import dev.vulkano.internal.Native
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
 class CommandQueue
 internal constructor(private val device: Device, val capabilities: CommandQueueCapabilities) :
@@ -25,17 +29,52 @@ class CommandBuffer
 internal constructor(device: Device, id: Long, val queueCapabilities: CommandQueueCapabilities) :
     Resource(device, id) {
     private var encoder: CommandEncoder? = null
+    internal val completion = CompletableFuture<CommandBufferCompletion>()
+    internal val completionQueued = AtomicBoolean()
+    internal val monitoring = AtomicBoolean()
+    private var submitted = false
+    private var completionRequested = false
+
+    /** Each caller receives an independent future; cancelling it does not cancel GPU work. */
+    fun completionFuture(): CompletableFuture<CommandBufferCompletion> {
+        val observe = synchronized(device) {
+            completionRequested = true
+            if (!completionQueued.get()) device.observeCompletion(this)
+            submitted || isClosed || device.closed
+        }
+        if (observe) CompletionMonitor.watch(this)
+        return completion.thenApply { it }
+    }
+
+    /** Runs once on the supplied executor, outside Device locks. Handler failures affect its future. */
+    fun addCompletedHandler(
+        executor: Executor = CompletionMonitor.callbacks,
+        handler: (CommandBufferCompletion) -> Unit,
+    ): CompletableFuture<Void> = completionFuture().thenAcceptAsync({ handler(it) }, executor)
+
+    internal fun pollCompletion(): CommandBufferCompletion? = synchronized(device) {
+        try {
+            if (device.closed || isClosed) {
+                if (submitted) CommandBufferCompletion(CommandBufferStatus.COMPLETED)
+                else CommandBufferCompletion(CommandBufferStatus.FAILED, CancellationException("Command closed before submission"))
+            } else when (CommandBufferStatus.entries[Native.commandState(handle())]) {
+                CommandBufferStatus.COMPLETED -> CommandBufferCompletion(CommandBufferStatus.COMPLETED)
+                CommandBufferStatus.FAILED -> CommandBufferCompletion(CommandBufferStatus.FAILED, IllegalStateException("Command failed"))
+                else -> null
+            }
+        } catch (error: Throwable) { CommandBufferCompletion(CommandBufferStatus.FAILED, error) }
+    }
     val status: CommandBufferStatus
         get() = access { CommandBufferStatus.entries[Native.commandState(it)] }
 
     internal fun <T> encode(current: CommandEncoder, block: (Long) -> T): T = access {
-        check(encoder === current) { "Encoder has ended or is not active" }
+        check(encoder === current || (encoder as? ParallelRenderCommandEncoder)?.owns(current) == true) { "Encoder has ended or is not active" }
         block(it)
     }
 
     internal fun ended(current: CommandEncoder) {
-        check(encoder === current)
-        encoder = null
+        if (encoder === current) encoder = null
+        else checkNotNull(encoder as? ParallelRenderCommandEncoder).childEnded(current)
     }
 
     private fun recording() {
@@ -111,7 +150,7 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
         RayTracingCommandEncoder(this).also { encoder = it }
     }
 
-    fun makeRenderCommandEncoder(pass: RenderPassDescriptor): RenderCommandEncoder = access {
+    private fun beginRender(pass: RenderPassDescriptor): Long = access {
         recording()
         require(queueCapabilities.supportsRendering) { "This queue cannot render" }
         val colors = pass.colorAttachments
@@ -188,18 +227,19 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
                             )
                     })
                 .toFloatArray()
-        RenderCommandEncoder(
-                this,
-                Native.beginRenderAdvanced(
-                    it,
-                    handles,
-                    actions,
-                    clear,
-                    pass.subpassLayout?.pack() ?: intArrayOf(),
-                    pass.tileShading?.pack() ?: intArrayOf(),
-                ),
-            )
-            .also { encoder = it }
+        Native.beginRenderAdvanced(
+            it, handles, actions, clear, pass.subpassLayout?.pack() ?: intArrayOf(),
+            pass.tileShading?.pack() ?: intArrayOf())
+    }
+
+    fun makeRenderCommandEncoder(pass: RenderPassDescriptor): RenderCommandEncoder = access {
+        RenderCommandEncoder(this, beginRender(pass)).also { encoder = it }
+    }
+
+    /** Independent CPU recording state, assembled in child creation order when the parent ends. */
+    fun makeParallelRenderCommandEncoder(pass: RenderPassDescriptor): ParallelRenderCommandEncoder = access {
+        require(pass.subpassLayout == null && pass.tileShading == null) { "Parallel render recording requires an ordinary pass" }
+        ParallelRenderCommandEncoder(this, beginRender(pass)).also { encoder = it }
     }
 
     fun compute(block: ComputeCommandEncoder.() -> Unit) = scope(makeComputeCommandEncoder(), block)
@@ -235,9 +275,28 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
     }
 
     /** Submits once, asynchronously. Resources remain alive through completion. */
-    fun commit(): Unit = access {
-        recording()
-        Native.commit(it)
+    fun commit() {
+        try {
+            access {
+                recording()
+                Native.commit(it)
+                submitted = true
+            }
+        } catch (error: Throwable) {
+            synchronized(device) {
+                if (!device.closed && !isClosed) {
+                    val state = try { CommandBufferStatus.entries[Native.commandState(handle())] } catch (_: Throwable) { CommandBufferStatus.FAILED }
+                    if (state == CommandBufferStatus.FAILED)
+                        CompletionMonitor.finish(this, CommandBufferCompletion(state, error))
+                    else if (state == CommandBufferStatus.SUBMITTED || state == CommandBufferStatus.COMPLETED) {
+                        submitted = true // Presentation may fail after successful queue submission.
+                        if (completionRequested) CompletionMonitor.watch(this)
+                    }
+                }
+            }
+            throw error
+        }
+        if (synchronized(device) { completionRequested }) CompletionMonitor.watch(this)
     }
 
     /** Blocking worker-thread wait. Releases device locks between completion polls. */
@@ -245,7 +304,10 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
         require(timeoutNanos >= 0)
         val start = System.nanoTime()
         do {
-            if (access { Native.waitCommand(it, 0) }) return true
+            if (access { Native.waitCommand(it, 0) }) {
+                CompletionMonitor.finish(this, CommandBufferCompletion(CommandBufferStatus.COMPLETED))
+                return true
+            }
             if (timeoutNanos == 0L || System.nanoTime() - start >= timeoutNanos) return false
             Thread.sleep(1)
         } while (true)
@@ -281,6 +343,8 @@ internal constructor(device: Device, id: Long, val queueCapabilities: CommandQue
             encoder?.abort()
             encoder = null
             super.close()
+            CompletionMonitor.finish(this, if (submitted) CommandBufferCompletion(CommandBufferStatus.COMPLETED)
+                else CommandBufferCompletion(CommandBufferStatus.FAILED, CancellationException("Command closed before submission")))
         }
     }
 }
@@ -542,6 +606,13 @@ internal constructor(command: CommandBuffer, private var nativeEncoder: Long) :
 
     /** Orders attachment, compute and indirect accesses within each tile. */
     fun tileMemoryBarrier(): Unit = encode { Native.tileControl(nativeEncoder, 5) }
+
+    /**
+     * Makes earlier draws' memory accesses visible to later draws, including vertex and indirect
+     * reads. Splits the Vulkan render pass with intermediate STORE/LOAD operations. Requires
+     * persistent attachments and a pass without subpasses or tile shading. Encoder state is kept.
+     */
+    fun memoryBarrier(): Unit = encode { Native.renderMemoryBarrier(nativeEncoder) }
 
     fun setTileComputePipelineState(state: ComputePipelineState): Unit = encode {
         require(state.device === commandBuffer.device)

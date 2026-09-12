@@ -520,6 +520,7 @@ struct Render {
                           stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
     bool tileShading = false;
     VkExtent2D tileApron{};
+    std::vector<size_t> memoryBarriers;
 };
 VkRenderPass makeSubpassPass(Device &, const SubpassLayout &, const std::vector<Attachment> &, VkAttachmentLoadOp,
                              VkAttachmentStoreOp, uint32_t viewMask, bool tileShading = false,

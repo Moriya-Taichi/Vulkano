@@ -2398,6 +2398,53 @@ void Command::render(Render op) {
     validateTileOptions(*d, op.tileShading, op.tileApron);
     if (op.colors.empty() && op.color)
         op.colors.push_back({op.color, {}, 0, 0, 0, 0, op.colorLoad, op.colorStore, op.clearColor});
+    if (!op.memoryBarriers.empty()) {
+        require(!op.passLayout && !op.tileShading, "Use subpass dependencies or tileMemoryBarrier inside specialized passes");
+        for (const auto &a : op.colors)
+            require(a.texture && a.texture->storage != Storage::Memoryless, "Render memory barriers require stored attachments");
+        require(!op.depth || op.depth->storage != Storage::Memoryless, "Render memory barriers cannot preserve memoryless depth/stencil");
+        require(std::is_sorted(op.memoryBarriers.begin(), op.memoryBarriers.end()) && op.memoryBarriers.back() <= op.draws.size(),
+                "Invalid render memory barrier order");
+        // Resolve inherited aspect actions before changing either aspect for a segment.
+        op.stencilLoad = op.stencilLoadOp();
+        op.stencilStore = op.stencilStoreOp();
+        auto boundaries = std::move(op.memoryBarriers);
+        op.memoryBarriers.clear();
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+        boundaries.erase(std::remove_if(boundaries.begin(), boundaries.end(), [&](size_t index) {
+            return index == 0 || index == op.draws.size();
+        }), boundaries.end());
+        boundaries.push_back(op.draws.size());
+        const auto oldOperations = operations.size(), oldBuffers = buffers.size(), oldCounters = counters.size(),
+                   oldIndices = counterIndices.size();
+        try {
+            size_t start = 0;
+            for (auto end : boundaries) {
+                if (end == start && !op.draws.empty()) continue;
+                Render segment = op;
+                segment.draws.assign(op.draws.begin() + start, op.draws.begin() + end);
+                if (start) {
+                    for (auto &a : segment.colors) a.load = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    segment.depthLoad = segment.stencilLoad = VK_ATTACHMENT_LOAD_OP_LOAD;
+                }
+                if (end < op.draws.size()) {
+                    for (auto &a : segment.colors) a.store = VK_ATTACHMENT_STORE_OP_STORE;
+                    if (segment.depthStore != VK_ATTACHMENT_STORE_OP_NONE) segment.depthStore = VK_ATTACHMENT_STORE_OP_STORE;
+                    if (segment.stencilStore != VK_ATTACHMENT_STORE_OP_NONE) segment.stencilStore = VK_ATTACHMENT_STORE_OP_STORE;
+                }
+                // Each segment emits the existing full memory dependency outside the render pass.
+                render(std::move(segment));
+                start = end;
+            }
+        } catch (...) {
+            operations.resize(oldOperations);
+            buffers.resize(oldBuffers);
+            counters.resize(oldCounters);
+            counterIndices.resize(oldIndices);
+            throw;
+        }
+        return;
+    }
     require(!op.colors.empty() || op.depth, "Render pass requires attachments");
     auto first = op.colors.empty() ? op.depth : op.colors[0].texture;
     require(bool(first), "Missing attachment");
