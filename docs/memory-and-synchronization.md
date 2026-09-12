@@ -51,6 +51,57 @@ Layoutの変更はQueueへの送信が成功してから公開します。送信
 JNI内でもVulkanが求める外部同期を行います。
 引数なしの`makeCommandQueue()`は、同じ順序付きのVulkan Queueを使用します。
 
+## 完了通知とCoroutine
+
+`completionFuture()`はGPU完了または失敗の結果を返します。呼び出しごとに独立したFutureを返すため、1つをCancelしても他の待機やGPU処理には影響しません。
+`addCompletedHandler(executor)`は指定Executorで1回だけ通知します。省略時はDaemonのCallback Workerを使います。
+登録は`commit()`前後、完了後のいずれでも可能です。CallbackはDevice / JNIのLock外で実行し、例外はHandlerが返すFutureへ伝えます。
+GPUのFenceを確認するThreadとは分離しているため、Callbackが他のCommandの完了を待ってもFenceの確認を止めません。
+
+```kotlin
+val command = queue.makeCommandBuffer()
+command.compute { /* PipelineとBindingを指定してDispatch */ }
+val notification = command.addCompletedHandler { result ->
+    if (result.error == null) consumeOutput() else reportFailure(result.error)
+}
+command.commit()
+// suspend関数から呼ぶ。呼び出し元Threadをブロックしない。
+command.awaitCompleted()
+command.close()
+```
+
+`awaitCompleted()`はCoroutineのCancelに対応し、GPUの失敗時には例外を送出します。
+CoroutineのCancelはGPU処理を取り消しません。完了までResourceを保持し、閉じる際は既存の完了待ち規則に従います。
+記録中にCommandまたはDeviceを閉じると、ObserverにはFAILEDとCancellationExceptionを通知します。
+Deviceが送信済み処理の完了を待って正常に閉じた場合、ObserverにはCOMPLETEDを通知します。
+未送信Commandの待機だけを開始しても、GPUへの送信は行いません。
+
+## CPUでの並列Render記録
+
+```kotlin
+val parallel = command.makeParallelRenderCommandEncoder(pass)
+val background = parallel.makeRenderCommandEncoder()
+val foreground = parallel.makeRenderCommandEncoder()
+val first = executor.submit {
+    background.use { /* 独立したPipeline / Binding / Draw状態を記録 */ }
+}
+val second = executor.submit {
+    foreground.use { /* 独立したPipeline / Binding / Draw状態を記録 */ }
+}
+first.get()
+second.get()
+parallel.endEncoding()
+command.commit()
+```
+
+子EncoderはCPUの別Threadで記録でき、作成順にDrawを組み立てます。終了順は描画順に影響しません。
+各子のPipeline、Binding、Viewport、Scissorなどは独立しており、親から継承しません。
+全子Encoderを終了するまで親を終了できず、親が開いている間に別種のEncoderを開始することもできません。
+Commandを閉じると、終了していない子Encoderも破棄します。
+子の末尾の`memoryBarrier()`で次の子への依存関係を指定できます。その場合は保存可能なAttachmentが必要です。
+このAPIは通常のRender Passを対象とし、Subpass LayoutとTile Shadingを使うPassは受け付けません。
+JNIの外部同期と最終的なVulkan Command Bufferの組み立ては直列です。CPU記録の分割を提供し、GPU並列実行や速度向上を保証するものではありません。
+
 ## 独立Queue
 
 `INDEPENDENT_QUEUES`を有効にすると、`Device.commandQueues`から実際に作成されたQueueを選べます。

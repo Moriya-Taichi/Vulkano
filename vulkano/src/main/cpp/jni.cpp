@@ -11,6 +11,7 @@
 #include <cstring>
 #include <jni.h>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <type_traits>
 #include <unistd.h>
@@ -259,6 +260,9 @@ struct PendingRender : Resource {
     Render pass;
     uint32_t subpass = 0;
     bool perTile = false;
+    std::shared_ptr<PendingRender> parent;
+    size_t childIndex = 0;
+    std::vector<std::optional<Render>> children;
     explicit PendingRender(std::shared_ptr<Command> c) : Resource(c->d), command(std::move(c)) {}
 };
 } // namespace
@@ -558,8 +562,36 @@ JNI_METHOD(void, endRender)(JNIEnv *e, jobject, jlong id) {
         require(!p->pass.passLayout || p->subpass + 1 == p->pass.passLayout->subpasses.size(),
                 "Encode every subpass before ending the render pass");
         require(!p->perTile, "End per-tile execution before ending the render pass");
-        p->command->render(p->pass);
+        if (p->parent) {
+            p->parent->children[p->childIndex] = p->pass;
+        } else {
+            auto pass = p->pass;
+            for (const auto &child : p->children) {
+                require(child.has_value(), "End every parallel render child first");
+                const auto start = pass.draws.size();
+                for (auto boundary : child->memoryBarriers) pass.memoryBarriers.push_back(start + boundary);
+                pass.draws.insert(pass.draws.end(), child->draws.begin(), child->draws.end());
+            }
+            p->command->render(std::move(pass));
+        }
         objects.erase(id);
+    });
+}
+JNI_METHOD(jlong, beginParallelRenderChild)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto parent = get<PendingRender>(id);
+        parent->command->recording();
+        require(!parent->parent && !parent->pass.passLayout && !parent->pass.tileShading && parent->pass.draws.empty(),
+                "Parallel children require an ordinary parent render encoder");
+        auto child = std::make_shared<PendingRender>(parent->command);
+        child->parent = parent;
+        child->childIndex = parent->children.size();
+        child->pass = parent->pass;
+        // Reserve before publishing the child handle so allocation failure is atomic.
+        parent->children.reserve(parent->children.size() + 1);
+        auto handle = put(child);
+        parent->children.emplace_back();
+        return handle;
     });
 }
 JNI_METHOD(void, renderMemoryBarrier)(JNIEnv *e, jobject, jlong id) {

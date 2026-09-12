@@ -11,6 +11,13 @@ import java.nio.ByteOrder
 class Device private constructor(internal val nativeHandle: Long) : AutoCloseable {
     internal var closed = false
         private set
+    private val completionObservers = java.util.WeakHashMap<CommandBuffer, Boolean>()
+    internal fun observeCompletion(command: CommandBuffer) = synchronized(this) {
+        if (!closed) completionObservers[command] = true
+    }
+    internal fun forgetCompletion(command: CommandBuffer) = synchronized(this) {
+        completionObservers.remove(command)
+    }
 
     internal fun <T> access(block: () -> T): T =
         synchronized(this) {
@@ -286,6 +293,11 @@ class Device private constructor(internal val nativeHandle: Long) : AutoCloseabl
             if (!closed) {
                 Native.closeDevice(nativeHandle)
                 closed = true
+                val observers = completionObservers.keys.toList()
+                completionObservers.clear()
+                observers.forEach { command ->
+                    command.pollCompletion()?.let { CompletionMonitor.finish(command, it) }
+                }
             }
         }
     }

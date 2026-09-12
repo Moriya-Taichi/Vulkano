@@ -50,6 +50,13 @@ GPUのメーカー名からFeatureの有無を推定しません。
 | ML Graph | MachineLearningPipelineState / MachineLearningCommandEncoder | VK_ARM_data_graph。GPU演算セット照会、SPIR-V Graph、Weights、Function Constants、Session Memory、Queue同期、Cacheからの復元 |
 | メモリモデル | StorageMode / Vulkan Memory Model | AndroidのShared Memory、Flush/Invalidate、任意のVulkan Memory Model Feature |
 
+## 完了通知と並列記録
+
+`addCompletedHandler` / `completionFuture` / `awaitCompleted`は、GPU完了・失敗・記録の破棄を通知します。
+Coroutine待機のCancelはGPU処理を取り消しません。
+`ParallelRenderCommandEncoder`は独立した子Encoderを別CPU Threadで記録し、作成順に組み立てます。
+Vulkan呼び出しの外部同期と最終組み立ては直列です。GPU並列実行を保証するAPIではありません。
+
 ## 組み合わせの制約
 
 Device Generated Commandsは、対応するShader StageとPipeline Binding Stageを個別に問い合わせます。
