@@ -76,7 +76,9 @@ Function Constantsは符号付き・符号なしの8/16/32/64ビット整数、H
 SPIR-VのScalar型とバイト数を照合し、型幅の違いと未宣言のConstant IDを拒否します。
 整数や浮動小数点の演算には、型に対応するFeatureの有効化も必要です。
 固定Local Sizeに加え、Local Sizeのスカラー特殊化定数に対応します。
-複雑な特殊化式によるWorkgroupサイズは拒否します。
+Workgroupサイズは整数・Booleanの特殊化定数式を評価します。算術、比較、選択、ビット演算、整数型変換、Vectorの演算・抽出・挿入・並べ替えに対応します。
+SPIR-Vの整数幅で計算し、ゼロ除算・不正なShift・循環参照・ゼロのサイズ・端末上限超過はPipeline作成前に拒否します。
+`WorkgroupSize`が存在する場合は`LocalSize` / `LocalSizeId`より優先します。
 
 固定Descriptor Arrayは全要素をBindingしてください。
 Runtime Descriptor Arrayは`DESCRIPTOR_INDEXING`と明示的な`BindingLayout.count`を要求し、未使用要素を省略できます。

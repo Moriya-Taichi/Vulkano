@@ -355,45 +355,7 @@ struct Module {
         }
         if (executionModel == 5 || executionModel == SpvExecutionModelMeshEXT ||
             executionModel == SpvExecutionModelTaskEXT) {
-            std::map<uint32_t, uint32_t> ids, values;
-            uint32_t workgroupId = 0;
-            for (size_t i = 5; i < code.size(); i += code[i] >> 16) {
-                auto op = code[i] & 0xffff, words = code[i] >> 16;
-                if (op == SpvOpDecorate && words == 4) {
-                    if (code[i + 2] == SpvDecorationSpecId)
-                        ids[code[i + 1]] = code[i + 3];
-                    if (code[i + 2] == SpvDecorationBuiltIn && code[i + 3] == SpvBuiltInWorkgroupSize)
-                        workgroupId = code[i + 1];
-                }
-            }
-            for (size_t i = 5; i < code.size(); i += code[i] >> 16) {
-                auto op = code[i] & 0xffff, words = code[i] >> 16;
-                if ((op == SpvOpConstant || op == SpvOpSpecConstant) && words == 4) {
-                    uint32_t value = code[i + 3];
-                    auto spec = ids.find(code[i + 2]);
-                    if (spec != ids.end()) {
-                        auto v = shader.constants.find(spec->second);
-                        if (v != shader.constants.end())
-                            value = v->second.uint32();
-                    }
-                    values[code[i + 2]] = value;
-                }
-            }
-            for (size_t i = 5; i < code.size(); i += code[i] >> 16) {
-                auto op = code[i] & 0xffff, words = code[i] >> 16;
-                if (op == SpvOpExecutionMode && words == 6 && code[i + 1] == entryId &&
-                    code[i + 2] == SpvExecutionModeLocalSize)
-                    local = {code[i + 3], code[i + 4], code[i + 5]};
-                if ((op == SpvOpExecutionModeId && words == 6 && code[i + 1] == entryId &&
-                     code[i + 2] == SpvExecutionModeLocalSizeId) ||
-                    ((op == SpvOpSpecConstantComposite || op == SpvOpConstantComposite) && words == 6 &&
-                     code[i + 2] == workgroupId)) {
-                    for (int n = 0; n < 3; ++n) {
-                        require(values.count(code[i + 3 + n]), "Unsupported workgroup specialization expression");
-                        local[n] = values.at(code[i + 3 + n]);
-                    }
-                }
-            }
+            local = reflectWorkgroupSize(shader, entryId);
             const bool meshStage = executionModel != 5;
             require(!meshStage || (d.enabled & (executionModel == SpvExecutionModelTaskEXT ? TaskShader : MeshShader)),
                     "Mesh/task feature was not enabled");

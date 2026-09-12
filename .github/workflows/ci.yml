@@ -58,6 +58,8 @@ jobs:
           for shader in tests/shaders/*.spv; do spirv-val --target-env vulkan1.2 "$shader"; done
       - name: Build host backend
         run: cmake -S vulkano/src/main/cpp -B build/host -G Ninja && cmake --build build/host
+      - name: Test workgroup constant expressions on the CPU
+        run: build/host/vulkano_workgroup_tests
       - name: Select software Vulkan driver
         run: echo "VK_ICD_FILENAMES=$(find /usr/share/vulkan/icd.d -name '*lvp*' -print -quit)" >> "$GITHUB_ENV"
       - name: Test native GPU results and synchronization

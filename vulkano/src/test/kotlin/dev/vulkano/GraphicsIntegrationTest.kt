@@ -35,6 +35,26 @@ class GraphicsIntegrationTest {
         }
     }
 
+    @Test fun workgroupExpressionsMatchGpuInvocationCounts(): Unit = device().use { d ->
+        for ((factor, choose, expected) in listOf(Triple(3, true, 8), Triple(7, true, 16), Triple(7, false, 2))) {
+            val constants = FunctionConstants().setInt(7, factor).setBoolean(9, choose)
+            val pipeline = d.makeComputePipelineState(d.function("local-size-expression.spv", constants))
+            assertEquals(Size(expected), pipeline.threadgroupSize)
+            val result = d.makeBuffer(expected * 4L)
+            d.submit { compute {
+                setComputePipelineState(pipeline); setBuffer(result, 0); dispatchThreadgroups(Size(1))
+            } }
+            val actual = ByteBuffer.wrap(result.readBytes(expected * 4)).order(ByteOrder.nativeOrder())
+            repeat(expected) { assertEquals(expected, actual.int) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("local-size-expression.spv", FunctionConstants().setInt(7, -1)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            d.makeComputePipelineState(d.function("local-size-expression.spv", FunctionConstants().setInt(7, 100000)))
+        }
+    }
+
     @Test fun depthStencilAspectsTransferIndependentlyAcrossMipViews(): Unit = device().use { d ->
         val usage = setOf(TextureUsage.TRANSFER_SOURCE, TextureUsage.TRANSFER_DESTINATION, TextureUsage.SAMPLED)
         val sampler = d.makeSampler(SamplerDescriptor(linearFiltering = false))

@@ -1,0 +1,43 @@
+; A Vulkan 1.1 workgroup expression, including arithmetic and boolean selection.
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %global
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %workgroup BuiltIn WorkgroupSize
+OpDecorate %global BuiltIn GlobalInvocationId
+OpDecorate %factor SpecId 7
+OpDecorate %choose SpecId 9
+OpDecorate %data ArrayStride 4
+OpMemberDecorate %block 0 Offset 0
+OpDecorate %block Block
+OpDecorate %output DescriptorSet 0
+OpDecorate %output Binding 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%bool = OpTypeBool
+%v3uint = OpTypeVector %uint 3
+%inputv = OpTypePointer Input %v3uint
+%data = OpTypeRuntimeArray %uint
+%block = OpTypeStruct %data
+%outputp = OpTypePointer StorageBuffer %block
+%uintp = OpTypePointer StorageBuffer %uint
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%two = OpConstant %uint 2
+%factor = OpSpecConstant %uint 3
+%choose = OpSpecConstantTrue %bool
+%add = OpSpecConstantOp %uint IAdd %factor %one
+%multiply = OpSpecConstantOp %uint IMul %add %two
+%selected = OpSpecConstantOp %uint Select %choose %multiply %two
+%workgroup = OpSpecConstantComposite %v3uint %selected %one %one
+%global = OpVariable %inputv Input
+%output = OpVariable %outputp StorageBuffer
+%main = OpFunction %void None %fn
+%label = OpLabel
+%gid = OpLoad %v3uint %global
+%index = OpCompositeExtract %uint %gid 0
+%pointer = OpAccessChain %uintp %output %zero %index
+OpStore %pointer %selected
+OpReturn
+OpFunctionEnd
