@@ -1234,6 +1234,7 @@ std::shared_ptr<Device> Device::create(uint64_t required, bool validation, bool 
 Device::~Device() {
     if (device)
         vkDeviceWaitIdle(device);
+    clearIdleResources();
     reclaimPresentation(true);
     for (auto [key, pass] : renderPassCache) {
         (void)key;
@@ -2018,7 +2019,7 @@ void Command::trace(std::shared_ptr<RayTracingPipeline> p, std::vector<Binding> 
     }
     buffers.push_back(p->table);
     operations.push_back([p, bs = std::move(bs), constants = std::move(constants), size](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
         c.prepare(*p, bs, true);
         c.bind(*p, bs, constants);
         c.d->extensions->traceRays(c.command, &p->raygen, &p->miss, &p->hit, &p->callable, size[0], size[1], size[2]);
@@ -2042,14 +2043,16 @@ void Command::requireQueue(VkQueueFlags any) const {
 void Command::recording() const {
     require(state == State::Recording, "Command buffer is not recording (one submission only)");
 }
-void Command::barrier() {
+void Command::barrier(VkPipelineStageFlags destination) {
     // Graph-only families do not support vkCmdPipelineBarrier2. Their operations
     // are split into semaphore-ordered submissions at commit time instead.
     if (graphOnly())
         return;
+    if (!(destination & VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) ++scopedBarrierCount;
     if (d->enabledExtra & Synchronization2) {
         VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        memory.srcStageMask = memory.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        memory.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        memory.dstStageMask = destination;
         memory.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
         memory.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
@@ -2062,7 +2065,7 @@ void Command::barrier() {
     memory.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     memory.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &memory, 0, nullptr, 0,
+                         destination, 0, 1, &memory, 0, nullptr, 0,
                          nullptr);
 }
 void Command::validateBindings(const Pipeline &p, const std::vector<Binding> &bs,
@@ -2266,14 +2269,12 @@ void Command::bind(const Pipeline &p, const std::vector<Binding> &bs, const std:
                 std::vector<VkDescriptorPoolSize> sizes;
                 for (auto [type, count] : counts)
                     sizes.push_back({type, count});
-                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-                pi.maxSets = setsPerPool;
-                pi.poolSizeCount = static_cast<uint32_t>(sizes.size());
-                pi.pPoolSizes = sizes.data();
                 descriptorPools.reserve(descriptorPools.size() + 1);
-                VkDescriptorPool dp;
-                check(vkCreateDescriptorPool(d->device, &pi, nullptr, &dp), "vkCreateDescriptorPool");
+                descriptorAllocations.reserve(descriptorAllocations.size() + 1);
+                auto allocation = d->takeDescriptorPool(setsPerPool, sizes);
+                const auto dp = allocation.pool;
                 descriptorPools.push_back(dp);
+                descriptorAllocations.push_back(std::move(allocation));
                 arena = {dp, 0};
             }
             VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -2383,7 +2384,7 @@ void Command::dispatch(Dispatch op) {
         if (b.buffer)
             buffers.push_back(b.buffer);
     operations.push_back([op = std::move(op)](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
         c.prepare(*op.pipeline, op.bindings, true);
         c.bind(*op.pipeline, op.bindings, op.constants);
         if (op.indirect)
@@ -2880,7 +2881,8 @@ void Command::render(Render op) {
                 "Invalid/disabled depth bias clamp");
     }
     operations.push_back([op = std::move(op), formats, extent, samples](Command &c) {
-        c.barrier();
+        const bool advanced = op.tileShading || std::any_of(op.draws.begin(), op.draws.end(), [](const auto &draw) { return bool(draw.generated); });
+        c.barrier(advanced ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
         auto transition = [&](Texture &t, VkImageLayout layout, bool read, uint32_t mip, uint32_t layer, VkImageAspectFlags aspects = 0) {
             for (uint32_t n = 0; n < op.layers; ++n)
                 if (!op.viewMask || (op.viewMask & (1u << n)))
@@ -2945,10 +2947,7 @@ void Command::render(Render op) {
         fi.width = extent.width;
         fi.height = extent.height;
         fi.layers = op.viewMask ? 1 : op.layers;
-        c.framebuffers.reserve(c.framebuffers.size() + 1);
-        VkFramebuffer fb;
-        check(vkCreateFramebuffer(c.d->device, &fi, nullptr, &fb), "vkCreateFramebuffer");
-        c.framebuffers.push_back(fb);
+        const auto fb = c.framebuffer(fi);
         if (op.tileShading &&
             std::any_of(op.draws.begin(), op.draws.end(), [](const auto &draw) { return draw.tileAction == 2; })) {
             uint32_t count = 0;
@@ -3105,7 +3104,7 @@ void Command::copy(std::shared_ptr<Buffer> src, std::shared_ptr<Buffer> dst, VkD
     buffers.push_back(src);
     buffers.push_back(dst);
     operations.push_back([src, dst, so, to, size](Command &c) {
-        c.barrier();
+        c.barrier(VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkBufferCopy region{so, to, size};
         vkCmdCopyBuffer(c.command, src->buffer, dst->buffer, 1, &region);
     });
@@ -3165,7 +3164,7 @@ void Command::commit() {
         }
         if (presentation)
             transition(*presentation->texture, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, true);
-        barrier();
+        barrier(VK_PIPELINE_STAGE_HOST_BIT);
         check(vkEndCommandBuffer(command), "vkEndCommandBuffer");
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         check(vkCreateFence(d->device, &fi, nullptr, &fence), "vkCreateFence");
@@ -3342,10 +3341,8 @@ Command::~Command() {
         d->idleCommands[d->idleCommandCount++] = {pool, command, queueInfo().family};
     } else if (pool)
         vkDestroyCommandPool(d->device, pool, nullptr);
-    for (auto fb : framebuffers)
-        vkDestroyFramebuffer(d->device, fb, nullptr);
-    for (auto dp : descriptorPools)
-        vkDestroyDescriptorPool(d->device, dp, nullptr);
+    for (auto &fb : framebufferAllocations) d->recycle(std::move(fb), completed);
+    for (auto &dp : descriptorAllocations) d->recycle(std::move(dp), completed);
     if (fence)
         vkDestroyFence(d->device, fence, nullptr);
 }
@@ -3368,7 +3365,7 @@ Surface::Surface(std::shared_ptr<Device> device, ANativeWindow *nativeWindow, ui
         ++d->liveSurfaces;
     } catch (...) {
         for (auto view : views)
-            vkDestroyImageView(d->device, view, nullptr);
+            d->destroyView(view);
         if (swapchain)
             vkDestroySwapchainKHR(d->device, swapchain, nullptr);
         if (surface)
@@ -3441,7 +3438,7 @@ void Surface::rebuild() {
     check(vkCreateSwapchainKHR(d->device, &info, nullptr, &next), "vkCreateSwapchainKHR");
     // oldSwapchain is retired after successful creation, including if view creation fails.
     for (auto view : views)
-        vkDestroyImageView(d->device, view, nullptr);
+        d->destroyView(view);
     views.clear();
     images.clear();
     if (swapchain)
@@ -3564,7 +3561,7 @@ void Device::reclaimPresentation(bool shutdown) {
     retiredDrawables.clear();
     for (const auto &item : retiredSurfaces) {
         for (auto view : item.views)
-            vkDestroyImageView(device, view, nullptr);
+            destroyView(view);
         if (item.swapchain)
             vkDestroySwapchainKHR(device, item.swapchain, nullptr);
         if (item.surface)

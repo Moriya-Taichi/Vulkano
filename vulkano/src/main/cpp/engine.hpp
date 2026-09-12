@@ -131,6 +131,18 @@ struct QueueInfo {
     uint32_t family = 0, index = 0;
     VkQueueFamilyProperties properties{};
 };
+struct DescriptorPoolAllocation {
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    uint32_t maxSets = 0;
+    std::vector<VkDescriptorPoolSize> sizes;
+};
+struct FramebufferAllocation {
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    VkRenderPass pass = VK_NULL_HANDLE;
+    std::vector<VkImageView> views;
+    uint32_t width = 0, height = 0, layers = 0;
+    bool matches(const VkFramebufferCreateInfo &) const;
+};
 struct Device : Object, std::enable_shared_from_this<Device> {
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -173,6 +185,17 @@ struct Device : Object, std::enable_shared_from_this<Device> {
     };
     std::array<CommandAllocation, 8> idleCommands{};
     size_t idleCommandCount = 0;
+    std::array<DescriptorPoolAllocation, 32> idleDescriptorPools{};
+    std::array<FramebufferAllocation, 32> idleFramebuffers{};
+    size_t idleDescriptorPoolCount = 0, idleFramebufferCount = 0;
+    uint64_t descriptorPoolsCreated = 0, descriptorPoolsReused = 0, framebuffersCreated = 0, framebuffersReused = 0;
+    DescriptorPoolAllocation takeDescriptorPool(uint32_t maxSets, const std::vector<VkDescriptorPoolSize> &);
+    FramebufferAllocation takeFramebuffer(const VkFramebufferCreateInfo &);
+    void recycle(DescriptorPoolAllocation, bool completed) noexcept;
+    void recycle(FramebufferAllocation, bool completed) noexcept;
+    void invalidateFramebuffers(VkImageView) noexcept;
+    void destroyView(VkImageView) noexcept;
+    void clearIdleResources() noexcept;
     std::vector<std::weak_ptr<Command>> pending;
     struct RetiredDrawable {
         VkSemaphore acquired, rendered;
@@ -544,6 +567,10 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     VkFence fence = VK_NULL_HANDLE;
     std::vector<VkDescriptorPool> descriptorPools;
     std::vector<VkFramebuffer> framebuffers;
+    std::vector<DescriptorPoolAllocation> descriptorAllocations;
+    std::vector<FramebufferAllocation> framebufferAllocations;
+    VkFramebuffer framebuffer(const VkFramebufferCreateInfo &);
+    uint32_t scopedBarrierCount = 0;
     // Command-scoped immutable descriptors retain resources through operations.
     struct DescriptorArena {
         VkDescriptorPool pool = VK_NULL_HANDLE;
@@ -603,7 +630,7 @@ struct Command : Resource, std::enable_shared_from_this<Command> {
     void present(std::shared_ptr<Drawable>);
     void commit();
     bool wait(uint64_t timeout = UINT64_MAX);
-    void barrier();
+    void barrier(VkPipelineStageFlags destination = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT);
     void alias(std::shared_ptr<Resource>, std::shared_ptr<Resource>);
     void transition(Texture &, VkImageLayout, bool read, VkImageAspectFlags readAspects = 0);
     void transition(Texture &, VkImageLayout, bool read, uint32_t mip, uint32_t layer, uint32_t levels, uint32_t layers,

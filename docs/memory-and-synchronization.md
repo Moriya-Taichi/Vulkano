@@ -157,7 +157,7 @@ SurfaceLayerごとにDrawableを1枚だけ取得できます。TextureをRender 
 
 サイズ変更前に取得中のDrawableを提示または破棄してください。Androidの`surfaceDestroyed`が返る前に、そのSurfaceを使う作業を終えます。DeviceをUIの各フレームで作り直す必要はありません。
 
-現在はCompositorに画面回転を任せます。ShaderでのPre-rotation、複数フレームの同時進行、フレーム間のDescriptor Pool再利用、より狭いBarrierへの最適化は、実機での性能確認後に進める対象です。
+現在はCompositorに画面回転を任せます。ShaderでのPre-rotationは未実装です。複数フレームの同時進行には以下のFrameSchedulerを使用できます。
 
 DescriptorのCommand内再利用、Shared Bufferの常時マッピング、画像Layoutの選択は[モバイルGPU最適化](mobile-gpu-optimization.md)を参照してください。
 
@@ -175,3 +175,33 @@ CommandのWaitは最初のGPU操作より前に記録し、SignalはCommand全�
 HostのSignal値は現在値を増やし、送信済みGPU Signalの値より小さくする必要があります。
 満たされないWaitを残したままDeviceを閉じると、完了待ちは終了しません。
 同じVulkan Queue内の将来のCommandだけにSignalを依存させると循環待ちになるため、CPUなど実行可能なSignal元を用意します。
+
+
+## 同時進行するフレーム
+
+```kotlin
+val frames = device.makeFrameScheduler(maxFramesInFlight = 3)
+// 描画を行うWorker Thread上で呼び出す。
+val frame = frames.beginFrame()
+if (frame != null) frame.use {
+    val parameters = parametersPerFrame[it.index]
+    parameters.write(currentParameters)
+    val drawable = layer.nextDrawable(timeoutNanos = 0)
+    if (drawable != null) drawable.use { image ->
+        it.commandBuffer.render(RenderPassDescriptor(ColorAttachment(image.texture))) {
+            setRenderPipelineState(pipeline)
+            setBuffer(parameters, 0)
+            drawPrimitives(3)
+        }
+        it.commandBuffer.present(image)
+        it.submit()
+    }
+}
+```
+
+`beginFrame()`はGPUの完了を待たず、次のSlotが未完了ならnullを返します。
+Slot番号`index`ごとに変更可能なUniform / Storage Bufferを分けてください。Slotの再取得時には前回のGPU処理が完了しています。
+同時に記録できるFrameは1つです。Frame内ではParallelRenderCommandEncoderの子記録を使えます。
+Frameを送信せず閉じると記録を破棄し、送信後はSchedulerがCommandを保持します。
+Schedulerを閉じると残りのFrameを待ち、Resourceを解放します。Surfaceの再構築・破棄前に閉じ、必要なら新しく作成します。
+既定は3 Slotで、1〜8の範囲で設定します。実機ではメモリ使用量と入力遅延も見て選択してください。

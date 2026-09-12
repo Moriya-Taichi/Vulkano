@@ -338,6 +338,16 @@ JNI_METHOD(void, close)(JNIEnv *e, jobject, jlong id) {
 JNI_METHOD(void, waitIdle)(JNIEnv *e, jobject, jlong id) {
     return guard(e, [&] { get<Device>(id)->waitIdle(); });
 }
+JNI_METHOD(jlongArray, resourceCacheStatistics)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] {
+        auto d = get<Device>(id);
+        return longs(e, {jlong(d->descriptorPoolsCreated), jlong(d->descriptorPoolsReused), jlong(d->framebuffersCreated),
+            jlong(d->framebuffersReused), jlong(d->idleDescriptorPoolCount), jlong(d->idleFramebufferCount)});
+    });
+}
+JNI_METHOD(void, trimIdleResources)(JNIEnv *e, jobject, jlong id) {
+    return guard(e, [&] { get<Device>(id)->clearIdleResources(); });
+}
 JNI_METHOD(jlong, createBuffer)(JNIEnv *e, jobject, jlong device, jlong length, jint usage, jint storage) {
     return guard(e, [&] {
         require(length > 0 && storage >= 0 && storage <= 1, "Invalid buffer descriptor");

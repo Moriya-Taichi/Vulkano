@@ -6,10 +6,12 @@ AndroidのモバイルGPUを対象に、CPU側のVulkanオブジェクト作成�
 
 | 対象 | 処理 |
 | --- | --- |
-| Descriptor Pool | Command内でPipelineごとに64セット単位で確保。個別解放フラグを使わず、Command終了後にまとめて解放 |
+| Descriptor Pool | Command内でPipelineとSetごとに最大64セット単位で確保。GPU完了後にResetし、同じ種類・容量のPoolを再利用 |
 | Descriptor Set | Pipeline、Set番号、Binding番号、Buffer/Texture/Sampler、Offset、Rangeが同じなら更新済みのSetを再利用。Bindingの指定順には依存しない |
 | Pipeline | Deviceごとの`VkPipelineCache`をCompute/Graphics両方で使用。同一Pipelineの連続Bindを省略 |
 | Render Pass | FormatとLoad/Storeの組み合わせでDevice内にキャッシュ。FramebufferやAttachmentの寿命とは分離 |
+| Framebuffer | Render Pass、Image View、幅・高さ・Layerが一致する場合に再利用。Viewの破棄時に該当Cacheを無効化 |
+| Memory Barrier | Compute、転送、Graphics、Ray、Hostの待機先Stageを指定。書き込み元とImage Layout遷移は保守的に同期 |
 | Shared Buffer | VMAで常時マッピング。小さなread/writeのたびにVulkanメモリをMap/Unmapしない。Flush/InvalidateとGPU使用中のCPUアクセス検査は継続 |
 | Sampled Texture | Storage用途がない画像は`SHADER_READ_ONLY_OPTIMAL`。Storage用途もある画像は同時BindingのAliasに対応するため`GENERAL` |
 | Image Barrier | 現在と同じLayoutへのBarrierを省略。各操作の前にあるMemory Barrierが依存関係を保証し、Layoutが変わる場合はImage Barrierを発行 |
@@ -30,7 +32,7 @@ Render PassのキャッシュはLoad/Storeを区別するので、CLEARとLOAD�
 
 Native回帰テストには、65種類のBindingを使う130 Dispatch、同じ画像を読む100 Draw、BufferのOffset/Range変更、Push Constants変更、Render Pass再利用、実際のGPU結果のReadbackを含めています。前者ではPool作成が130回から2回、Descriptor更新が130回から65回に、後者ではDescriptor更新が100回から1回になります。これはAPI呼び出し回数の削減であり、実機の実行時間や消費電力の改善率ではありません。
 
-DescriptorキャッシュはCommand内、Pipeline/Render PassキャッシュはDevice内で有効です。Pipeline Cacheの保存・読み込みAPIを利用できます。返されたByteArrayのファイル保存はアプリ側で行います。Framebufferのフレーム間再利用は未実装です。Command Poolの再利用は後述のXclipse対応で追加しました。各操作のMemory BarrierとSurfaceのQueue idle待機は保守的なままなので、独立処理の重なりや複数フレームの同時実行には制限があります。
+DescriptorキャッシュはCommand内、Pipeline/Render PassキャッシュはDevice内で有効です。Pipeline Cacheの保存・読み込みAPIを利用できます。返されたByteArrayのファイル保存はアプリ側で行います。FramebufferとDescriptor PoolはGPU完了後に再利用します。Command Poolの再利用は後述のXclipse対応を使用します。`FrameScheduler`で最大数を決めたフレームを同時進行できます。Surfaceの再構築やPresentation用オブジェクト回収では、引き続きQueue idleが必要な場合があります。
 
 Mali・PowerVR・Adrenoの実機では未計測です。[Android検証手順](android-validation.md)に加え、同じシーン・解像度・ReleaseビルドでCPUフレーム時間、GPU時間、外部メモリ帯域、温度を比較してください。Validation有効時の時間を性能比較には使用しないでください。GPUカウンターは[Androidの対応資料](https://developer.android.com/agi/sys-trace/counters)と各ベンダーのProfilerで確認できます。
 
@@ -67,3 +69,19 @@ Upload Bufferの`read`／`readBytes`はKotlinとNativeの双方で拒否しま�
 デスクトップRDNA向けのPCIe転送、256 MBヒープ、専用VRAM容量をExynosへ適用しません。Wave32／Wave64やRDNA世代をGPU名から固定せず、公開済みのSubgroup／Feature／Limits情報を使用します。Xclipseを一律にタイルベースGPUとして扱わず、MemorylessはドライバーがLazy allocationを公開した場合だけ実際にLazy memoryを使用します。
 
 今回の経路はVulkan 1.1で動作し、ベンダーIDによる条件分岐やAMD固有拡張を必要としません。Mali・PowerVR・Adrenoでも同じ最適化を使用できます。Xclipse実機での速度、消費電力、Non-coherentメモリの挙動は未検証です。実機では[Samsung Exynos GPU Tools](https://soc-developer.semiconductor.samsung.com/global/development/gpu-tools)の対応条件を確認し、Upload直接参照とPrivate経由のGPU時間・CPU時間・帯域を比較してください。
+
+
+## フレーム間の再利用とCacheの寿命
+
+Descriptor PoolはGPU完了後、Command PoolのReset / 破棄後にResetします。
+Descriptorの種類、必要個数、最大Set数が同じPoolを再利用し、未完了CommandのPoolは貸し出しません。
+保持するのは最大32 Poolで、各PoolのDescriptor容量は4096以下です。それより大きいPoolや失敗したCommandのPoolは破棄します。
+
+FramebufferはCommand内でも再利用でき、完了後はDevice内に最大32個を保持します。
+Image Viewの破棄・Surface再構築時に該当Framebufferを破棄します。Textureを強参照してCacheとDeviceの循環参照を作ることはありません。
+`resourceCacheStatistics()`で作成数・再利用数・待機中Cache数を取得できます。
+`trimIdleResources()`は未使用のDescriptor PoolとFramebufferを解放し、進行中のCommandには触れません。
+
+Barrierは待機先を操作に必要なStageへ絞ります。書き込み元はCommandをまたぐ依存も含めてALL_COMMANDS / HOSTを維持します。
+Image Layout変更、Tile、Device Generated Commands、その他の特殊な操作は保守的な同期を継続します。
+実機の時間・帯域改善は未計測であり、Hostでは再利用数とGPU結果・同期Validationを検証します。
