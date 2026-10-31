@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (for example 0.1.0; must match the checked-out v tag)'
+        description: 'Release version (for example 0.1.0; checks out the matching v tag)'
         required: true
         type: string
 permissions:
@@ -16,25 +16,34 @@ jobs:
     runs-on: ubuntu-24.04
     environment: maven-central
     steps:
-      - uses: actions/checkout@v4
-      - name: Validate release tag and license
+      - name: Validate release version
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           python3 - <<'PY'
-          import os, pathlib, re
+          import os, re
           version = os.environ['RELEASE_VERSION']
           assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', version)
           assert not version.endswith('-SNAPSHOT')
-          assert os.environ['GITHUB_REF'] == 'refs/tags/v' + version, 'Run this workflow on the matching v tag'
-          assert pathlib.Path('LICENSE').is_file(), 'Project LICENSE is missing'
+          assert os.environ['GITHUB_REF'] in ('refs/heads/main', 'refs/tags/v' + version), 'Run this workflow from main or the matching v tag'
           PY
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v${{ inputs.version }}
+      - name: Verify checked-out release tag and license
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/v$RELEASE_VERSION^{commit}")"
+          test -f LICENSE
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android toolchain
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.1.13356709" "cmake;3.22.1"
       - name: Build and inspect signed release locally

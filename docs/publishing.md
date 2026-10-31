@@ -57,7 +57,7 @@ CIもこのタスクを実行し、POMの座標と依存関係、両ABIのNative
 ## リリースする
 
 1. 公開するコミットのCIを確認し、`v0.1.0`など、公開バージョンに一致するタグを作成します。初回公開前に[Android実機検証](android-validation.md)の未確認項目も確認してください。
-2. GitHub Actionsの **Stage Maven Central release** を、そのタグを選んで手動実行します。入力`version`には`0.1.0`を指定します。
+2. GitHub Actionsの **Stage Maven Central release** を、`main`を選んで手動実行します。入力`version`には`0.1.0`を指定します。ワークフローは対応する`v0.1.0`タグをチェックアウトするため、実行基盤の修正と公開対象のソースを独立して管理できます。
 3. ワークフローが署名済みリポジトリをビルド・検査し、Central Portalへアップロードします。タグとの不一致、SNAPSHOT、ライセンスや必須認証情報の欠落があれば公開処理を開始しません。
 4. PortalのDeploymentsで検証結果を確認し、対象のDeploymentをPublishします。ワークフローは自動公開を行いません。
 5. Maven Centralから解決できることを確認してから、READMEの導入方法を以下へ切り替えます。

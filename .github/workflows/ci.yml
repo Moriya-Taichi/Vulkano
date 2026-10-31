@@ -17,6 +17,8 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install pinned Android toolchain
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.1.13356709" "cmake;3.22.1"
       - name: Install host Vulkan dependencies
