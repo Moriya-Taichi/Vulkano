@@ -30,24 +30,14 @@ GPU manufacturer.
 
 ## Installation
 
-The current version is `0.1.0-SNAPSHOT`. It is not yet published to Maven Central.
-Build from source and publish to your local Maven repository. Use JDK 17, Android
-SDK 35, NDK 28.1.13356709, and CMake 3.22.1; the Gradle wrapper is included.
-
-```sh
-git clone https://github.com/Moriya-Taichi/Vulkano.git
-cd Vulkano
-./gradlew :vulkano:publishReleasePublicationToMavenLocal
-```
-
-Add `mavenLocal()` to your application's `settings.gradle.kts`:
+Vulkano `0.1.0` is available from Maven Central. Add `mavenCentral()` to your
+application's `settings.gradle.kts`:
 
 ```kotlin
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        mavenLocal()
     }
 }
 ```
@@ -56,7 +46,7 @@ Set `minSdk` to at least 29 and add the dependency to the app module:
 
 ```kotlin
 dependencies {
-    implementation("io.github.moriya-taichi:vulkano:0.1.0-SNAPSHOT")
+    implementation("io.github.moriya-taichi:vulkano:0.1.0")
 }
 ```
 

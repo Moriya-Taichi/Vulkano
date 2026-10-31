@@ -2,7 +2,7 @@
 
 [Android公式の公開手順](https://developer.android.com/build/publish-library/upload-library?hl=ja)に沿って、Release variantからMavenパブリケーションを作ります。AARに加え、依存関係を記述したPOM、Gradle Module Metadata、Sources JAR、DokkaによるAPIドキュメントJARを生成します。
 
-公開先はMaven Centralを想定しています。**この設定の追加だけでは公開されません。** Central Portalでのアカウント・namespace登録、署名鍵の設定が必要です。本体には[Apache License 2.0](../LICENSE)を適用しています。
+公開先はMaven Centralです。公開処理にはCentral Portalのアカウント・namespaceと署名鍵の設定を使用します。本体には[Apache License 2.0](../LICENSE)を適用しています。
 
 ## 公開座標
 
@@ -10,7 +10,7 @@
 io.github.moriya-taichi:vulkano:0.1.0
 ```
 
-上記は最初のリリース候補の座標です。公開完了まではREADMEのローカル導入手順を使用してください。ビルド時の既定値は`0.1.0-SNAPSHOT`で、`-PVERSION_NAME=...`で切り替えます。
+`0.1.0`はMaven Centralで公開済みです。導入方法はREADMEを参照してください。ビルド時の既定値は`0.1.0-SNAPSHOT`で、`-PVERSION_NAME=...`で切り替えます。
 
 以前のローカル座標`dev.vulkano:vulkano`から、GitHubアカウントで所有権を確認できるgroupIdへ変更しています。Kotlinの`import dev.vulkano.*`やAndroid namespaceは変わりません。Central Portal上では`io.github.moriya-taichi`の使用権限を確認してください。
 

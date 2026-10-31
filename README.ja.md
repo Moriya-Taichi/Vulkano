@@ -23,22 +23,13 @@ Android 10（API 29）以上の`arm64-v8a`・`x86_64`に対応します。Vulkan
 
 ## 導入
 
-現在のバージョンは`0.1.0-SNAPSHOT`です。Maven Centralには未公開のため、ソースからビルドしてローカルのMavenリポジトリへ配置します。JDK 17と、このリポジトリで指定するAndroid SDK・NDK・CMakeを用意してください。バージョンと設定は[ビルド環境](docs/development.md#ビルド環境)に記載しています。
-
-```sh
-git clone https://github.com/Moriya-Taichi/Vulkano.git
-cd Vulkano
-./gradlew :vulkano:publishReleasePublicationToMavenLocal
-```
-
-利用するアプリの`settings.gradle.kts`で、依存関係のリポジトリに`mavenLocal()`を追加します。
+Vulkano `0.1.0`はMaven Centralから取得できます。利用するアプリの`settings.gradle.kts`で、依存関係のリポジトリに`mavenCentral()`を追加します。
 
 ```kotlin
 dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        mavenLocal()
     }
 }
 ```
@@ -47,7 +38,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("io.github.moriya-taichi:vulkano:0.1.0-SNAPSHOT")
+    implementation("io.github.moriya-taichi:vulkano:0.1.0")
 }
 ```
 
